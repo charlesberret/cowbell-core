@@ -1,0 +1,43 @@
+id = "herdmark"
+name = "herdmark"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Registry-first harness roster for Herdr: what is running in this directory, by kind; attach to an established harness, or raise a new one with the model, lane, and tools chosen on purpose."
+platforms = ["linux", "macos"]
+
+# Every command starts with "./bin/herdmark": [[panes]] commands are resolved
+# by PATH lookup, not relative to the plugin root, so a bare "bin/..." fails
+# with plugin_pane_open_failed. The shim picks a python >= 3.11 (tomllib);
+# macOS /usr/bin/python3 is 3.9 and must never be the one that runs this.
+
+[[actions]]
+id = "open"
+title = "herdmark: registry for this directory"
+contexts = ["global"]
+command = ["./bin/herdmark", "open"]
+
+[[actions]]
+id = "adopt"
+title = "herdmark: adopt the focused agent pane into the roster"
+contexts = ["pane"]
+command = ["./bin/herdmark", "adopt"]
+
+[[actions]]
+id = "install-keys"
+title = "herdmark: bind prefix+c (new tab) to the registry"
+contexts = ["global"]
+command = ["./bin/herdmark", "keys", "install"]
+
+[[actions]]
+id = "uninstall-keys"
+title = "herdmark: restore the built-in new-tab binding"
+contexts = ["global"]
+command = ["./bin/herdmark", "keys", "uninstall"]
+
+[[panes]]
+id = "picker"
+title = "herdmark"
+placement = "popup"
+width = "90%"
+height = "80%"
+command = ["./bin/herdmark", "picker"]
