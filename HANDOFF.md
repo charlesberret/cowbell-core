@@ -16,6 +16,16 @@ Charles has been launching herdr seats **through agent-deck inside a herdr pane*
 - Adopt (`herdmark adopt`) already exists for the reverse direction.
 - Out of scope: quota, sidebar rows (those are `bt-reporter` / config).
 
+## 2026-09-12 — raise path works; popup is a first pass
+
+Live probe: `herdmark new --harness grok --name herdmark-probe` created tab `w1A:t6` labelled **herdmark-probe**, herdr detected grok idle at this cwd; probe tab closed. `prefix+c` smoke-tested the same day — it works, and it is clunky.
+
+- Tab label = sitting (`--name`); never pane `--title` / rename.
+- Wait for a single foreground shell before `agent start` (fresh tabs were `agent_pane_busy`).
+- Grok lanes verified against `grok --help`; `--agent <sitting-head>` when `~/.grok/agents/<head>.md` exists.
+
+`herdr-seats` still on `prefix+shift+s`. Wrappers still `pane run`. Constitution sync / fleet / marquee: later.
+
 ## Related
 
 - Sidebar plate and reporter: `…/rounds/2026-09-12-herdr-sidebar-two-panels/variants/F4/` (live) and `variants/B/plugin/bt-reporter.py`.
