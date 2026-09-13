@@ -1,6 +1,6 @@
 # HANDOFF — herdr-cowbell
 
-**This file:** `/Users/example/code/herdr-cowbell-core/HANDOFF.md`
+**This file:** `/Users/example/code/herdr-cowbell/HANDOFF.md`
 **Plugin:** `herdr-cowbell` (`prefix+c` → cowbell picker). CLI: `cowbell`.
 **Name:** chosen 2026-09-11 as herdmark; reopened 2026-09-13 → herdr-cowbell / cowbell.
 **Ballot:** `~/code/notes/nomogenesis/ballots/2026-09-11-herdmark.md`
@@ -27,6 +27,22 @@ Live probe: `herdmark new --harness grok --name herdmark-probe` created tab `w1A
 - Grok lanes verified against `grok --help`; `--agent <sitting-head>` when `~/.grok/agents/<head>.md` exists.
 
 `herdr-seats` still on `prefix+shift+s`. Wrappers still `pane run`. Constitution sync / fleet / marquee: later.
+
+## 2026-09-13 — 0.2.0: the popup is the product
+
+- **Surface:** Running here / Resume / Start new. Plain words on screen; house words (harness, sitting, lane) stay in `harnesses.toml`, the CLI registry and docs. Cut: pane ids, subject line, `ok`/`?` marks, blocked and not-installed lines. Trust shows only as `! asks first`; blocked rows are omitted.
+- **Keys and mouse:** raw-mode menu, SGR mouse (press-only), alternate screen. Click selects, Enter or the ⏎ button confirms; bottom hints clickable; no hover. Refreshes every 2s, keeps the selection. Plain typed-number fallback off a terminal or with `COWBELL_PLAIN=1`.
+- **Start new:** ranked by starts here (×3) then anywhere, folds at 5 rows to 4 + `+ N more`. Enter starts at once with an automatic name; `[defaults] ask_name = true` asks first (set in Charles's config copy). `n` = agent, name, model, permissions.
+- **Roster:** running agents with a session id are recorded as they are seen (`source = "seen"`); `adopt` left on the CLI only.
+- **Seed** `harnesses.toml` is standard agents only (claude, codex, grok, gemini, agy, opencode, pi); house wrappers live only in the config-dir copy. Codex lane flags are from docs, not verified here.
+- **Colour:** Kettle Dark tokens; gold only on what you press, red only for trust. `NO_COLOR` honoured.
+- Verified: 35 unit tests; pty-driven menu cases (keys, click, wheel, buttons, esc in prompts); real popup in a pty against the live herd; live `prefix+c` clicks confirmed by Charles.
+
+## Next
+
+1. **Standalone TUI** — the same picker outside herdr (in progress after 0.2.0).
+2. **Harness management inside cowbell** — scope not yet picked: A save-as-harness from `n` · B + edit (`e`) · C + add from scratch / remove · D + pin/hide per directory. Writes go block-by-block into the config-dir `harnesses.toml`, comments kept, backup first.
+3. Resume from agents' own history (Claude `~/.claude/projects`, …) — deferred; check memex overlap first.
 
 ## Related
 
