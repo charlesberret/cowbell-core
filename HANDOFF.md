@@ -38,11 +38,19 @@ Live probe: `herdmark new --harness grok --name herdmark-probe` created tab `w1A
 - **Colour:** Kettle Dark tokens; gold only on what you press, red only for trust. `NO_COLOR` honoured.
 - Verified: 35 unit tests; pty-driven menu cases (keys, click, wheel, buttons, esc in prompts); real popup in a pty against the live herd; live `prefix+c` clicks confirmed by Charles.
 
+## 2026-09-13 — 0.3.0: standalone
+
+- Bare `cowbell` on a terminal = the picker; piped = `cowbell status`. Only `adopt` / `stop` need a herdr server; herdr not installed at all is handled.
+- Host is decided once: inside a herdr pane (or its popup) → herdr tabs; anywhere else → `ctx.mode = "here"`, and `launch()` routes start/resume to `exec_here` (exec in this terminal, roster row with `source = "here"`).
+- Running here outside herdr = herdr agents (if up) + `agent_processes()`: ps + lsof cwd (or /proc), tty required, skip anything with a herdr or agent ancestor, skip `.app/` bundles. Opening a process row flashes its tty and pid.
+- Claude: `session_id_flag` / `name_flag` in the seed and in Charles's config copy, so terminal-started Claude is resumable. Resume lists only rows with a session id.
+- Decisions (Charles, 2026-09-13): opens in this terminal; running = herdr + any agent process; bare `cowbell`.
+- Verified: 40 unit tests; pty runs of bare `cowbell` outside herdr (herdr row + process row, process-row message, stand-in agent exec'd in the right cwd, resume row).
+
 ## Next
 
-1. **Standalone TUI** — the same picker outside herdr (in progress after 0.2.0).
-2. **Harness management inside cowbell** — scope not yet picked: A save-as-harness from `n` · B + edit (`e`) · C + add from scratch / remove · D + pin/hide per directory. Writes go block-by-block into the config-dir `harnesses.toml`, comments kept, backup first.
-3. Resume from agents' own history (Claude `~/.claude/projects`, …) — deferred; check memex overlap first.
+1. **Harness management inside cowbell** — scope not yet picked: A save-as-harness from `n` · B + edit (`e`) · C + add from scratch / remove · D + pin/hide per directory. Writes go block-by-block into the config-dir `harnesses.toml`, comments kept, backup first.
+2. Resume from agents' own history (Claude `~/.claude/projects`, …) — deferred; check memex overlap first.
 
 ## Related
 
