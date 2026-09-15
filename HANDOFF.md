@@ -68,6 +68,14 @@ Patron: no reason to keep the tree. Never on GitHub (no remote; `gh repo view ch
 - Fix found on the way: a command typed in a herdr pane used the *pane's* cwd (asked herdr) instead of its own; now only plugin-launched processes (`HERDR_PLUGIN_ROOT`) ask herdr.
 - Live 2026-09-15 12:00: `cowbell new --harness grok --name untitled` from `~` created workspace `w1C lobby`, cwd = the pad; `home ~` unchanged; the sitting wrote `visitors/2026-09-15-untitled/` + one GUESTBOOK row. A separate `w1B proj:agent-lobby` workspace exists (not cowbell's); left alone.
 
+## 2026-09-15 — LAB-249: host seams
+
+- Two seams, chosen once by `choose_host()` in `main` and carried on `ctx`: **`ctx.live`** (`LiveSource`: `HerdrLive`, `ProcessScan`, `CombinedLive`, or the empty base) answers what is running, focus, refresh; **`ctx.launch`** (`HostLaunch`: `HerdrLaunch` = new tab, `HereLaunch` = exec here) starts and resumes. Picker, status, enter, list, new, dispatch, stop, adopt use them.
+- Every `herdr(` call lives in the `# --- herdr adapter` section (a test enforces it). `server_up()` now probes `HERDR_SOCKET_PATH` (default `~/.config/herdr/herdr.sock`) instead of running the CLI, so standalone with no server never runs `herdr` (subprocess test with a logging stub: 0 calls; the pre-change code made 5 on `status`).
+- `COWBELL_MODE=here` forces standalone even inside a herdr pane.
+- `tests/test_pty.py` puts the menu / prompt / whole-picker pty cases in the repo (they used to live in a scratchpad).
+- Fixed: a long turn clock (`26h55m`) ran into the workspace column in Running here.
+
 ## Plan
 
 Lives on Linear (above). Filed 2026-09-13 from braintrust round `~/code/notes/braintrust/rounds/2026-09-13-cowbell-roadmap/synthesis.md`: Split (Now) LAB-247–253, Harness D (Next) LAB-254–256, Reach (Later) LAB-257–261. Update the `Locked:` line when you claim an issue that touches `cowbell.py`.
