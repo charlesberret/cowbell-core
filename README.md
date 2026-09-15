@@ -72,12 +72,16 @@ untitled_place = "lobby"          # a sitting started from ~ opens here instead
 [places.lobby]
 cwd = "~/code/agent-lobby"
 workspace_label = "lobby"         # herdr workspace its sittings open in (created if missing)
-allow_harness = ["claude", "grok"]
+allow_harness = ["lobby", "claude", "grok"]
+default_harness = "lobby"         # guest door; `new --place lobby` with no --harness
 lane = "yellow"
 ```
 
-Anything started at or below `cwd` opens in that workspace, New lists only the
-allowed agents, and `cowbell new --place lobby` targets it from anywhere.
+Anything started at or below `cwd` opens in that workspace. New lists only the
+allowed agents. Resume omits roster rows whose harness is not allowed (so a
+cold `oll-memo` in that cwd is not a guest). `cowbell new --place lobby`
+with no `--harness` uses `default_harness`. Claude/Grok in that directory are
+house labor — they are not the guest wall.
 
 ## Commands
 

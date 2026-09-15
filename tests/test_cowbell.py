@@ -30,6 +30,10 @@ CAT = {
          "models": [], "resume": ["--resume="]},
         {"id": "oll-mid", "kind": "pi", "family": "oll", "egress": "vendor", "trust_tool": "oll-mid",
          "models": [], "command": "/nonexistent/oll-mid", "resume": ["--continue"]},
+        {"id": "oll-memo", "kind": "pi", "family": "oll", "egress": "vendor", "trust_tool": "oll-memo",
+         "models": [], "command": "/nonexistent/oll-memo", "resume": ["--continue"]},
+        {"id": "lobby", "kind": "pi", "family": "oll", "egress": "vendor", "trust_tool": "lobby",
+         "models": [], "command": "/nonexistent/lobby", "resume": ["--continue"]},
         {"id": "local-ornith", "kind": "pi", "family": "local", "egress": "local", "trust_tool": "local-ornith",
          "models": [], "command": "/nonexistent/local-ornith", "resume": ["--continue"]},
     ],
@@ -122,7 +126,7 @@ class Registry(unittest.TestCase):
         self.assertEqual(cold["kimi-notes"]["status"], "unknown")   # pane exists, no detected agent
         self.assertEqual(cold["old-codex"]["status"], "cold")
         absent = {a["harness"]: a for a in reg["absent"]}
-        self.assertEqual(set(absent), {"omp", "local-ornith", "grok"})
+        self.assertEqual(set(absent), {"omp", "local-ornith", "grok", "lobby", "oll-memo"})
         self.assertEqual(absent["local-ornith"]["trust"]["verdict"], "blocked")
         self.assertFalse(absent["local-ornith"]["installed"])
 
@@ -410,7 +414,8 @@ class Places(unittest.TestCase):
         os.makedirs(self.pad)
         self.cat = {**CAT, "defaults": {"lane": "yellow", "untitled_place": "lobby"},
                     "places": {"lobby": {"cwd": self.pad, "workspace_label": "lobby",
-                                         "allow_harness": ["claude", "grok"], "lane": "green"}}}
+                                         "allow_harness": ["lobby", "claude", "grok"],
+                                         "default_harness": "lobby", "lane": "green"}}}
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -430,11 +435,34 @@ class Places(unittest.TestCase):
 
     def test_scoped_catalog_filters_harnesses_and_sets_lane(self):
         scoped = hm.scoped_catalog(self.cat, hm.places(self.cat)["lobby"])
-        self.assertEqual([h["id"] for h in scoped["harness"]], ["claude", "grok"])
+        self.assertEqual([h["id"] for h in scoped["harness"]], ["lobby", "claude", "grok"])
         self.assertEqual(scoped["defaults"]["lane"], "green")
+        self.assertEqual(scoped["defaults"]["default_harness"], "lobby")
         self.assertEqual(len(self.cat["harness"]), len(CAT["harness"]))          # original untouched
         reg = hm.build_registry(scoped, self.pad, [], [], [], matcher=lambda t: {"verdict": "ok"})
-        self.assertEqual({a["harness"] for a in reg["startable"]}, {"claude", "grok"})
+        self.assertEqual([a["harness"] for a in reg["startable"]], ["lobby", "claude", "grok"])
+        self.assertEqual(reg["default_harness"], "lobby")
+
+    def test_resume_omits_harnesses_the_place_does_not_allow(self):
+        scoped = hm.scoped_catalog(self.cat, hm.places(self.cat)["lobby"])
+        roster = [
+            {"name": "kimi-notes", "harness": "oll-memo", "cwd": self.pad, "session_id": "s1", "pane_id": None},
+            {"name": "house-grok", "harness": "grok", "cwd": self.pad, "session_id": "s2", "pane_id": None},
+        ]
+        reg = hm.build_registry(scoped, self.pad, [], [], roster, matcher=lambda t: {"verdict": "ok"})
+        self.assertEqual({r["name"] for r in reg["cold"]}, {"house-grok"})
+
+    def test_default_harness_ranks_first_despite_house_usage(self):
+        ids = ["claude", "grok", "lobby"]
+        roster = [{"harness": "grok", "cwd": self.pad, "last_seen": "2026-09-15"}] * 5
+        ranked = hm.rank_harnesses(ids, roster, self.pad, default="lobby")
+        self.assertEqual(ranked[0], "lobby")
+        self.assertIn("grok", ranked)
+
+    def test_new_without_harness_uses_place_default(self):
+        with self.assertRaises(SystemExit) as e:
+            hm.cmd_new(hm.Ctx(cwd=self.pad), self.cat, "", place="lobby")
+        self.assertIn("lobby", str(e.exception))  # default, then not-installed
 
     def test_new_refuses_a_harness_the_place_does_not_allow(self):
         with self.assertRaises(SystemExit) as e:
@@ -575,7 +603,8 @@ class NoHerdrCalls(unittest.TestCase):
             {"name": "sitting", "cwd": str(base), "harness": "fake", "kind": "pi", "session_id": "s1", "pane_id": "w1:p1"}]}))
         self.env = {**os.environ, "HERDR_BIN_PATH": str(stub), "HERDR_SOCKET_PATH": str(base / "no.sock"),
                     "COWBELL_MODE": "here", "COWBELL_PLAIN": "1", "COWBELL_CONFIG_DIR": str(base / "cfg"),
-                    "COWBELL_STATE_DIR": str(base / "state"), "HERDR_PANE_ID": "w1:p1", "PATH": "/usr/bin:/bin"}
+                    "COWBELL_STATE_DIR": str(base / "state"), "HERDR_PANE_ID": "w1:p1",
+                    "PATH": "/usr/sbin:/usr/bin:/bin"}
         self.env.pop("HERDR_PLUGIN_CONTEXT_JSON", None)
         self.env.pop("COWBELL_CTX", None)
         self.base = base

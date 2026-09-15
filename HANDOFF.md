@@ -4,6 +4,10 @@ Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 
 Milestone: Split (Now)
 Locked: none
 
+## 2026-09-15 — Guest wall (agent-lobby)
+
+Place `lobby` now admits harness `lobby` first (`default_harness`). Resume omits roster rows whose harness is not in `allow_harness` (cold `oll-memo` is not a guest). `cowbell new --place lobby` with no `--harness` uses the default. Claude/Grok remain allowed as house labor. Tests in `tests/test_cowbell.py` Places. House constitution `~/.config/cowbell/harnesses.toml`.
+
 **This file:** `/Users/example/code/cowbell/HANDOFF.md`
 **What:** the cowbell core and CLI. The herdr plugin is `~/code/herdr-cowbell`.
 **Launcher:** `~/code/bin/cowbell` (synced) execs `bin/cowbell` here.
