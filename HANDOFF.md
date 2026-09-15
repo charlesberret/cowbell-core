@@ -18,6 +18,11 @@ Release notes before the split (0.2.0, 0.3.0, LAB-247, LAB-248, LAB-262, LAB-249
 - `PLUGIN_ID` remains only to find 0.1–0.3 config and state in herdr's plugin dirs for the one-time migration.
 - The house launcher now points here. From a plain `cowbell` you lose `adopt`, `stop`, `import-seats`, `keys` and `open`; until LAB-252 they still run from `~/code/herdr-cowbell/bin/cowbell`, and `prefix+c` is unaffected.
 
+## 2026-09-15 — LAB-272: PyPI packaging (not uploaded)
+
+- `pyproject.toml` (hatchling): name `cowbell`, version from `__version__`, python ≥ 3.11, no dependencies, console script `cowbell = cowbell:cli`; the seed ships as `share/cowbell/harnesses.toml`, found by `seed_path()` under `sys.prefix`. `uv build` → `dist/` (ignored).
+- Upload is the patron's (LAB-251): `uv publish --token …` from this tree.
+
 ## Plan
 
 On Linear (above). Update the `Locked:` line when you claim an issue that touches `cowbell.py`.

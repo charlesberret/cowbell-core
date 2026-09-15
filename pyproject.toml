@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cowbell"
+dynamic = ["version"]
+description = "pick an agent for this directory: running, resume, or new"
+readme = { text = "cowbell picks a coding agent for the directory you are in: one already running, a session to resume, or a new one. It runs in any terminal and is the engine behind the herdr plugin herdr-cowbell. Stdlib only, python 3.11 or newer.\n", content-type = "text/markdown" }
+requires-python = ">=3.11"
+authors = [{ name = "Charles Berret" }]
+dependencies = []
+classifiers = [
+  "Environment :: Console :: Curses",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+]
+
+[project.scripts]
+cowbell = "cowbell:cli"
+
+[tool.hatch.version]
+path = "cowbell.py"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["cowbell.py"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+"harnesses.toml" = "share/cowbell/harnesses.toml"
+
+[tool.hatch.build.targets.sdist]
+only-include = ["cowbell.py", "harnesses.toml", "README.md", "tests"]

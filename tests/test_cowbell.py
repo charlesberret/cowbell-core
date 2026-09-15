@@ -327,6 +327,18 @@ class Paths(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in (self.cfg / "migration-backup").iterdir()), backups)
         self.assertEqual(len((self.cfg / ".migrated_from").read_text().splitlines()), 1)
 
+    def test_installed_seed_is_found_under_share(self):
+        (self.seed_root / "harnesses.toml").unlink()
+        saved = sys.prefix
+        prefix = Path(self.tmp.name) / "venv"
+        (prefix / "share" / "cowbell").mkdir(parents=True)
+        (prefix / "share" / "cowbell" / "harnesses.toml").write_text('schema = 1\n[[harness]]\nid = "pi"\n')
+        sys.prefix = str(prefix)
+        try:
+            self.assertEqual(hm.catalog_path().read_text(), 'schema = 1\n[[harness]]\nid = "pi"\n')
+        finally:
+            sys.prefix = saved
+
     def test_missing_seed_and_legacy_means_no_catalog(self):
         (self.seed_root / "harnesses.toml").unlink()
         with self.assertRaises(SystemExit):
