@@ -163,7 +163,7 @@ class PickerHere(unittest.TestCase):
 
             res, screen = in_pty(child, [DOWN, ESC], settle=1.0, gap=0.3)
             self.assertEqual(res, 0)
-            self.assertIn(b"Start new", screen)
+            self.assertIn(b"New", screen)
             self.assertIn(b"stand-in", screen)
             self.assertFalse(log.exists(), log.read_text() if log.exists() else "")
 

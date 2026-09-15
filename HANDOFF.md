@@ -7,7 +7,7 @@ Locked: none
 **This file:** `/Users/example/code/cowbell/HANDOFF.md`
 **What:** the cowbell core and CLI. The herdr plugin is `~/code/herdr-cowbell`.
 **Launcher:** `~/code/bin/cowbell` (synced) execs `bin/cowbell` here.
-**Authoritative `cowbell.py`:** this tree, from LAB-250 on. `herdr-cowbell` runs its own older copy until LAB-252 turns it into a thin skin over this core.
+**Authoritative `cowbell.py`:** this tree, from LAB-250 on. `herdr-cowbell` is a thin skin with a vendored copy of this core (LAB-252); after a core change, run `scripts/vendor-core` there.
 
 Release notes before the split (0.2.0, 0.3.0, LAB-247, LAB-248, LAB-262, LAB-249) are in `herdr-cowbell/HANDOFF.md` and in this tree's git history.
 

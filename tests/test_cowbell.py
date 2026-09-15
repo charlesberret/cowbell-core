@@ -184,7 +184,7 @@ class PickerList(unittest.TestCase):
         self.assertEqual([c["section"] for c in choices], ["running", "running", "resume", "start", "start", "start"])
         self.assertEqual([c["target"]["harness"] for c in choices if c["action"] == "raise"], ["claude", "grok", "pi"])
         text = hm.render_picker(reg, choices)
-        for needle in ("Running here", "Resume", "Start new", "  1  majordomo", "in sys:clubhouse", "4m",
+        for needle in ("  Running\n", "  Resume\n", "  New\n", "  1  majordomo", "in sys:clubhouse", "4m",
                        "Claude Code", "! asks first"):
             self.assertIn(needle, text)
         for gone in ("LIVE", "RAISE", "subject", "omp", "local-ornith", "⊘", "?", "w1:p1", "cold", "no-session"):
@@ -582,7 +582,7 @@ class NoHerdrCalls(unittest.TestCase):
         self.assertIn("sitting", status.stdout)
         picker = self.run_cowbell("picker", stdin="q\n")
         self.assertEqual(picker.returncode, 0, picker.stderr)
-        self.assertIn("Start new", picker.stdout)
+        self.assertIn("  New\n", picker.stdout)
         enter = self.run_cowbell("enter", "sitting")
         self.assertIn("FAKE-AGENT --continue", enter.stdout, enter.stderr)
         self.assertFalse(self.log.exists(), self.log.read_text() if self.log.exists() else "")
