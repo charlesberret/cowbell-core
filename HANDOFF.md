@@ -1,5 +1,9 @@
 # HANDOFF — herdr-cowbell
 
+Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 (protocol: document "Cowbell — agent handoff")
+Milestone: Split (Now)
+Locked: none
+
 **This file:** `/Users/example/code/herdr-cowbell/HANDOFF.md`
 **Plugin:** `herdr-cowbell` (`prefix+c` → cowbell picker). CLI: `cowbell`.
 **Name:** chosen 2026-09-11 as herdmark; reopened 2026-09-13 → herdr-cowbell / cowbell.
@@ -47,10 +51,9 @@ Live probe: `herdmark new --harness grok --name herdmark-probe` created tab `w1A
 - Decisions (Charles, 2026-09-13): opens in this terminal; running = herdr + any agent process; bare `cowbell`.
 - Verified: 40 unit tests; pty runs of bare `cowbell` outside herdr (herdr row + process row, process-row message, stand-in agent exec'd in the right cwd, resume row).
 
-## Next
+## Plan
 
-1. **Harness management inside cowbell** — scope not yet picked: A save-as-harness from `n` · B + edit (`e`) · C + add from scratch / remove · D + pin/hide per directory. Writes go block-by-block into the config-dir `harnesses.toml`, comments kept, backup first.
-2. Resume from agents' own history (Claude `~/.claude/projects`, …) — deferred; check memex overlap first.
+Lives on Linear (above). Filed 2026-09-13 from braintrust round `~/code/notes/braintrust/rounds/2026-09-13-cowbell-roadmap/synthesis.md`: Split (Now) LAB-247–253, Harness D (Next) LAB-254–256, Reach (Later) LAB-257–261. Update the `Locked:` line when you claim an issue that touches `cowbell.py`.
 
 ## Related
 
