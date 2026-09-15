@@ -57,6 +57,17 @@ Live probe: `herdmark new --harness grok --name herdmark-probe` created tab `w1A
 - Config and state moved to `~/.config/cowbell/` and `~/.local/state/cowbell/` (`COWBELL_CONFIG_DIR` / `COWBELL_STATE_DIR`, then XDG homes). herdr's plugin dirs are only a migration source: copied once, originals untouched, dated copies in `migration-backup/`, `.migrated_from` marker. Migrated on this laptop 2026-09-15 11:41 (catalog byte-identical; 26 roster rows).
 - `schema = 1` in the seed catalog and in every roster save; a newer schema is read but never overwritten (`SchemaError`). `check_writable()` is what LAB-254's writer must call.
 
+## 2026-09-15 — LAB-258: herdr-seats retired
+
+Patron: no reason to keep the tree. Never on GitHub (no remote; `gh repo view charlesberret/herdr-seats` 404). Plugin unlinked; `prefix+shift+s` removed from `~/.config/herdr/config.toml` (backup beside it). Tree moved to `~/code/_archive/herdr-seats`. All 10 seats.json names are on the cowbell roster (`source = herdr-seats`). Plugin config `seats.json` left in place for `import-seats`.
+
+## 2026-09-15 — LAB-262: places
+
+- `[places.<name>]` in the config-dir catalog: `cwd`, `workspace_label` (the herdr pen), `allow_harness`, `lane`. `[defaults] untitled_place` names where a sitting from `~` goes. Set on this laptop: `untitled_place = "lobby"`, `[places.lobby]` → `~/code/agent-lobby`, pen `lobby`, claude + grok, yellow (backup `~/.config/cowbell/migration-backup/harnesses.toml.pre-places-20260915-115853`).
+- Picker, `status`, `new`, bare `cowbell <harness>`: root `~` → the untitled place; a place's catalog shows only its harnesses; a raise at/under a place opens a tab in the workspace labelled `workspace_label` (created if missing), never the caller's workspace. `cowbell new --place <name>`.
+- Fix found on the way: a command typed in a herdr pane used the *pane's* cwd (asked herdr) instead of its own; now only plugin-launched processes (`HERDR_PLUGIN_ROOT`) ask herdr.
+- Live 2026-09-15 12:00: `cowbell new --harness grok --name untitled` from `~` created workspace `w1C lobby`, cwd = the pad; `home ~` unchanged; the sitting wrote `visitors/2026-09-15-untitled/` + one GUESTBOOK row. A separate `w1B proj:agent-lobby` workspace exists (not cowbell's); left alone.
+
 ## Plan
 
 Lives on Linear (above). Filed 2026-09-13 from braintrust round `~/code/notes/braintrust/rounds/2026-09-13-cowbell-roadmap/synthesis.md`: Split (Now) LAB-247–253, Harness D (Next) LAB-254–256, Reach (Later) LAB-257–261. Update the `Locked:` line when you claim an issue that touches `cowbell.py`.
