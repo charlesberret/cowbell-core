@@ -51,6 +51,12 @@ Live probe: `herdmark new --harness grok --name herdmark-probe` created tab `w1A
 - Decisions (Charles, 2026-09-13): opens in this terminal; running = herdr + any agent process; bare `cowbell`.
 - Verified: 40 unit tests; pty runs of bare `cowbell` outside herdr (herdr row + process row, process-row message, stand-in agent exec'd in the right cwd, resume row).
 
+## 2026-09-15 — LAB-247, LAB-248
+
+- `cowbell --version` → `cowbell 0.3.0`; `__version__` kept equal to `herdr-plugin.toml` by test.
+- Config and state moved to `~/.config/cowbell/` and `~/.local/state/cowbell/` (`COWBELL_CONFIG_DIR` / `COWBELL_STATE_DIR`, then XDG homes). herdr's plugin dirs are only a migration source: copied once, originals untouched, dated copies in `migration-backup/`, `.migrated_from` marker. Migrated on this laptop 2026-09-15 11:41 (catalog byte-identical; 26 roster rows).
+- `schema = 1` in the seed catalog and in every roster save; a newer schema is read but never overwritten (`SchemaError`). `check_writable()` is what LAB-254's writer must call.
+
 ## Plan
 
 Lives on Linear (above). Filed 2026-09-13 from braintrust round `~/code/notes/braintrust/rounds/2026-09-13-cowbell-roadmap/synthesis.md`: Split (Now) LAB-247–253, Harness D (Next) LAB-254–256, Reach (Later) LAB-257–261. Update the `Locked:` line when you claim an issue that touches `cowbell.py`.
