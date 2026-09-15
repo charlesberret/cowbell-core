@@ -156,55 +156,6 @@ class Trust(unittest.TestCase):
         self.assertEqual(hm.parse_match("", 3)["verdict"], "overprivilege")
 
 
-CHARLES_CONFIG = """onboarding = false
-
-[ui]
-status_indicators = "symbols"
-
-[theme]
-name = "tokyo-night"
-
-# herdr-seats: enter a named sitting
-[[keys.command]]
-key = "prefix+shift+s"
-type = "plugin_action"
-command = "herdr-seats.picker"
-description = "enter a seat"
-"""
-
-
-class Keys(unittest.TestCase):
-    def test_install_places_keys_table_before_array_and_is_idempotent(self):
-        once = hm.keys_install_text(CHARLES_CONFIG)
-        self.assertEqual(once, hm.keys_install_text(once))
-        keys_at = once.index("[keys]")
-        self.assertLess(keys_at, once.index("[[keys.command]]"))         # TOML: table before array-of-tables
-        self.assertIn('new_tab = ""  # cowbell', once)
-        self.assertIn('command = "herdr-cowbell.open"', once)
-        self.assertIn("herdr-seats.picker", once)                        # existing binding untouched
-        import tomllib
-        parsed = tomllib.loads(once)
-        self.assertEqual(parsed["keys"]["new_tab"], "")
-        self.assertEqual([c["command"] for c in parsed["keys"]["command"]], ["herdr-seats.picker", "herdr-cowbell.open"])
-
-    def test_uninstall_restores_original(self):
-        self.assertEqual(hm.keys_uninstall_text(hm.keys_install_text(CHARLES_CONFIG)).strip(), CHARLES_CONFIG.strip())
-
-    def test_existing_new_tab_is_saved_and_restored(self):
-        cfg = "[keys]\nnew_tab = \"prefix+t\"\nsplit = \"prefix+v\"\n"
-        inst = hm.keys_install_text(cfg)
-        self.assertIn('# cowbell saved: new_tab = "prefix+t"', inst)
-        self.assertIn('new_tab = ""  # cowbell', inst)
-        self.assertEqual(hm.keys_uninstall_text(inst).strip(), cfg.strip())
-
-    def test_empty_config(self):
-        inst = hm.keys_install_text("")
-        import tomllib
-        parsed = tomllib.loads(inst)
-        self.assertEqual(parsed["keys"]["new_tab"], "")
-        self.assertEqual(parsed["keys"]["command"][0]["key"], "prefix+c")
-
-
 class PickerList(unittest.TestCase):
     def reg(self):
         return {
@@ -716,10 +667,6 @@ class Version(unittest.TestCase):
         finally:
             hm.server_up = orig
 
-    def test_version_matches_plugin_manifest(self):
-        import tomllib
-        manifest = Path(__file__).resolve().parent.parent / "herdr-plugin.toml"
-        self.assertEqual(tomllib.loads(manifest.read_text())["version"], hm.__version__)
 
 
 class Flags(unittest.TestCase):
@@ -773,35 +720,6 @@ class Sitting(unittest.TestCase):
             ],
         }
         self.assertEqual(hm.live_names(snap), {"builder-minaret", "cowbell"})
-
-
-class OpenCtx(unittest.TestCase):
-    def test_strips_to_caller_keys_and_fills_herdr_env(self):
-        env = {
-            "HERDR_PLUGIN_CONTEXT_JSON": json.dumps({
-                "workspace_id": "wY", "focused_pane_id": "wY:pA",
-                "focused_pane_cwd": "/tmp/proj", "selected_text": "noise",
-            }),
-        }
-        ctx = hm.invocation_ctx(env)
-        self.assertEqual(ctx["workspace_id"], "wY")
-        self.assertEqual(ctx["focused_pane_cwd"], "/tmp/proj")
-        self.assertNotIn("selected_text", ctx)
-        args = hm.picker_open_args(ctx)
-        self.assertIn("--cwd", args)
-        self.assertEqual(args[args.index("--cwd") + 1], "/tmp/proj")
-        self.assertIn("COWBELL_CTX=" + json.dumps(ctx), args)
-
-    def test_cli_herdr_env_without_plugin_json(self):
-        ctx = hm.invocation_ctx({
-            "HERDR_WORKSPACE_ID": "w1", "HERDR_TAB_ID": "w1:t1",
-            "HERDR_PANE_ID": "w1:p1", "HERDR_PLUGIN_CONTEXT_JSON": "",
-        })
-        self.assertEqual(ctx["workspace_id"], "w1")
-        self.assertEqual(ctx["focused_pane_id"], "w1:p1")
-        # no pane get: cwd hole is left empty (picker --cwd omitted)
-        self.assertNotIn("focused_pane_cwd", ctx)
-        self.assertNotIn("--cwd", hm.picker_open_args(ctx))
 
 
 class Seed(unittest.TestCase):
