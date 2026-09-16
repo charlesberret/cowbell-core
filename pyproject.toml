@@ -8,6 +8,8 @@ dynamic = ["version"]
 description = "pick an agent for this directory: running, resume, or new"
 readme = { text = "cowbell picks a coding agent for the directory you are in: one already running, a session to resume, or a new one. It runs in any terminal and is the engine behind the herdr plugin herdr-cowbell. Stdlib only, python 3.11 or newer.\n", content-type = "text/markdown" }
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Charles Berret" }]
 dependencies = []
 classifiers = [
@@ -30,4 +32,4 @@ only-include = ["cowbell.py"]
 "harnesses.toml" = "share/cowbell/harnesses.toml"
 
 [tool.hatch.build.targets.sdist]
-only-include = ["cowbell.py", "harnesses.toml", "README.md", "tests"]
+only-include = ["cowbell.py", "harnesses.toml", "README.md", "LICENSE", "tests"]
