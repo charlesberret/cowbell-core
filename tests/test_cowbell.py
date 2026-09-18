@@ -1,9 +1,10 @@
 import json
-import re
 import os
+import re
 import sys
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -815,6 +816,67 @@ class Seed(unittest.TestCase):
         cat = tomllib.loads(seed.read_text())
         self.assertFalse([h["id"] for h in cat["harness"] if "command" in h])   # no house wrappers
         self.assertFalse(cat["defaults"]["ask_name"])
+
+
+class EmptyLive(hm.LiveSource):
+    def snapshot(self):
+        return {"agents": [], "tabs": []}
+
+
+class RaiseCLI(unittest.TestCase):
+    """LAB-296: new --place --harness --name is the assembly primitive; N raises return."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.place = Path(self.tmp.name) / "lab"
+        self.place.mkdir()
+        self.state = Path(self.tmp.name) / "state"
+        self.state.mkdir()
+        os.environ["COWBELL_STATE_DIR"] = str(self.state)
+        self.addCleanup(lambda: os.environ.pop("COWBELL_STATE_DIR", None))
+        warnings.filterwarnings("ignore", category=ResourceWarning)
+        (self.state / "roster.json").write_text(json.dumps({"schema": 1, "harnesses": []}))
+        self.cat = {
+            "defaults": {"lane": "yellow"},
+            "lanes": {},
+            "places": {"lab": {"cwd": str(self.place)}},
+            "harness": [{
+                "id": "true", "kind": "true", "family": "true", "egress": "local",
+                "trust_tool": "true", "models": [],
+            }],
+        }
+        self._gate = hm.gate
+        hm.gate = lambda *a, **k: {"verdict": "ok"}
+        self.addCleanup(lambda: setattr(hm, "gate", self._gate))
+
+    def test_spawn_flag(self):
+        opts, _ = hm.parse_flags(["--spawn", "--name", "seat-a", "--place", "lab"])
+        self.assertTrue(opts.get("spawn"))
+        self.assertEqual(opts.get("name"), "seat-a")
+
+    def test_n_spawn_raises_distinct_pids_and_roster(self):
+        ctx = hm.Ctx(cwd="/tmp", mode="here", live=EmptyLive(), launch=hm.HereLaunch())
+        hm.cmd_new(ctx, self.cat, "true", name="seat-a", place="lab", spawn=True, no_seat=True, assume_yes=True)
+        hm.cmd_new(ctx, self.cat, "true", name="seat-b", place="lab", spawn=True, no_seat=True, assume_yes=True)
+        rows = {r["name"]: r for r in hm.load_roster()}
+        self.assertEqual(set(rows), {"seat-a", "seat-b"})
+        root = str(self.place.resolve())
+        self.assertEqual(rows["seat-a"]["cwd"], root)
+        self.assertEqual(rows["seat-b"]["cwd"], root)
+        self.assertEqual(rows["seat-a"]["harness"], "true")
+        self.assertNotEqual(rows["seat-a"]["pane_id"], rows["seat-b"]["pane_id"])
+        self.assertTrue(str(rows["seat-a"]["pane_id"]).startswith("pid:"))
+        self.assertTrue(str(rows["seat-b"]["pane_id"]).startswith("pid:"))
+        for r in rows.values():
+            try:
+                os.waitpid(int(str(r["pane_id"]).split(":")[1]), 0)
+            except ChildProcessError:
+                pass
+
+    def test_here_launch_auto_spawns_when_not_a_tty(self):
+        host = hm.HereLaunch()
+        self.assertFalse(host.tabs)
 
 
 if __name__ == "__main__":
