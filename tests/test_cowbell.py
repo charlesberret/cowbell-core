@@ -75,6 +75,14 @@ class Scope(unittest.TestCase):
         self.assertEqual(hm.unique_name("a", {"a", "a-2"}), "a-3")
 
 
+class Flags(unittest.TestCase):
+    def test_json_flag(self):
+        opts, pos = hm.parse_flags(["--json", "--place", "lobby"])
+        self.assertTrue(opts.get("json"))
+        self.assertEqual(opts.get("place"), "lobby")
+        self.assertEqual(pos, [])
+
+
 class Argv(unittest.TestCase):
     def test_claude_full(self):
         h = hm.harness_by_id(CAT, "claude")
@@ -148,6 +156,34 @@ class Registry(unittest.TestCase):
     def test_empty_root(self):
         reg = hm.build_registry(CAT, "/nowhere", [], [], [], matcher=self.matcher)
         self.assertIn("nothing raised here yet", hm.render_registry(reg))
+
+    def test_status_json_keys(self):
+        # Fake live source: the same agents/panes/roster the partition test uses.
+        reg = hm.build_registry(CAT, ROOT, self.agents, self.panes, self.roster, matcher=self.matcher)
+        place = {"name": "nomogenesis", "cwd": ROOT}
+        payload = hm.registry_json(reg, place)
+        json.dumps(payload)  # must be serializable
+        self.assertEqual(payload["root"], ROOT)
+        self.assertEqual(payload["place"], "nomogenesis")
+        self.assertEqual({k for k in payload}, {"root", "place", "running", "resume", "new"})
+        keys = {"sitting", "harness", "place", "cwd", "host", "state"}
+        for row in payload["running"]:
+            self.assertTrue(keys <= set(row))
+            self.assertTrue(row["harness"])
+            self.assertTrue(row["cwd"])
+            self.assertEqual(row["place"], "nomogenesis")
+            self.assertEqual(row["host"], "herdr pane")
+        self.assertEqual([r["sitting"] for r in payload["running"]], ["majordomo", "ballots"])
+        resume = {r["sitting"]: r for r in payload["resume"]}
+        self.assertEqual(resume["old-codex"]["host"], "none")
+        self.assertEqual(resume["kimi-notes"]["host"], "herdr pane")
+        self.assertTrue(payload["new"])
+        self.assertTrue(all(n["state"] == "new" and n["host"] == "none" for n in payload["new"]))
+
+    def test_row_host_tty_from_process_scan(self):
+        self.assertEqual(hm.row_host({"pane_id": "pid:412", "tty": "ttys002"}), "tty")
+        self.assertEqual(hm.row_host({"pane_id": "wK:p1"}), "herdr pane")
+        self.assertEqual(hm.row_host({}), "none")
 
 
 class Trust(unittest.TestCase):
