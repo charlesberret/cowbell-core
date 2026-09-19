@@ -823,6 +823,17 @@ class EmptyLive(hm.LiveSource):
         return {"agents": [], "tabs": []}
 
 
+class OneLive(hm.LiveSource):
+    def __init__(self, row):
+        self.row = row
+
+    def agents(self):
+        return [self.row]
+
+    def snapshot(self):
+        return {"agents": [self.row], "tabs": [{"tab_id": self.row.get("tab_id"), "label": "majordomo"}]}
+
+
 class RaiseCLI(unittest.TestCase):
     """LAB-296: new --place --harness --name is the assembly primitive; N raises return."""
 
@@ -877,6 +888,54 @@ class RaiseCLI(unittest.TestCase):
     def test_here_launch_auto_spawns_when_not_a_tty(self):
         host = hm.HereLaunch()
         self.assertFalse(host.tabs)
+
+
+class Adopt(unittest.TestCase):
+    """LAB-293: cowbell adopt is a core command; no herdr required for a process-scan row."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.state = Path(self.tmp.name) / "state"
+        self.state.mkdir()
+        os.environ["COWBELL_STATE_DIR"] = str(self.state)
+        self.addCleanup(lambda: os.environ.pop("COWBELL_STATE_DIR", None))
+        (self.state / "roster.json").write_text(json.dumps({"schema": 1, "harnesses": []}))
+        self.row = agent("pid:42", "grok", ROOT, "running", "majordomo")
+        self.row["pid"] = 42
+        self.row["tty"] = "ttys002"
+        self.row["tab_id"] = "w1:t1"
+        self.ctx = hm.Ctx(cwd=ROOT, mode="here", live=OneLive(self.row), launch=hm.HereLaunch())
+
+    def test_adopt_help(self):
+        rc = hm.main(["adopt", "--help"])
+        self.assertEqual(rc, 0)
+
+    def test_adopt_writes_roster_and_status_running(self):
+        row = hm.cmd_adopt(self.ctx, CAT, name="majordomo")
+        self.assertEqual(row["name"], "majordomo")
+        self.assertEqual(row["harness"], "grok")
+        self.assertEqual(row["source"], "adopt")
+        self.assertEqual(row["pane_id"], "pid:42")
+        roster = hm.load_roster()
+        self.assertEqual(len(roster), 1)
+        self.assertEqual(roster[0]["name"], "majordomo")
+        reg = hm.build_registry(CAT, ROOT, [self.row], [{"pane_id": "pid:42"}], roster,
+                                matcher=lambda _t: {"verdict": "ok"})
+        self.assertEqual(reg["live"][0]["name"], "majordomo")
+        self.assertTrue(reg["live"][0]["on_roster"])
+        payload = hm.registry_json(reg)
+        self.assertEqual(payload["running"][0]["sitting"], "majordomo")
+        self.assertEqual(payload["running"][0]["harness"], "grok")
+
+    def test_adopt_pane_flag(self):
+        hm.cmd_adopt(self.ctx, CAT, pane_id="pid:42")
+        self.assertEqual(hm.load_roster()[0]["pane_id"], "pid:42")
+
+    def test_adopt_missing_pane(self):
+        with self.assertRaises(SystemExit) as e:
+            hm.cmd_adopt(self.ctx, CAT, pane_id="w9:p9")
+        self.assertIn("no live agent", str(e.exception))
 
 
 if __name__ == "__main__":

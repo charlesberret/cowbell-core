@@ -20,7 +20,7 @@ Release notes before the split (0.2.0, 0.3.0, LAB-247, LAB-248, LAB-262, LAB-249
 - Cloned from `herdr-cowbell` with full history and tags (`v0.2.0`, `v0.3.0`); origin remote removed (local-only). See README § Provenance.
 - Removed from the core, kept in the plugin: `herdr-plugin.toml`, `cmd_open` / `invocation_ctx` / `picker_open_args`, the keybinding installer, `adopt`, `stop`, `import-seats`, the picker's hidden `a` key. `write_atomic` stays (the harness writer, LAB-254, needs it).
 - `PLUGIN_ID` remains only to find 0.1–0.3 config and state in herdr's plugin dirs for the one-time migration.
-- The house launcher now points here. From a plain `cowbell` you lose `adopt`, `stop`, `import-seats`, `keys` and `open`; until LAB-252 they still run from `~/code/herdr-cowbell/bin/cowbell`, and `prefix+c` is unaffected.
+- The house launcher now points here. From a plain `cowbell` you lose `stop`, `import-seats`, `keys` and `open` (plugin doors). **LAB-293:** `cowbell adopt` is in this core.
 
 ## 2026-09-15 — LAB-272: PyPI packaging (not uploaded)
 
