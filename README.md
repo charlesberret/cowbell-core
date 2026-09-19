@@ -8,7 +8,7 @@ it. Resume is the sessions cowbell can pick up again. New is the agents in your
 catalog that are installed and allowed here, most used here first.
 
 ```
-  ~/code/notes/nomogenesis            g widen to metawork · 4 running
+  ~/code/projects/acme                         g widen to projects · 4 running
 
   Running
     1  nomogenesis-claude     claude      idle
@@ -50,8 +50,16 @@ command read the same catalog and roster, so a session started in one resumes in
 - **Enter on New** opens the agent at once with an automatic name (`claude`,
   `claude-2`) and the default permissions; `[defaults] ask_name = true` asks for the
   name first. `n` asks for agent, name, model, and permissions.
-- **Trust** appears only if `agent-deck-trust` is on PATH, and only as an exception:
-  `! asks first` on an over-privileged row. Blocked agents are left off.
+- **Trust** appears only if a checker is configured and on PATH, and only as an
+  exception: `! asks first` on an over-privileged row. Blocked agents are left off.
+
+Two hooks let cowbell use tools it does not own, both set in `[defaults]`:
+
+- `trust_command` — a program asked `subject <path>`, `match <harness> <path>` and
+  `badge <harness>`; exit 4 refuses, 3 warns and asks. Unset, or not on PATH, and
+  no trust marks appear at all.
+- `seat_file` — a briefing file (default `SEAT.md`) found by walking up from the
+  directory and handed to a harness through its `system_prompt_flag`.
 
 ## Catalog, places, state
 
@@ -70,7 +78,7 @@ A directory can have its own rules:
 untitled_place = "lobby"          # a sitting started from ~ opens here instead
 
 [places.lobby]
-cwd = "~/code/agent-lobby"
+cwd = "~/code/projects/acme"
 workspace_label = "lobby"         # herdr workspace its sittings open in (created if missing)
 allow_harness = ["lobby", "claude", "grok"]
 default_harness = "lobby"         # guest door; `new --place lobby` with no --harness
@@ -113,7 +121,7 @@ pseudo-terminal. The code keeps two seams: `ctx.live` (what is running) and
 
 ## Provenance
 
-This tree was cloned from `~/code/herdr-cowbell` on 2026-09-15, with its
+This tree was split out of the herdr plugin `herdr-cowbell` on 2026-09-15, with its
 full history and tags. It carries tag `v0.3.0` (`84d223b`) and the commits after it:
 `941ed40` (plan moves to Linear), `5ce4be2` (`--version`, LAB-247), `f67a8b3` (XDG
 config and state, LAB-248), `f095314` (places, LAB-262), `70fc3e2` (host seams,

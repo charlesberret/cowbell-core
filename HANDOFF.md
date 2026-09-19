@@ -2,7 +2,7 @@
 
 Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 (protocol: document "Cowbell — agent handoff")
 Milestone: Split (Now)
-Locked: none
+Locked: LAB-318
 
 ## 2026-09-15 — Guest wall (agent-lobby)
 

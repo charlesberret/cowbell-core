@@ -39,7 +39,7 @@ CAT = {
          "models": [], "command": "/nonexistent/local-ornith", "resume": ["--continue"]},
     ],
 }
-ROOT = "/Users/x/code/notes/nomogenesis"
+ROOT = "/Users/x/code/projects/acme"
 
 
 def agent(pane, kind, cwd, status="idle", title="", sid="s1"):
@@ -53,7 +53,7 @@ class Scope(unittest.TestCase):
         self.assertTrue(hm.at_or_beneath(ROOT + "/ballots", ROOT))
         self.assertFalse(hm.at_or_beneath("/Users/x", ROOT))            # above never counts
         self.assertFalse(hm.at_or_beneath(ROOT + "-core", ROOT))        # sibling with prefix
-        self.assertFalse(hm.at_or_beneath("/Users/x/code/notes", ROOT))
+        self.assertFalse(hm.at_or_beneath("/Users/x/code/projects", ROOT))
 
     def test_seat_file_walks_up_and_stops_at_home(self):
         # Same semantics as code/bin/lib/pi-project-seat.sh: check each dir up to and
@@ -141,7 +141,7 @@ class Registry(unittest.TestCase):
 
     def test_render_mentions_sections(self):
         reg = hm.build_registry(CAT, ROOT, self.agents, self.panes, self.roster, matcher=self.matcher, subject="internal")
-        text = hm.render_registry(reg, git_top="/Users/x/code/notes", wider=3)
+        text = hm.render_registry(reg, git_top="/Users/x/code/projects", wider=3)
         for needle in ("LIVE HERE", "COLD HERE", "ABSENT HERE", "majordomo", "kimi-notes", "local-ornith ⌂⊘",
                        "omp ↑ok", "[g] widen", "subject: internal"):
             self.assertIn(needle, text)
@@ -167,15 +167,15 @@ class Registry(unittest.TestCase):
         self.assertEqual(payload["root"], ROOT)
         self.assertEqual(payload["place"], "nomogenesis")
         self.assertEqual({k for k in payload}, {"root", "place", "running", "resume", "new"})
-        keys = {"sitting", "harness", "place", "cwd", "host", "state"}
+        keys = {"name", "harness", "place", "cwd", "host", "state"}
         for row in payload["running"]:
             self.assertTrue(keys <= set(row))
             self.assertTrue(row["harness"])
             self.assertTrue(row["cwd"])
             self.assertEqual(row["place"], "nomogenesis")
             self.assertEqual(row["host"], "herdr pane")
-        self.assertEqual([r["sitting"] for r in payload["running"]], ["majordomo", "ballots"])
-        resume = {r["sitting"]: r for r in payload["resume"]}
+        self.assertEqual([r["name"] for r in payload["running"]], ["majordomo", "ballots"])
+        resume = {r["name"]: r for r in payload["resume"]}
         self.assertEqual(resume["old-codex"]["host"], "none")
         self.assertEqual(resume["kimi-notes"]["host"], "herdr pane")
         self.assertTrue(payload["new"])
@@ -241,9 +241,9 @@ class PickerList(unittest.TestCase):
     def test_widen_only_when_it_shows_more(self):
         reg = self.reg()
         choices = hm.picker_choices(reg, [])
-        self.assertNotIn("widen", hm.render_picker(reg, choices, "/Users/x/code/notes", wider=2))
-        self.assertIn("g widen to metawork · 5 running",
-                      hm.render_picker(reg, choices, "/Users/x/code/notes", wider=5))
+        self.assertNotIn("widen", hm.render_picker(reg, choices, "/Users/x/code/projects", wider=2))
+        self.assertIn("g widen to projects · 5 running",
+                      hm.render_picker(reg, choices, "/Users/x/code/projects", wider=5))
 
     def test_fold_and_numbers_skip_more_row(self):
         reg = self.reg()
@@ -925,7 +925,7 @@ class Adopt(unittest.TestCase):
         self.assertEqual(reg["live"][0]["name"], "majordomo")
         self.assertTrue(reg["live"][0]["on_roster"])
         payload = hm.registry_json(reg)
-        self.assertEqual(payload["running"][0]["sitting"], "majordomo")
+        self.assertEqual(payload["running"][0]["name"], "majordomo")
         self.assertEqual(payload["running"][0]["harness"], "grok")
 
     def test_adopt_pane_flag(self):
@@ -936,6 +936,50 @@ class Adopt(unittest.TestCase):
         with self.assertRaises(SystemExit) as e:
             hm.cmd_adopt(self.ctx, CAT, pane_id="w9:p9")
         self.assertIn("no live agent", str(e.exception))
+
+
+class ExtensionPoints(unittest.TestCase):
+    """The two hooks onto tools cowbell does not own (LAB-318)."""
+
+    def setUp(self):
+        self._ext = dict(hm.EXT)
+
+    def tearDown(self):
+        hm.EXT.clear(); hm.EXT.update(self._ext)
+
+    def test_defaults_are_not_house_specific(self):
+        self.assertEqual(hm.EXT["trust_command"], "harness-trust")
+        self.assertEqual(hm.EXT["seat_file"], "SEAT.md")
+
+    def test_catalog_overrides_both(self):
+        hm.apply_ext({"defaults": {"trust_command": "my-checker", "seat_file": "BRIEF.md"}})
+        self.assertEqual(hm.EXT["trust_command"], "my-checker")
+        self.assertEqual(hm.EXT["seat_file"], "BRIEF.md")
+
+    def test_blank_override_keeps_the_default(self):
+        hm.apply_ext({"defaults": {"trust_command": "   "}})
+        self.assertEqual(hm.EXT["trust_command"], "harness-trust")
+
+    def test_missing_checker_means_no_verdicts(self):
+        hm.EXT["trust_command"] = "cowbell-no-such-checker-xyz"
+        self.assertFalse(hm.trust_available())
+        self.assertEqual(hm.trust_subject("/tmp"), "?")
+        self.assertEqual(hm.trust_badge("claude"), "?")
+        self.assertEqual(hm.trust_match("claude", "/tmp")["verdict"], "unknown")
+
+    def test_seat_file_honours_the_configured_name(self):
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "BRIEF.md").write_text("brief\n")
+            self.assertIsNone(hm.seat_file(td, home=td))
+            hm.EXT["seat_file"] = "BRIEF.md"
+            found = hm.seat_file(td, home=str(Path(td).parent))
+            self.assertEqual(Path(found).name, "BRIEF.md")
+
+    def test_both_spellings_of_the_prompt_flag(self):
+        self.assertEqual(hm.prompt_flag({"system_prompt_flag": "--sys"}), "--sys")
+        self.assertEqual(hm.prompt_flag({"seat_flag": "--old"}), "--old")
+        self.assertEqual(hm.prompt_flag({"system_prompt_flag": "--sys", "seat_flag": "--old"}), "--sys")
+        self.assertIsNone(hm.prompt_flag({}))
 
 
 if __name__ == "__main__":

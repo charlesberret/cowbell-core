@@ -5,7 +5,7 @@
                                 piped: the long registry, same as `cowbell status`
   cowbell --version             one line, `cowbell X.Y.Z` (the plugin shim compares it)
   cowbell status [--json] [--place P]   what is raised here (running · resume · new)
-                                --json: machine rows (sitting, harness, place, cwd, host, state)
+                                --json: machine rows (name, harness, place, cwd, host, state)
   cowbell <harness>             attach to that harness here, or raise it with defaults
   cowbell new --harness ID [--model M] [--lane L] [--allow T] [--deny T] [--name N] [--place P] [--spawn]
                                 --spawn: start and return (assemblies raise N times). default: exec here
@@ -57,7 +57,7 @@ class HerdrError(RuntimeError):
 
 
 # --- colour ------------------------------------------------------------------
-# House Kettle Dark (~/.config/herdr/config.toml [theme.custom]). Mostly grey
+# Palette: mostly grey, with one accent. Reads the terminal theme, not a config file.
 # hierarchy; gold is spent on the one thing to press (the numbers and the prompt).
 # State words borrow the sidebar's chroma; red only for a trust warning.
 
@@ -260,11 +260,11 @@ def git_root(path: str) -> str | None:
 
 
 def seat_file(root: str, home: str | None = None) -> Path | None:
-    """Nearest SEAT.md walking up from root, stopping at $HOME (never inject home)."""
+    """Nearest EXT["seat_file"] walking up from root, stopping at $HOME (never inject home)."""
     home = os.path.realpath(home or Path.home())
     d = os.path.realpath(root)
     while True:
-        cand = Path(d) / "SEAT.md"
+        cand = Path(d) / EXT["seat_file"]
         if cand.is_file():
             return cand
         if d in (home, "/"):
@@ -305,6 +305,26 @@ def unique_name(base: str, taken: set[str]) -> str:
 
 # --- catalog -------------------------------------------------------------------
 
+# Two hooks onto tools cowbell does not own, overridable in [defaults].
+# trust_command: asked `subject <path>`, `match <tool> <path>`, `badge <tool>`;
+# absent from PATH means no trust verdicts at all. seat_file: a brief found by
+# walking up from the directory, handed to a harness via its system_prompt_flag.
+EXT = {"trust_command": "harness-trust", "seat_file": "SEAT.md"}
+
+
+def apply_ext(cat: dict) -> None:
+    d = cat.get("defaults", {})
+    for key in EXT:
+        v = d.get(key)
+        if isinstance(v, str) and v.strip():
+            EXT[key] = v.strip()
+
+
+def prompt_flag(h: dict) -> str | None:
+    """Flag that hands a harness a system-prompt file (`seat_flag` until 0.3)."""
+    return h.get("system_prompt_flag") or h.get("seat_flag")
+
+
 def load_catalog() -> dict:
     if tomllib is None:
         raise SystemExit("cowbell: python >= 3.11 required (tomllib)")
@@ -316,6 +336,7 @@ def load_catalog() -> dict:
     cat.setdefault("schema", 1)  # a catalog without the key predates it and is schema 1
     cat.setdefault("defaults", {})
     cat.setdefault("lanes", {})
+    apply_ext(cat)
     for h in cat.get("harness", []):
         h.setdefault("kind", h["id"])
         h.setdefault("family", h["kind"])
@@ -432,16 +453,16 @@ def tab_labels(snap: dict) -> dict[str, str]:
     return {t["tab_id"]: (t.get("label") or "") for t in snap.get("tabs") or [] if t.get("tab_id")}
 
 
-# --- trust (delegated to agent-deck-trust; never re-encoded here) --------------------
+# --- trust (delegated to EXT["trust_command"]; never re-encoded here) ----------------
 
 def trust_available() -> bool:
-    return shutil.which("agent-deck-trust") is not None
+    return shutil.which(EXT["trust_command"]) is not None
 
 
 def trust_subject(root: str) -> str:
     if not trust_available():
         return "?"
-    proc = subprocess.run(["agent-deck-trust", "subject", root], capture_output=True, text=True)
+    proc = subprocess.run([EXT["trust_command"], "subject", root], capture_output=True, text=True)
     return proc.stdout.strip() or "?"
 
 
@@ -462,7 +483,7 @@ def parse_match(text: str, code: int) -> dict:
 def trust_match(tool: str, root: str) -> dict:
     if not trust_available():
         return {"verdict": "unknown", "flag": "?", "exit": -1}
-    proc = subprocess.run(["agent-deck-trust", "match", tool, root], capture_output=True, text=True)
+    proc = subprocess.run([EXT["trust_command"], "match", tool, root], capture_output=True, text=True)
     if proc.returncode not in (0, 3, 4):
         return {"verdict": "unknown", "flag": "?", "exit": proc.returncode}
     return parse_match(proc.stdout, proc.returncode)
@@ -471,7 +492,7 @@ def trust_match(tool: str, root: str) -> dict:
 def trust_badge(tool: str) -> str:
     if not trust_available():
         return "?"
-    proc = subprocess.run(["agent-deck-trust", "badge", tool], capture_output=True, text=True)
+    proc = subprocess.run([EXT["trust_command"], "badge", tool], capture_output=True, text=True)
     return proc.stdout.strip() or "?"
 
 
@@ -558,7 +579,7 @@ def registry_json(reg: dict, place: dict | None = None) -> dict:
 
     def sitting_row(r: dict) -> dict:
         return {
-            "sitting": r.get("name") or "",
+            "name": r.get("name") or "",
             "harness": r.get("harness") or r.get("kind") or "",
             "place": place_name,
             "cwd": r.get("cwd") or "",
@@ -570,7 +591,7 @@ def registry_json(reg: dict, place: dict | None = None) -> dict:
 
     def new_row(a: dict) -> dict:
         return {
-            "sitting": "",
+            "name": "",
             "harness": a.get("harness") or "",
             "place": place_name,
             "cwd": root,
@@ -793,8 +814,8 @@ def build_argv(cat: dict, h: dict, model: str = "", lane: str = "", allow: str =
         argv += [h["tools_allow_flag"], allow]
     if deny and h.get("tools_deny_flag"):
         argv += [h["tools_deny_flag"], deny]
-    if seat and h.get("seat_flag"):
-        argv += [h["seat_flag"], str(seat)]  # claude takes -file; pi's --append-system-prompt accepts a path
+    if seat and prompt_flag(h):
+        argv += [prompt_flag(h), str(seat)]  # claude takes -file; pi's --append-system-prompt accepts a path
     argv += claim_argv(h, sitting, agents_dir=agents_dir)
     if resume_id:
         spec = list(h.get("resume") or [])
@@ -1506,7 +1527,7 @@ def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="",
     if lane and lane not in LANES:
         raise SystemExit(f"cowbell: lane must be one of {', '.join(LANES)}")
     model = model or (h["models"][0] if h["models"] else "")
-    seat = None if (no_seat or not h.get("seat_flag")) else seat_file(root)
+    seat = None if (no_seat or not prompt_flag(h)) else seat_file(root)
     gate(h, root, interactive=False, assume_yes=assume_yes)
     base = slug(name or h["id"])
     nm = unique_name(base, live_names(ctx.live.snapshot()) | {r["name"] for r in load_roster()})
@@ -1913,7 +1934,7 @@ def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
         if j is None:
             return False
         lane = LANES[j]
-    seat = seat_file(root) if h.get("seat_flag") else None
+    seat = seat_file(root) if prompt_flag(h) else None
     if v["verdict"] == "overprivilege":
         if ask(f"  {paint('!', RED, bold=True)} {h['id']} is over-privileged for {trust_subject(root)} work "
                f"({v['flag']}). start anyway? [y/N] ").lower() != "y":
@@ -1953,7 +1974,7 @@ def raise_quick(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
                f"({v['flag']}). start anyway? [y/N] ").lower() != "y":
             return False
     model = h["models"][0] if h["models"] else ""
-    seat = seat_file(root) if h.get("seat_flag") else None
+    seat = seat_file(root) if prompt_flag(h) else None
     pane = launch(cat, h, name, root, ctx, model, lane, "", "", seat)
     print(f"  started {name} in {pane['pane_id']}")
     return True
