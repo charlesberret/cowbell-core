@@ -4,6 +4,14 @@ Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 
 Milestone: Split (Now)
 Locked: none
 
+## 2026-09-20 — Wrangler accuracy batch: LAB-294, 295, 297, 298
+
+- **LAB-295 places**: `cowbell status` names the resolved place (header line + `--json`, matching the picker); tie rule documented (longest cwd wins, first declared on equal length); nested-place, status, and `new`/`--place` tests. Commit `9bd47f0`.
+- **LAB-294 identify**: live rows carry a harness id (roster first, then a kind only one catalog harness has, else the exe name) and the place their own cwd resolves to; `--json` rows report the row's place. Stub process-table tests cover the no-herdr path. Commit `ed0d169`.
+- **LAB-298 resume**: the seed documents the session-flag table — claude is resume-capable outside herdr (`--session-id` → `--resume`), every other seeded harness is honestly absent from Resume (its CLI picks ids cowbell cannot replay); status `--json` and the plain COLD HERE section filter sessionless rows like the picker always did. Commit `fb4fa07`.
+- **LAB-297 tokens**: one `pane report-metadata --source cowbell` per event cowbell owns — raise, adopt, or a state change seen in a picker refresh (diffed, never per-refresh); `$line1` = `<glyph> <sitting>` with the sidebar's glyph table; no `[[startup]]`, no clocks, bt-reporter stays disabled. Commit `1b21850`.
+- Vendored into the plugin: `herdr-cowbell` commit `19285a5` (cowbell 0.3.0 @ `1b21850`, plugin tests 17/17).
+
 ## 2026-09-15 — Guest wall (agent-lobby)
 
 Place `lobby` now admits harness `lobby` first (`default_harness`). Resume omits roster rows whose harness is not in `allow_harness` (cold `oll-memo` is not a guest). `cowbell new --place lobby` with no `--harness` uses the default. Claude/Grok remain allowed as house labor. Tests in `tests/test_cowbell.py` Places. House constitution `~/.config/cowbell/harnesses.toml`.
