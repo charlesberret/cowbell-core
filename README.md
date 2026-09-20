@@ -60,6 +60,10 @@ Two hooks let cowbell use tools it does not own, both set in `[defaults]`:
   no trust marks appear at all.
 - `seat_file` — a briefing file (default `SEAT.md`) found by walking up from the
   directory and handed to a harness through its `system_prompt_flag`.
+- `session_history` — `"on"` lets Resume read the stores the harnesses keep
+  themselves (`~/.claude/projects`, `~/.grok/sessions`), so a directory shows
+  every session it has seen, not just the ones cowbell started. Only ids, times
+  and titles are read; transcript bodies never are. Default `"off"`.
 
 ## Catalog, places, state
 
