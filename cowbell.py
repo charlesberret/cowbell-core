@@ -100,8 +100,10 @@ def verdict_cell(v: dict) -> str:
 
 
 def header(reg: dict, git_top: str | None, wider: int | None, widen_hint: bool = True) -> list[str]:
+    note = reg.get("place_note") or ""
     out = [f"  {paint('cowbell', INK, bold=True)}  {paint(tilde(reg['root']), SECONDARY)}   "
-           f"{paint('subject:', FAINT)} {paint(reg['subject'] or '?', MUTED)}"]
+           f"{paint('subject:', FAINT)} {paint(reg['subject'] or '?', MUTED)}"
+           + (f"   {paint('place:', FAINT)} {paint(note, MUTED)}" if note else "")]
     if git_top and os.path.realpath(git_top) != os.path.realpath(reg["root"]):
         hint = f"   ({wider} live under it)" if wider is not None else ""
         out.append(paint(f"  git root: {tilde(git_top)}{hint}", FAINT)
@@ -362,7 +364,8 @@ def places(cat: dict) -> dict[str, dict]:
 
 
 def place_for(cat: dict, root: str) -> dict | None:
-    """The deepest place whose directory holds root."""
+    """The deepest place whose directory holds root (longest cwd wins; equal-length
+    ties go to the first place declared in the catalog)."""
     hits = [p for p in places(cat).values() if at_or_beneath(os.path.realpath(root), p["cwd"])]
     return max(hits, key=lambda p: len(p["cwd"]), default=None)
 
@@ -1362,13 +1365,15 @@ def cmd_registry(ctx: Ctx, cat: dict, root: str | None = None, as_json: bool = F
         if not pl:
             raise SystemExit(f"cowbell: no place {place_name!r} in {catalog_path()} (have: {', '.join(places(cat)) or 'none'})")
         root = pl["cwd"]
-    root, place, _ = resolve_root(cat, root or ctx.cwd)
+    root, place, remapped = resolve_root(cat, root or ctx.cwd)
     cat = scoped_catalog(cat, place)
     rows = load_roster()
     ctx.live.refresh_sessions(rows)
     agents, panes = ctx.live.agents(), ctx.live.panes()
     reg = build_registry(cat, root, agents, panes, rows, subject=trust_subject(root),
                          tab_label=tab_labels(ctx.live.snapshot()))
+    if place:
+        reg["place_note"] = place["name"] + (" · from ~" if remapped and root == place["cwd"] else "")
     if as_json:
         print(json.dumps(registry_json(reg, place), indent=2))
         return reg

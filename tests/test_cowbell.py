@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import re
@@ -507,6 +509,55 @@ class Places(unittest.TestCase):
         self.assertIn("may not start in place lobby", str(e.exception))
         with self.assertRaises(SystemExit):
             hm.cmd_new(hm.Ctx(cwd=self.pad), self.cat, "grok", place="nowhere")
+
+    # --- LAB-295: nested cwds resolve to exactly one place ---
+
+    def _nested_cat(self):
+        """An inner place inside the lobby place: the inner one wins beneath its cwd."""
+        inner = os.path.join(self.pad, "visitors", "inner-pad")
+        os.makedirs(inner)
+        cat = {**self.cat, "places": {
+            **self.cat["places"],
+            "inner": {"cwd": inner, "workspace_label": "lobby", "allow_harness": ["grok"],
+                      "default_harness": "grok", "lane": "yellow"}}}
+        return cat, inner
+
+    def test_nested_places_resolve_to_the_inner_place(self):
+        cat, inner = self._nested_cat()
+        self.assertEqual(hm.resolve_root(cat, inner, home=self.home)[1]["name"], "inner")
+        self.assertEqual(hm.resolve_root(cat, os.path.join(inner, "deeper"), home=self.home)[1]["name"], "inner")
+        # a cwd under the parent but outside the inner place still names the parent
+        self.assertEqual(hm.resolve_root(cat, os.path.join(self.pad, "visitors"), home=self.home)[1]["name"],
+                         "lobby")
+
+    def test_status_names_the_place(self):
+        cat, inner = self._nested_cat()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            hm.cmd_registry(hm.Ctx(cwd=inner, mode="here"), cat)
+        self.assertIn("inner", buf.getvalue())
+
+    def test_status_json_names_the_place(self):
+        cat, inner = self._nested_cat()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            hm.cmd_registry(hm.Ctx(cwd=inner, mode="here"), cat, as_json=True)
+        self.assertEqual(json.loads(buf.getvalue())["place"], "inner")
+
+    def test_new_without_place_uses_the_nested_place(self):
+        cat, inner = self._nested_cat()
+        with self.assertRaises(SystemExit) as e:
+            hm.cmd_new(hm.Ctx(cwd=inner), cat, "codex")
+        self.assertIn("may not start in place inner", str(e.exception))
+
+    def test_place_flag_still_overrides_the_cwd_place(self):
+        cat, inner = self._nested_cat()
+        # codex is allowed at the parent (add it), refused at the inner cwd:
+        cat["places"]["lobby"]["allow_harness"] = ["lobby", "claude", "grok", "codex"]
+        with self.assertRaises(SystemExit) as e:
+            hm.cmd_new(hm.Ctx(cwd=inner), cat, "codex", place="lobby")
+        self.assertNotIn("may not start", str(e.exception))   # the parent's rules apply instead
+        self.assertIn("not installed", str(e.exception))      # codex is allowed there, just not installed
 
     def _raise(self, existing):
         calls = []
