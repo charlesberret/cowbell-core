@@ -1325,6 +1325,7 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
         "workspace_id": pane.get("workspace_id"), "created": now(), "argv": argv,
     })
     save_roster(rows)
+    report_identity(pid, name, h["kind"], model)   # one publish per raise (LAB-297)
     if focus and pane.get("tab_id"):
         try:
             herdr("tab", "focus", pane["tab_id"])
@@ -1335,6 +1336,55 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
 
 def focus_agent(pane_id: str) -> None:
     herdr("agent", "focus", pane_id)
+
+
+# herdr sidebar tokens (event-driven; never a loop) — LAB-297.
+# Identity tokens for sittings cowbell knows, published once per event — a raise,
+# an adopt, or a state change seen during a picker refresh — with --source cowbell.
+# No [[startup]], no interval thread; bt-reporter (the clocks) stays a separate,
+# disabled tool. Sittings cowbell does not know stay unbadged until adopt.
+# Glyphs are the sidebar's table (agent-deck's, by Charles's eye in Menlo 2026-09-12).
+
+COWBELL_SOURCE = "cowbell"
+TOKEN_TTL_MS = "86400000"
+
+
+def glyph_for(kind: str, model: str = "") -> str:
+    m = (model or "").lower()
+    if kind == "claude":   # heavier glyph = bigger model (✳ sonnet/haiku, ✼ opus/fable/unknown)
+        return "✳" if ("haiku" in m or "sonnet" in m) else "✼"
+    return {"grok": "ϟ", "pi": "◇", "gemini": "✦", "codex": "◈"}.get(kind, "·")
+
+
+def report_identity(pane_id: str, name: str, kind: str, model: str = "") -> bool:
+    """One event, one publish: the sidebar's $line1 (glyph + sitting) and the display agent."""
+    if not pane_id or str(pane_id).startswith("pid:"):
+        return False  # a process on another terminal has no herdr pane to badge
+    g = glyph_for(kind, model)
+    try:
+        herdr("pane", "report-metadata", pane_id, "--source", COWBELL_SOURCE,
+              "--ttl-ms", TOKEN_TTL_MS, "--display-agent", g, "--token", f"line1={g} {name}")
+    except HerdrError:
+        return False
+    return True
+
+
+def identity_events(seen: dict, live_rows: list[dict]) -> list[dict]:
+    """Rostered herdr rows whose (sitting, harness, state) changed since the last
+    refresh — each is one publish. Updates `seen` in place; no event, no publish."""
+    events = []
+    for r in live_rows:
+        pane_id = str(r.get("pane_id") or "")
+        if not r.get("on_roster") or pane_id.startswith("pid:") or not pane_id:
+            continue  # sittings cowbell does not know stay unbadged until adopt
+        key = (r.get("name"), r.get("kind"), r.get("status"))
+        if seen.get(pane_id) == key:
+            continue
+        seen[pane_id] = key
+        events.append(r)
+    for pane_id in [p for p in seen if p not in {str(r.get("pane_id") or "") for r in live_rows}]:
+        seen.pop(pane_id, None)
+    return events
 
 
 class HerdrLive(LiveSource):
@@ -1483,6 +1533,9 @@ def cmd_adopt(ctx: Ctx, cat: dict, name: str | None = None, pane_id: str | None 
     }
     rows.append(row)
     save_roster(rows)
+    apane = str(a.get("pane_id") or "")
+    if apane and not apane.startswith("pid:"):
+        report_identity(apane, nm, kind)   # one publish per adopt (LAB-297)
     print(f"adopted {nm}  {kind}  {tilde(cwd)}")
     return row
 
@@ -2037,6 +2090,7 @@ def picker(ctx: Ctx, cat: dict) -> int:
     sel_key, sel_at, flash, expanded = "", 0, "", set()
     verdicts: dict[tuple[str, str], dict] = {}
     git_tops: dict[str, str | None] = {}
+    ident_seen: dict[str, tuple] = {}   # pane_id -> (name, kind, status) last published
 
     def matcher_for(r):
         def m(tool):
@@ -2064,6 +2118,10 @@ def picker(ctx: Ctx, cat: dict) -> int:
             if place:
                 reg["place_note"] = place["name"] + (" · from ~" if remapped and root == place["cwd"] else "")
             remember_live(reg, rows)
+            # LAB-297: publish sidebar identity once per event (a state change seen
+            # here, or a name/harness change after an adopt) — never per refresh.
+            for r in identity_events(ident_seen, reg["live"]):
+                report_identity(r["pane_id"], r["name"], r.get("kind") or "", r.get("model") or "")
             ws_labels = {w.get("workspace_id"): w.get("label") or "" for w in snap.get("workspaces") or []}
             choices = picker_choices(reg, rows, ctx.workspace_id, ws_labels, expanded)
             width = min(shutil.get_terminal_size((84, 24)).columns, 100)

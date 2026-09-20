@@ -776,6 +776,93 @@ class Standalone(unittest.TestCase):
         self.assertFalse(hm.in_herdr_pane({"TERM": "xterm"}))
 
 
+class SidebarTokens(unittest.TestCase):
+    """LAB-297: herdr identity tokens on raise/adopt/state-change only — never a loop."""
+
+    def test_glyph_table_matches_the_sidebar(self):
+        self.assertEqual(hm.glyph_for("grok"), "ϟ")
+        self.assertEqual(hm.glyph_for("pi"), "◇")
+        self.assertEqual(hm.glyph_for("gemini"), "✦")
+        self.assertEqual(hm.glyph_for("codex"), "◈")
+        self.assertEqual(hm.glyph_for("claude", "claude-sonnet-5"), "✳")
+        self.assertEqual(hm.glyph_for("claude", "claude-opus-5"), "✼")
+        self.assertEqual(hm.glyph_for("claude"), "✼")      # unknown model: the meatier glyph
+        self.assertEqual(hm.glyph_for("droid"), "·")
+
+    def test_report_identity_one_publish_source_cowbell(self):
+        calls = []
+        orig = hm.herdr
+        hm.herdr = lambda *a, **k: calls.append(a) or {}
+        try:
+            self.assertTrue(hm.report_identity("w1B:p5", "droid", "grok", ""))
+        finally:
+            hm.herdr = orig
+        self.assertEqual(len(calls), 1)
+        args = calls[0]
+        self.assertEqual(args[:2], ("pane", "report-metadata"))
+        self.assertIn("w1B:p5", args)
+        self.assertEqual(args[args.index("--source") + 1], "cowbell")
+        self.assertEqual(args[args.index("--display-agent") + 1], "ϟ")
+        self.assertEqual(args[args.index("--token") + 1], "line1=ϟ droid")
+        self.assertFalse(hm.report_identity("pid:42", "n", "grok"))   # no herdr pane: no publish
+
+    def test_identity_events_publish_once_per_change(self):
+        seen = {}
+        row = {"pane_id": "w1:p1", "name": "butler", "kind": "grok", "status": "working", "on_roster": True}
+        self.assertEqual(len(hm.identity_events(seen, [row])), 1)     # first seen: one event
+        self.assertEqual(hm.identity_events(seen, [row]), [])         # unchanged: no event
+        row2 = {**row, "status": "idle"}
+        self.assertEqual(len(hm.identity_events(seen, [row2])), 1)     # state change: one event
+        self.assertEqual(hm.identity_events(seen, [row2]), [])
+        unknown = {"pane_id": "w1:p2", "name": "stray", "kind": "grok", "status": "idle", "on_roster": False}
+        self.assertEqual(hm.identity_events(seen, [unknown]), [])     # not known: stays unbadged
+        proc = {"pane_id": "pid:9", "name": "term", "kind": "grok", "status": "idle", "on_roster": True}
+        self.assertEqual(hm.identity_events(seen, [proc]), [])        # a process is not a pane
+        self.assertEqual(hm.identity_events(seen, []), [])            # gone: forgotten, no event
+        self.assertEqual(seen, {})
+
+    def test_raise_publishes_once_and_adopt_publishes_once(self):
+        published = []
+        orig = hm.report_identity
+        hm.report_identity = lambda pane, name, kind, model="": published.append((pane, name, kind)) or True
+        try:
+            # adopt: a process-scan row has no herdr pane, so no publish even here
+            row = agent("pid:42", "grok", ROOT, "running", "majordomo")
+            row["pid"], row["tty"], row["tab_id"] = 42, "ttys002", "w1:t1"
+            ctx = hm.Ctx(cwd=ROOT, mode="here", live=OneLive(row), launch=hm.HereLaunch())
+            os.environ["COWBELL_STATE_DIR"] = tempfile.mkdtemp()
+            hm.cmd_adopt(ctx, CAT, name="majordomo")
+            self.assertEqual(published, [])
+            # adopt of a herdr pane publishes once
+            row = agent("w1B:p5", "grok", ROOT, "idle", "grok-seat")
+            ctx = hm.Ctx(cwd=ROOT, mode="here", live=OneLive(row), launch=hm.HereLaunch())
+            hm.cmd_adopt(ctx, CAT, name="grok-seat")
+            self.assertEqual(published, [("w1B:p5", "grok-seat", "grok")])
+            # a raise publishes once with the sitting and harness
+            saved = (hm.start_native, hm.save_roster, hm.load_roster, hm.create_tab, hm.pick_workspace)
+            hm.create_tab = lambda *a, **k: {"pane_id": "w1C:p1", "tab_id": "w1C:t1", "workspace_id": "w1C"}
+            hm.pick_workspace = lambda *a, **k: "w1C"
+            hm.start_native = lambda *a, **k: {}
+            hm.save_roster = lambda rows: None
+            hm.load_roster = lambda: []
+            try:
+                hm.raise_harness(CAT, hm.harness_by_id(CAT, "grok"), "probe-seat", ROOT,
+                                 hm.Ctx(workspace_id="w1C", cwd=ROOT), model="", lane="")
+            finally:
+                (hm.start_native, hm.save_roster, hm.load_roster, hm.create_tab, hm.pick_workspace) = saved
+        finally:
+            hm.report_identity = orig
+            os.environ.pop("COWBELL_STATE_DIR", None)
+        self.assertEqual(published[-1], ("w1C:p1", "probe-seat", "grok"))
+
+    def test_plugin_has_no_reporter(self):
+        # the herdr-cowbell plugin runs no reporter process: no [[startup]] in its manifest
+        plugin = Path(__file__).resolve().parent.parent.parent / "herdr-cowbell" / "herdr-plugin.toml"
+        if not plugin.exists():
+            self.skipTest("plugin tree not present")
+        self.assertNotIn("[[startup]]", plugin.read_text())
+
+
 class ResumeOutside(unittest.TestCase):
     """LAB-298: recall in a plain terminal — the session-flag table, honestly filled."""
 
