@@ -1676,17 +1676,35 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None) -> None:
 
 
 def live_agent_to_adopt(ctx: Ctx, pane_id: str | None = None) -> dict:
-    """A live herdr pane or process-scan row to put on the roster."""
+    """A live herdr pane or process-scan row to put on the roster.
+
+    `herdr agent list` often has focused=False on every row. The focused pane
+    is snapshot.focused_pane_id (and panes[].focused).
+    """
     agents = ctx.live.agents()
+    by_pane = {a.get("pane_id"): a for a in agents if a.get("pane_id")}
+
+    def from_pane(pid: str | None) -> dict | None:
+        return by_pane.get(pid) if pid else None
+
     if pane_id:
-        hits = [a for a in agents if a.get("pane_id") == pane_id]
-        if len(hits) != 1:
+        hit = from_pane(pane_id)
+        if not hit:
             raise SystemExit(f"cowbell: no live agent in pane {pane_id}")
-        return hits[0]
-    if ctx.pane_id:
-        hits = [a for a in agents if a.get("pane_id") == ctx.pane_id]
-        if hits:
-            return hits[0]
+        return hit
+    # Typed inside an agent pane: adopt that sitting.
+    hit = from_pane(ctx.pane_id)
+    if hit:
+        return hit
+    snap = ctx.live.snapshot() or {}
+    hit = from_pane(snap.get("focused_pane_id"))
+    if hit:
+        return hit
+    for p in snap.get("panes") or []:
+        if p.get("focused"):
+            hit = from_pane(p.get("pane_id"))
+            if hit:
+                return hit
     focused = [a for a in agents if a.get("focused")]
     if focused:
         return focused[0]
@@ -1695,7 +1713,12 @@ def live_agent_to_adopt(ctx: Ctx, pane_id: str | None = None) -> dict:
         return here[0]
     if len(agents) == 1:
         return agents[0]
-    raise SystemExit("cowbell: no focused pane to adopt (pass --pane ID)")
+    show = here[:12] or agents[:12]
+    lines = ["cowbell: no focused agent pane to adopt. Live here:"]
+    for a in show:
+        lines.append(f"  {a.get('pane_id')}  {a.get('agent') or '?'}  {tilde(a.get('cwd') or '')}")
+    lines.append("pass --pane ID")
+    raise SystemExit("\n".join(lines))
 
 
 def cmd_adopt(ctx: Ctx, cat: dict, name: str | None = None, pane_id: str | None = None) -> dict:
@@ -2453,7 +2476,7 @@ def main(argv: list[str]) -> int:
     if cmd == "adopt" and (opts.get("help") or opts.get("h") or (pos and pos[0] in ("-h", "--help"))):
         print("cowbell adopt [name] [--pane ID]")
         print("  Bind a live sitting cowbell did not start onto the roster.")
-        print("  Default: the focused herdr pane, or the only live agent here.")
+        print("  Default: this pane if it is an agent, else herdr's focused agent pane.")
         return 0
     ctx = choose_host(server_up())
     cat = load_catalog()

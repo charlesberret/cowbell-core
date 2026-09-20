@@ -1215,6 +1215,29 @@ class Adopt(unittest.TestCase):
             hm.cmd_adopt(self.ctx, CAT, pane_id="w9:p9")
         self.assertIn("no live agent", str(e.exception))
 
+    def test_adopt_uses_snapshot_focused_pane(self):
+        """agent list often has focused=False on every row; snapshot has focused_pane_id."""
+        grok = agent("wK:p1", "grok", ROOT, "working", "majordomo")
+        grok["focused"] = False
+        grok["tab_id"] = "wK:t1"
+        claude = agent("wK:p6", "claude", ROOT, "idle", "sysadmin")
+        claude["focused"] = False
+        claude["tab_id"] = "wK:t6"
+
+        class SnapLive(hm.LiveSource):
+            def agents(self):
+                return [grok, claude]
+
+            def snapshot(self):
+                return {"focused_pane_id": "wK:p6", "panes": [
+                    {**grok, "focused": False}, {**claude, "focused": True},
+                ]}
+
+        ctx = hm.Ctx(cwd=ROOT, mode="tab", pane_id="wK:p9", live=SnapLive(), launch=hm.HereLaunch())
+        row = hm.cmd_adopt(ctx, CAT)
+        self.assertEqual(row["pane_id"], "wK:p6")
+        self.assertEqual(row["harness"], "claude")
+
 
 class ExtensionPoints(unittest.TestCase):
     """The two hooks onto tools cowbell does not own (LAB-318)."""
