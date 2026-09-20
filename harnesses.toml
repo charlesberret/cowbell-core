@@ -11,6 +11,15 @@
 # Optional: `trust_tool` is the name this harness answers to when a trust checker
 # is asked about it (see [defaults] trust_command); without such a checker on PATH,
 # cowbell shows no trust verdicts at all.
+#
+# Resuming outside herdr: a harness is resume-capable in a plain terminal only
+# when cowbell can choose its session id (`session_id_flag`), start with that id,
+# and replay it later. claude is the one seeded harness that is resume-capable
+# outside herdr; every other seeded harness is honestly absent from Resume when
+# raised outside herdr — its CLI picks its own session id, which cowbell cannot
+# set or replay. (Raised under herdr, session ids are observed and replay works
+# for any harness that has a `resume` spec.) `cowbell list` still shows every
+# row; Resume just does not offer what it cannot resume.
 
 schema = 1           # file format; a newer cowbell may raise it, an older one will not write it
 

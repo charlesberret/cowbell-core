@@ -616,7 +616,8 @@ def registry_json(reg: dict, place: dict | None = None) -> dict:
         "root": root,
         "place": place_name,
         "running": [sitting_row(r) for r in reg.get("live") or []],
-        "resume": [sitting_row(r) for r in reg.get("cold") or []],
+        # Resume only what can resume: a row without a session id would just start fresh (LAB-298).
+        "resume": [sitting_row(r) for r in reg.get("cold") or [] if r.get("session_id")],
         "new": [new_row(a) for a in reg.get("absent") or []],
     }
 
@@ -636,9 +637,12 @@ def render_registry(reg: dict, git_top: str | None = None, wider: int | None = N
             out.append(f"  {key(idx)}  {paint(name, INK, bold=True)} {paint(harness, MUTED)} "
                        f"{status_cell(r['status'], 9)} {paint(rest, FAINT)}")
     if reg["cold"]:
-        out.append("")
-        out.append(section("COLD HERE", "resumable"))
-        for r in reg["cold"]:
+        # Resume only what can resume: a row without a session id would just start fresh (LAB-298).
+        cold = [r for r in reg["cold"] if r.get("session_id")]
+        if cold:
+            out.append("")
+            out.append(section("COLD HERE", "resumable"))
+        for r in cold:
             idx += 1
             r["idx"] = idx
             name, harness = f"{r['name']:<24}", f"{r.get('harness') or r.get('kind'):<14}"

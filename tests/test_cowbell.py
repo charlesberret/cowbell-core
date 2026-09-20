@@ -776,6 +776,58 @@ class Standalone(unittest.TestCase):
         self.assertFalse(hm.in_herdr_pane({"TERM": "xterm"}))
 
 
+class ResumeOutside(unittest.TestCase):
+    """LAB-298: recall in a plain terminal — the session-flag table, honestly filled."""
+
+    def test_claude_resume_with_herdr_down_uses_the_session_flag(self):
+        claude = dict(CAT["harness"][0], session_id_flag="--session-id", name_flag="--name")
+        cat = {**CAT, "harness": [claude] + [h for h in CAT["harness"] if h["id"] != "claude"]}
+        roster = [{"name": "butler", "cwd": ROOT, "harness": "claude", "kind": "claude",
+                   "session_id": "abc", "pane_id": None}]
+        captured = []
+        orig_exec, orig_roster = hm.exec_here, hm.load_roster
+        hm.exec_here = lambda *a, **k: captured.append((a, k)) or {"pane_id": "here"}
+        hm.load_roster = lambda: roster
+        try:
+            ctx = hm.Ctx(cwd=ROOT, mode="here", live=hm.LiveSource())   # no herdr anywhere
+            hm.cmd_enter(ctx, cat, "butler")
+        finally:
+            hm.exec_here, hm.load_roster = orig_exec, orig_roster
+        self.assertEqual(len(captured), 1)
+        args, kwargs = captured[0]
+        self.assertEqual(kwargs.get("resume_id"), "abc")               # the roster's session id
+        cmd, session = hm.here_command(cat, claude, "butler", resume_id="abc")
+        self.assertEqual(session, "abc")
+        self.assertIn("--resume", cmd) and self.assertIn("abc", cmd)
+        self.assertNotIn("--session-id", cmd)                           # resuming, not starting fresh
+
+    def test_harness_without_a_session_never_appears_in_resume(self):
+        roster = [
+            {"name": "butler", "cwd": ROOT, "harness": "claude", "kind": "claude",
+             "session_id": "abc", "pane_id": None},
+            {"name": "grok-seat", "cwd": ROOT, "harness": "grok", "kind": "grok", "pane_id": None},
+        ]
+        reg = hm.build_registry(CAT, ROOT, [], [], roster, matcher=lambda t: {"verdict": "ok"})
+        self.assertEqual([r["name"] for r in reg["cold"]], ["butler", "grok-seat"])   # cold holds both
+        payload = hm.registry_json(reg)
+        self.assertEqual([r["name"] for r in payload["resume"]], ["butler"])          # Resume: only the flag
+        text = hm.render_registry(reg)
+        self.assertIn("butler", text)
+        self.assertNotIn("grok-seat", text)                        # honestly absent from the resumable list
+
+    def test_seed_documents_the_resume_table(self):
+        import tomllib
+        seed = Path(__file__).resolve().parent.parent / "harnesses.toml"
+        text = seed.read_text()
+        cat = tomllib.loads(text)
+        self.assertIn("Resuming outside herdr", text)             # the table is documented in the seed
+        self.assertIn("honestly absent from Resume", text)
+        claude = next(h for h in cat["harness"] if h["id"] == "claude")
+        self.assertEqual(claude.get("session_id_flag"), "--session-id")
+        # only claude claims a cowbell-chosen session id; the others are honestly absent
+        self.assertEqual([h["id"] for h in cat["harness"] if h.get("session_id_flag")], ["claude"])
+
+
 class StandaloneIdentify(unittest.TestCase):
     """LAB-294: a live CLI is identified by its cwd — harness id + place — with no herdr anywhere."""
 
