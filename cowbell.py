@@ -463,8 +463,19 @@ def tab_labels(snap: dict) -> dict[str, str]:
 # needed for a Resume row (id, times, title) and nothing else from a transcript.
 # Off unless [defaults] session_history = "on" — a session store is private.
 
+def history_mode(cat: dict) -> str:
+    """off (default) · on (sittings) · all (including agents dispatched by a sitting)."""
+    v = str(cat.get("defaults", {}).get("session_history", "off")).strip().lower()
+    return {"true": "on", "yes": "on", "on": "on", "all": "all"}.get(v, "off")
+
+
 def history_on(cat: dict) -> bool:
-    return str(cat.get("defaults", {}).get("session_history", "off")).strip().lower() in ("on", "true", "yes")
+    return history_mode(cat) != "off"
+
+
+# A session whose opening line casts a role was dispatched by another sitting, not
+# chosen by a person. Honest history, but noise in a list you pick from.
+DISPATCHED = re.compile(r"^(you are|act as|role:)\b", re.I)
 
 
 def history_cache() -> dict:
@@ -625,8 +636,11 @@ def discover_sessions(root: str, cat: dict, home: Path | None = None) -> list[di
         except Exception:
             continue  # one unreadable store never costs the others
     write_history_cache(cache)
+    if history_mode(cat) != "all":
+        rows = [r for r in rows if not DISPATCHED.match(r.get("title") or "")]
     for r in rows:
-        r.setdefault("name", r.get("title") or r["session_id"][:8])
+        title = r.get("title") or ""
+        r.setdefault("name", (title[:21] + "…") if len(title) > 22 else (title or r["session_id"][:8]))
         r["cwd"], r["source"] = os.path.realpath(root), "history"
         r["last_seen"] = (r.get("last") or "")[:10]
     rows.sort(key=lambda r: r.get("last") or "", reverse=True)

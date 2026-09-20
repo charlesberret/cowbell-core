@@ -63,7 +63,8 @@ Two hooks let cowbell use tools it does not own, both set in `[defaults]`:
 - `session_history` — `"on"` lets Resume read the stores the harnesses keep
   themselves (`~/.claude/projects`, `~/.grok/sessions`), so a directory shows
   every session it has seen, not just the ones cowbell started. Only ids, times
-  and titles are read; transcript bodies never are. Default `"off"`.
+  and titles are read; transcript bodies never are. `"all"` additionally lists
+  agents that a sitting dispatched rather than a person chose. Default `"off"`.
 
 ## Catalog, places, state
 
