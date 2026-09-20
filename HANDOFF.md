@@ -2,7 +2,7 @@
 
 Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 (protocol: document "Cowbell — agent handoff")
 Milestone: Split (Now)
-Locked: none
+Locked: LAB-355
 
 ## 2026-09-20 — Wrangler accuracy batch: LAB-294, 295, 297, 298
 
@@ -50,7 +50,7 @@ instead (patron ruling 2026-09-19). Everything below is the plugin's handoff as 
 
 Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 (protocol: document "Cowbell — agent handoff")
 Milestone: Split (Now)
-Locked: none (core cowbell.py lives in ~/cloud/git-projects/cowbell)
+Locked: LAB-355 (core cowbell.py lives in ~/cloud/git-projects/cowbell)
 
 **This file:** `/Users/charles/cloud/git-projects/herdr-cowbell/HANDOFF.md`
 **Plugin:** `herdr-cowbell` (`prefix+c` → cowbell picker). CLI: `cowbell` (core tree `~/cloud/git-projects/cowbell`).

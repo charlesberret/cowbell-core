@@ -1260,5 +1260,80 @@ class ExtensionPoints(unittest.TestCase):
         self.assertIsNone(hm.prompt_flag({}))
 
 
+class SessionHistory(unittest.TestCase):
+    """Discovery from each harness's own store (LAB-355)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        self.root = "/Users/x/code/acme"
+        self.cat = {"defaults": {"session_history": "on"}, "harness": [{"id": "claude"}, {"id": "grok"}]}
+        # a claude store: project dir is the cwd with / and . flattened to -
+        cdir = self.home / ".claude" / "projects" / "-Users-x-code-acme"
+        cdir.mkdir(parents=True)
+        (cdir / "sess-a.jsonl").write_text(
+            json.dumps({"type": "user", "timestamp": "2026-09-01T10:00:00Z",
+                        "message": {"role": "user", "content": "fix the parser"}}) + "\n" +
+            json.dumps({"type": "custom-title", "customTitle": "parser-work"}) + "\n" +
+            json.dumps({"type": "assistant", "timestamp": "2026-09-02T11:00:00Z"}) + "\n")
+        (cdir / "sess-b.jsonl").write_text(
+            json.dumps({"type": "user", "timestamp": "2026-08-01T10:00:00Z",
+                        "message": {"role": "user", "content": [{"type": "text", "text": "Caveat: injected"},
+                                                                 {"type": "text", "text": "ignored"}]}}) + "\n")
+        (cdir / "broken.jsonl").write_text("{not json\n")
+        # a grok store: session dirs under the percent-encoded cwd
+        gdir = self.home / ".grok" / "sessions" / "%2FUsers%2Fx%2Fcode%2Facme" / "01a0"
+        gdir.mkdir(parents=True)
+        (gdir / "chat_history.jsonl").write_text(
+            json.dumps({"type": "system", "content": "you are grok"}) + "\n" +
+            json.dumps({"type": "user", "content": [{"type": "text", "text": "<user_query>ship it</user_query>"}]}) + "\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def rows(self, cat=None):
+        return hm.discover_sessions(self.root, cat or self.cat, home=self.home)
+
+    def test_off_by_default(self):
+        self.assertEqual(hm.discover_sessions(self.root, {"harness": [{"id": "claude"}]}, home=self.home), [])
+
+    def test_finds_both_stores(self):
+        got = {(r["harness"], r["session_id"]) for r in self.rows()}
+        self.assertIn(("claude", "sess-a"), got)
+        self.assertIn(("claude", "sess-b"), got)
+        self.assertIn(("grok", "01a0"), got)
+
+    def test_titles_prefer_rename_and_skip_injected(self):
+        by_id = {r["session_id"]: r for r in self.rows()}
+        self.assertEqual(by_id["sess-a"]["title"], "parser-work")
+        self.assertEqual(by_id["sess-b"]["title"], "")          # "Caveat:" is the harness talking
+        self.assertEqual(by_id["01a0"]["title"], "ship it")     # user_query unwrapped
+
+    def test_malformed_file_does_not_break_discovery(self):
+        self.assertIn("broken", {r["session_id"] for r in self.rows()})
+
+    def test_missing_store_is_quiet(self):
+        self.assertEqual(hm.discover_sessions("/Users/x/nowhere", self.cat, home=self.home), [])
+
+    def test_catalog_governs_which_stores_are_read(self):
+        only_grok = {"defaults": {"session_history": "on"}, "harness": [{"id": "grok"}]}
+        self.assertEqual({r["harness"] for r in self.rows(only_grok)}, {"grok"})
+
+    def test_newest_first(self):
+        stamps = [r.get("last") or "" for r in self.rows()]
+        self.assertEqual(stamps, sorted(stamps, reverse=True))
+
+    def test_roster_row_wins_over_a_discovered_one(self):
+        roster = [{"name": "adopted", "harness": "claude", "session_id": "sess-a", "cwd": self.root,
+                   "last_seen": "2026-09-02", "pane_id": "w1:p1"}]
+        cat = {"harness": [{"id": "claude", "kind": "claude", "family": "claude", "trust_tool": "claude",
+                            "egress": "vendor", "models": [], "resume": []}]}
+        reg = hm.build_registry(cat, self.root, [], [], roster,
+                                matcher=lambda _t: {"verdict": "ok"}, history=self.rows())
+        rows = [r for r in reg["cold"] if r.get("session_id") == "sess-a"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["name"], "adopted")
+
+
 if __name__ == "__main__":
     unittest.main()
