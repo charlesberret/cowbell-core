@@ -776,6 +776,94 @@ class Standalone(unittest.TestCase):
         self.assertFalse(hm.in_herdr_pane({"TERM": "xterm"}))
 
 
+class StandaloneIdentify(unittest.TestCase):
+    """LAB-294: a live CLI is identified by its cwd — harness id + place — with no herdr anywhere."""
+
+    PS = """\
+      1     0 ??       /sbin/launchd
+    510     1 ttys001  -zsh
+    511   510 ttys001  grok
+    512     1 ttys002  -zsh
+    513   512 ttys002  pi
+    514     1 ??       claude --print hello
+"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = os.path.realpath(self.tmp.name)
+        self.pad = os.path.join(self.home, "cloud", "git-projects", "agent-lobby")
+        self.inner = os.path.join(self.pad, "visitors", "inner-pad")
+        os.makedirs(self.inner)
+        self.cat = {**CAT, "defaults": {"lane": "yellow", "untitled_place": "lobby"},
+                    "places": {"lobby": {"cwd": self.pad, "workspace_label": "lobby",
+                                         "allow_harness": ["lobby", "claude", "grok"],
+                                         "default_harness": "lobby", "lane": "green"},
+                               "inner": {"cwd": self.inner, "workspace_label": "lobby",
+                                         "allow_harness": ["grok"], "default_harness": "grok",
+                                         "lane": "yellow"}}}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _agents(self, cwd_511, cwd_513):
+        cwds = {511: cwd_511, 513: cwd_513}
+        return hm.agent_processes(hm.ps_table(self.PS), cwds=lambda pids: {p: cwds[p] for p in pids})
+
+    def test_stub_process_table_identifies_harness_and_place(self):
+        agents = self._agents(self.inner, self.inner)
+        scoped = hm.scoped_catalog(self.cat, hm.places(self.cat)["inner"])
+        reg = hm.build_registry(scoped, self.inner, agents, [], [], matcher=lambda t: {"verdict": "ok"})
+        row = next(r for r in reg["live"] if r["kind"] == "grok")
+        self.assertEqual(row["harness"], "grok")            # the catalog id, not just the exe
+        self.assertEqual(row["place"], "inner")
+        self.assertEqual(row["name"], "grok")
+
+    def test_pi_resolves_to_the_one_harness_of_its_kind(self):
+        # the lobby place's catalog has exactly one pi harness, so the pi exe is that harness
+        agents = self._agents(self.pad, self.pad)
+        scoped = hm.scoped_catalog(self.cat, hm.places(self.cat)["lobby"])
+        reg = hm.build_registry(scoped, self.pad, agents, [], [], matcher=lambda t: {"verdict": "ok"})
+        row = next(r for r in reg["live"] if r["kind"] == "pi")
+        self.assertEqual(row["harness"], "lobby")
+        self.assertEqual(row["place"], "lobby")
+
+    def test_ambiguous_kind_stays_the_exe_name(self):
+        # a place whose catalog has two pi wrappers cannot tell them apart from the exe alone
+        cat = {**self.cat, "places": {"lobby": {**self.cat["places"]["lobby"],
+                                                "allow_harness": ["oll-mid", "oll-memo"]}}}
+        agents = self._agents(self.pad, self.pad)
+        scoped = hm.scoped_catalog(cat, hm.places(cat)["lobby"])
+        reg = hm.build_registry(scoped, self.pad, agents, [], [], matcher=lambda t: {"verdict": "ok"})
+        row = next(r for r in reg["live"] if r["kind"] == "pi")
+        self.assertEqual(row["harness"], "pi")
+
+    def test_status_here_names_place_and_harness_with_herdr_down(self):
+        # end to end: COWBELL_MODE=here semantics, no herdr binary anywhere in the path
+        stub = [{"pane_id": "pid:511", "pid": 511, "tty": "ttys001", "agent": "grok",
+                 "cwd": self.inner, "agent_status": "running", "tab_id": None, "workspace_id": None,
+                 "terminal_title_stripped": "grok", "agent_session": {}}]
+        orig = hm.agent_processes
+        hm.agent_processes = lambda table=None, cwds=hm.process_cwds: stub
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                hm.cmd_registry(hm.Ctx(cwd=self.inner, mode="here"), self.cat)
+            out = buf.getvalue()
+        finally:
+            hm.agent_processes = orig
+        self.assertIn("inner", out)      # the place
+        self.assertIn("grok", out)       # the harness
+
+    def test_registry_json_row_carries_its_own_place(self):
+        agents = self._agents(self.inner, self.inner)
+        scoped = hm.scoped_catalog(self.cat, hm.places(self.cat)["inner"])
+        reg = hm.build_registry(scoped, self.inner, agents, [], [], matcher=lambda t: {"verdict": "ok"})
+        payload = hm.registry_json(reg, hm.places(self.cat)["lobby"])   # a wider root place
+        running = payload["running"][0]
+        self.assertEqual(running["place"], "inner")                     # the row's, not the root's
+        self.assertEqual(payload["place"], "lobby")
+
+
 class Version(unittest.TestCase):
     def test_version_line_is_parseable(self):
         import io, re

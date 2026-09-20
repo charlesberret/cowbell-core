@@ -515,6 +515,13 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
     pane_ids = {p.get("pane_id") for p in panes}
     rows_here = roster_here(roster, root)
     by_pane: dict[str, dict] = {str(r["pane_id"]): r for r in rows_here if r.get("pane_id")}
+    # identify an exe by catalog: a kind only one harness in this catalog has is that harness
+    # id; a kind several share (pi wrappers) stays the exe name. LAB-294.
+    kind_id: dict[str, str] = {}
+    for h in cat.get("harness", []):
+        prev = kind_id.setdefault(h["kind"], h["id"])
+        if prev != h["id"]:
+            kind_id[h["kind"]] = ""
 
     live_rows, seen_pane = [], set()
     for a in live:
@@ -523,10 +530,11 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
         live_rows.append({
             "name": ((r or {}).get("name") or (slug(lab) if lab else "")
                      or slug(a.get("terminal_title_stripped") or a.get("agent") or "agent")),
-            "harness": (r or {}).get("harness") or a.get("agent"),
+            "harness": (r or {}).get("harness") or kind_id.get(a.get("agent") or "", "") or a.get("agent"),
             "kind": a.get("agent"), "model": (r or {}).get("model", ""), "lane": (r or {}).get("lane", ""),
             "status": a.get("agent_status") or "live", "pane_id": a["pane_id"], "tab_id": a.get("tab_id"),
             "workspace_id": a.get("workspace_id"), "cwd": a.get("cwd"),
+            "place": (place_for(cat, a.get("cwd") or "") or {}).get("name") or "",
             "session_id": (a.get("agent_session") or {}).get("value") or (r or {}).get("session_id", ""),
             "on_roster": r is not None,
             # turn clock, only where a sidebar reporter publishes one ($since while working, $total when done)
@@ -584,7 +592,7 @@ def registry_json(reg: dict, place: dict | None = None) -> dict:
         return {
             "name": r.get("name") or "",
             "harness": r.get("harness") or r.get("kind") or "",
-            "place": place_name,
+            "place": r.get("place") or place_name,
             "cwd": r.get("cwd") or "",
             "host": row_host(r),
             "state": r.get("status") or "",
@@ -2007,7 +2015,7 @@ def remember_live(reg: dict, rows: list[dict]) -> int:
         rows.append({"name": name, "cwd": r["cwd"], "harness": r["harness"], "kind": r["kind"], "model": "",
                      "lane": "", "session_id": r["session_id"], "pane_id": r["pane_id"],
                      "workspace_id": r.get("workspace_id"), "label": r["name"], "created": now(),
-                     "last_seen": now()[:10], "source": "seen"})
+                     "last_seen": now()[:10], "place": r.get("place", ""), "source": "seen"})
         r["on_roster"] = True
         taken.add(name)
         added += 1
