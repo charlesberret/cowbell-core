@@ -1358,5 +1358,27 @@ class SessionHistory(unittest.TestCase):
         self.assertEqual(rows[0]["name"], "adopted")
 
 
+class UnixConfine(unittest.TestCase):
+    """Place unix_user: drop uid (and optional nono) before exec."""
+
+    def test_no_place_is_passthrough(self):
+        cmd = ["grok", "--foo"]
+        self.assertEqual(hm.unix_confine(CAT, "/tmp", cmd), cmd)
+
+    def test_require_uid_without_user_refuses(self):
+        tmp = tempfile.mkdtemp()
+        cat = {**CAT, "places": {"lab": {"cwd": tmp, "require_uid": True}}}
+        with self.assertRaises(SystemExit) as e:
+            hm.unix_confine(cat, tmp, ["bash"])
+        self.assertIn("unix_user", str(e.exception))
+
+    def test_unknown_uid_refuses(self):
+        tmp = tempfile.mkdtemp()
+        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "no-such-agent-uid-xyz"}}}
+        with self.assertRaises(SystemExit) as e:
+            hm.unix_confine(cat, tmp, ["bash"])
+        self.assertIn("not on this host", str(e.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

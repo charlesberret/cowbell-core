@@ -42,7 +42,7 @@ try:
 except ImportError:  # pragma: no cover
     tomllib = None
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 PLUGIN_ID = "herdr-cowbell"  # only to find config and state that 0.1–0.3 kept in herdr's plugin dirs
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 LANES = ("green", "yellow", "red")
@@ -1159,10 +1159,45 @@ def here_command(cat: dict, h: dict, name: str, model="", lane="", allow="", den
 
 
 def _here_exe(h: dict, cmd: list[str]) -> str:
-    exe = cmd[0] if is_wrapper(h) else shutil.which(cmd[0])
+    exe = cmd[0] if os.path.isabs(cmd[0]) else shutil.which(cmd[0])
     if not exe:
         raise SystemExit(f"cowbell: {cmd[0]} is not on PATH")
     return exe
+
+
+def unix_confine(cat: dict, root: str, cmd: list[str]) -> list[str]:
+    """Prefix agent-run + nono when the place names a unix_user. Identity first, then Landlock/Seatbelt."""
+    import pwd
+    pl = place_for(cat, root)
+    defaults = cat.get("defaults") or {}
+    uid = ((pl or {}).get("unix_user") or defaults.get("unix_user") or "").strip()
+    require = (pl or {}).get("require_uid")
+    if require is None:
+        require = bool(defaults.get("require_uid"))
+    if require and not uid:
+        raise SystemExit(
+            f"cowbell: refused — no unix_user for {tilde(root)}; "
+            "set [places.*] unix_user or use agent-run <uid> -- …"
+        )
+    if not uid:
+        return cmd
+    try:
+        pw = pwd.getpwnam(uid)
+    except KeyError:
+        raise SystemExit(f"cowbell: unix_user {uid!r} is not on this host (agent-uids/provision.sh)")
+    helper = shutil.which("agent-run") or "/usr/local/bin/agent-run"
+    if not os.path.isfile(helper):
+        raise SystemExit("cowbell: agent-run is not installed")
+    profile = os.path.expanduser((pl or {}).get("nono_profile") or defaults.get("nono_profile") or "")
+    inner = list(cmd)
+    if profile:
+        nono = shutil.which("nono")
+        if not nono:
+            raise SystemExit("cowbell: nono is not on PATH (needed for this place)")
+        inner = [nono, "run", "--silent", "--profile", profile, "--allow-cwd", "--"] + inner
+    if os.geteuid() == pw.pw_uid:
+        return inner
+    return [helper, uid, "--"] + inner
 
 
 def _record_here(h: dict, name: str, root: str, model: str, lane: str, allow: str, deny: str,
@@ -1178,6 +1213,7 @@ def exec_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", la
               seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True):
     """Hand this terminal to the agent. Does not return."""
     cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra)
+    cmd = unix_confine(cat, root, cmd)
     exe = _here_exe(h, cmd)
     _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, None)
     sys.stdout.write("\x1b[H\x1b[2J" if sys.stdout.isatty() else "")
@@ -1497,6 +1533,8 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
                   focus: bool = True) -> dict:
     argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, sitting=name, extra=extra)
     place = place_for(cat, root)
+    base = ([h["command"], *argv] if is_wrapper(h) else [h["kind"], *argv])
+    confined = unix_confine(cat, root, base)
     if place and place.get("workspace_label"):  # a place's sittings open in its own pen, not the caller's
         pane = create_tab(workspace_by_label(place["workspace_label"]), root, name, place["workspace_label"])
     else:
@@ -1504,9 +1542,9 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
     pid = pane["pane_id"]
     launched_session = ""
     try:
-        if is_wrapper(h):
+        if confined != base or is_wrapper(h):
             wait_shell(pid)
-            herdr("pane", "run", pid, shell_join([h["command"], *argv]), expect_json=False)
+            herdr("pane", "run", pid, shell_join(confined), expect_json=False)
         else:
             res = start_native(name, h["kind"], pid, argv)
             launched_session = ((res.get("agent") or {}).get("agent_session") or {}).get("value") or ""
