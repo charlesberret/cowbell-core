@@ -1117,7 +1117,10 @@ def process_cwds(pids: list[int]) -> dict[int, str]:
             except OSError:
                 pass
         return out
-    proc = subprocess.run(["lsof", "-a", "-d", "cwd", "-Fpn", "-p", ",".join(map(str, pids))],
+    lsof = shutil.which("lsof") or next((x for x in ("/usr/sbin/lsof", "/usr/bin/lsof") if os.access(x, os.X_OK)), None)
+    if not lsof:  # a spare PATH (launchd, a plugin host) often lacks /usr/sbin; no lsof means no cwds, not a crash
+        return {}
+    proc = subprocess.run([lsof, "-a", "-d", "cwd", "-Fpn", "-p", ",".join(map(str, pids))],
                           capture_output=True, text=True)
     out, pid = {}, None
     for line in proc.stdout.splitlines():
