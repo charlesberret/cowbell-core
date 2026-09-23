@@ -97,7 +97,7 @@ def status_cell(status: str, width: int = 8) -> str:
 
 def verdict_cell(v: dict) -> str:
     mark = verdict_mark(v)
-    return paint(mark, RED if mark == "!" else FAINT if mark == "ok" else MUTED, bold=mark == "!")
+    return paint(mark, RED if mark == "⊘" else FAINT if mark in ("ok", "!") else MUTED, bold=mark == "⊘")
 
 
 def header(reg: dict, git_top: str | None, wider: int | None, widen_hint: bool = True) -> list[str]:
@@ -665,13 +665,20 @@ def parse_match(text: str, code: int) -> dict:
     for line in text.splitlines():
         m = re.match(r"^\s*verdict:\s+(\S+)\s*(.*)$", line)
         if m:
-            verdict, flag = m.group(1), m.group(2).strip()
+            verdict = m.group(1)
+            flag = re.sub(r"\s*\[.*\]\s*$", "", m.group(2).strip()).strip("()")
         m = re.match(r"^\s*flag:\s+(.*)$", line)
         if m and m.group(1).strip() not in ("(none)", ""):
             flag = m.group(1).strip()
     if not verdict:
         verdict = {0: "ok", 3: "overprivilege", 4: "blocked"}.get(code, "unknown")
     return {"verdict": verdict, "flag": flag, "exit": code}
+
+
+def trust_note(hid: str, v: dict, root: str) -> str:
+    """Over-privilege is advisory (T4: visible, never a gate). Say what the checker saw."""
+    why = f" ({v['flag']})" if v.get("flag") else ""
+    return f"{hid} has more reach than {tilde(root)} needs{why}"
 
 
 def trust_match(tool: str, root: str) -> dict:
@@ -854,7 +861,7 @@ def render_registry(reg: dict, git_top: str | None = None, wider: int | None = N
         out.append(paint("  nothing raised here yet", FAINT))
     if reg["absent"]:
         out.append("")
-        out.append(section("ABSENT HERE", "⌂ local  ↑ vendor · ok  ! overprivilege  ⊘ blocked  ? unknown"))
+        out.append(section("ABSENT HERE", "⌂ local  ↑ vendor · ok  ! more reach  ⊘ blocked  ? unknown"))
         bits = []  # (plain width, painted)
         for a in reg["absent"]:
             mark = verdict_mark(a["trust"])
@@ -953,7 +960,7 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
     title_w = min(34, max((len(pool[h].get("title") or "") for h in shown), default=0))
     for hid in ranked:
         a = pool[hid]
-        warn = f"   {paint('!', RED, bold=True)} {paint('asks first', FAINT)}" \
+        warn = f"   {paint('! more reach than needed', FAINT)}" \
             if a.get("trust", {}).get("verdict") == "overprivilege" else ""
         start.append({"action": "raise", "target": a, "key": f"raise:{hid}",
                       "line": f"{paint(f'{hid:<22}', SECONDARY)} "
@@ -1822,12 +1829,7 @@ def gate(cat_h: dict, root: str, interactive: bool, assume_yes: bool) -> dict:
     if v["verdict"] == "blocked":
         raise SystemExit(f"cowbell: refused — {cat_h['id']} on {tilde(root)}: blocked {v['flag']} (T4 under-clearance)")
     if v["verdict"] == "overprivilege":
-        msg = f"{cat_h['id']} on {tilde(root)}: overprivilege {v['flag']} (surface exceeds subject; visible, not silent)"
-        if interactive and not assume_yes:
-            if input(f"  ! {msg}\n  proceed? [y/N] ").strip().lower() != "y":
-                raise SystemExit("cowbell: not raised")
-        else:
-            print(f"cowbell: ! {msg}", file=sys.stderr)
+        print(f"cowbell: ! {trust_note(cat_h['id'], v, root)}", file=sys.stderr)
     return v
 
 
@@ -2224,7 +2226,7 @@ def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
     hs = [h for h in cat.get("harness", [])]
     with ThreadPoolExecutor(max_workers=8) as pool:
         verdicts = dict(zip([h["id"] for h in hs], pool.map(lambda h: trust_match(h["trust_tool"], root), hs)))
-    note = {"blocked": paint("  ⊘ blocked here", RED), "overprivilege": paint("  ! over-privileged here", RED)}
+    note = {"blocked": paint("  ⊘ blocked here", RED), "overprivilege": paint("  ! more reach than needed", FAINT)}
     rows = []
     for h in hs:
         ok = installed(h)
@@ -2267,9 +2269,7 @@ def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
         lane = LANES[j]
     seat = seat_file(root) if prompt_flag(h) else None
     if v["verdict"] == "overprivilege":
-        if ask(f"  {paint('!', RED, bold=True)} {h['id']} is over-privileged for {trust_subject(root)} work "
-               f"({v['flag']}). start anyway? [y/N] ").lower() != "y":
-            return False
+        print(f"  {paint('! ' + trust_note(h['id'], v, root), FAINT)}")
     argv = build_argv(cat, h, model, lane, "", "", seat, sitting=name)
     shown = shell_join([h["command"], *argv]) if is_wrapper(h) else shell_join([h["kind"], *argv])
     if ctx.mode != "here":
@@ -2301,9 +2301,7 @@ def raise_quick(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
             return False
         name = unique_name(slug(raw), taken)
     if v["verdict"] == "overprivilege":
-        if ask(f"  {paint('!', RED, bold=True)} {h['id']} is over-privileged for {trust_subject(root)} work "
-               f"({v['flag']}). start anyway? [y/N] ").lower() != "y":
-            return False
+        print(f"  {paint('! ' + trust_note(h['id'], v, root), FAINT)}")
     model = h["models"][0] if h["models"] else ""
     seat = seat_file(root) if prompt_flag(h) else None
     pane = launch(cat, h, name, root, ctx, model, lane, "", "", seat)

@@ -4,6 +4,13 @@ Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 
 Milestone: Split (Now)
 Locked: none
 
+## 2026-09-23 — over-privilege is advisory, never a gate
+
+Trust exit 3 (over-privilege) no longer asks `start anyway? [y/N]`; it prints one dim note with the
+checker's own reason, and the picker badge is a dim `! more reach than needed` (was red `! asks first`).
+Blocked (`⊘`) still refuses, and is now the red mark in `status`. `parse_match` keeps only the reason
+in `flag`, not the checker's bracketed aside. Patron ruling in the metawork sitting (T4: visible, not silent).
+
 ## 2026-09-20 — Wrangler accuracy batch: LAB-294, 295, 297, 298
 
 - **LAB-295 places**: `cowbell status` names the resolved place (header line + `--json`, matching the picker); tie rule documented (longest cwd wins, first declared on equal length); nested-place, status, and `new`/`--place` tests. Commit `9bd47f0`.

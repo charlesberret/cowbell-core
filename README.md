@@ -19,7 +19,7 @@ catalog that are installed and allowed here, most used here first.
 
   New
     4  claude                 Claude Code
-    5  grok                   Grok CLI                           ! asks first
+    5  grok                   Grok CLI                           ! more reach than needed
     6  agy                    Antigravity (Gemini)
        + 9 more
 
@@ -51,7 +51,8 @@ command read the same catalog and roster, so a session started in one resumes in
   `claude-2`) and the default permissions; `[defaults] ask_name = true` asks for the
   name first. `n` asks for agent, name, model, and permissions.
 - **Trust** appears only if a checker is configured and on PATH, and only as an
-  exception: `! asks first` on an over-privileged row. Blocked agents are left off.
+  exception: a dim `! more reach than needed` on a row the checker calls over-privileged.
+  That is advisory and never stops a launch; blocked agents are left off.
 
 Two hooks let cowbell use tools it does not own, both set in `[defaults]`:
 

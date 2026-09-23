@@ -197,6 +197,9 @@ class Trust(unittest.TestCase):
         v = hm.parse_match("verdict:   ok\nflag:      (none)\n", 0)
         self.assertEqual((v["verdict"], v["flag"]), ("ok", ""))
         self.assertEqual(hm.parse_match("", 3)["verdict"], "overprivilege")
+        v = hm.parse_match("verdict:   overprivilege  (W1 mutate tools on internal work)  [W1 -- reported here]\n"
+                           "flag:      (none)\n", 3)
+        self.assertEqual(v["flag"], "W1 mutate tools on internal work")
 
 
 class PickerList(unittest.TestCase):
@@ -228,7 +231,7 @@ class PickerList(unittest.TestCase):
         self.assertEqual([c["target"]["harness"] for c in choices if c["action"] == "raise"], ["claude", "grok", "pi"])
         text = hm.render_picker(reg, choices)
         for needle in ("  Running\n", "  Resume\n", "  New\n", "  1  majordomo", "in sys:clubhouse", "4m",
-                       "Claude Code", "! asks first"):
+                       "Claude Code", "! more reach than needed"):
             self.assertIn(needle, text)
         for gone in ("LIVE", "RAISE", "subject", "omp", "local-ornith", "⊘", "?", "w1:p1", "cold", "no-session"):
             self.assertNotIn(gone, text)
