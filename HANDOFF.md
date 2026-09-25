@@ -11,6 +11,13 @@ checker's own reason, and the picker badge is a dim `! more reach than needed` (
 Blocked (`⊘`) still refuses, and is now the red mark in `status`. `parse_match` keeps only the reason
 in `flag`, not the checker's bracketed aside. Patron ruling in the metawork sitting (T4: visible, not silent).
 
+## 2026-09-24 — picker `a` adopts the highlighted Running row
+
+Typing `cowbell adopt` (or picker `a`) in a shell made that shell the focused pane, so
+adopt died with `no focused agent pane` and dumped a multi-line list into the popup.
+`a` now adopts the highlighted Running sitting; a positional pane id or sitting name
+selects when focus is a shell; the TUI flash stays one line.
+
 ## 2026-09-20 — Wrangler accuracy batch: LAB-294, 295, 297, 298
 
 - **LAB-295 places**: `cowbell status` names the resolved place (header line + `--json`, matching the picker); tie rule documented (longest cwd wins, first declared on equal length); nested-place, status, and `new`/`--place` tests. Commit `9bd47f0`.

@@ -1723,17 +1723,46 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None) -> None:
     print(f"resumed {r['name']} ({h['id']}) in {pane['pane_id']}")
 
 
-def live_agent_to_adopt(ctx: Ctx, pane_id: str | None = None) -> dict:
+def adopt_pane_from_choice(choice: dict | None) -> str | None:
+    """The picker `a` key adopts the highlighted Running row, not herdr's focused pane."""
+    if choice and choice.get("action") == "focus":
+        return (choice.get("target") or {}).get("pane_id")
+    return None
+
+
+def sitting_of(a: dict, labels: dict | None = None) -> str:
+    """The tab label (sidebar sitting), else herdr's live agent name."""
+    return ((labels or {}).get(a.get("tab_id") or "", "") or a.get("name") or "").strip()
+
+
+def live_agent_to_adopt(ctx: Ctx, pane_id: str | None = None, hint: str | None = None) -> dict:
     """A live herdr pane or process-scan row to put on the roster.
 
     `herdr agent list` often has focused=False on every row. The focused pane
-    is snapshot.focused_pane_id (and panes[].focused).
+    is snapshot.focused_pane_id (and panes[].focused). Typing `cowbell adopt`
+    in a shell makes that shell the focused pane, so a sitting name or pane id
+    in `hint` is tried before giving up. The picker passes the highlighted row
+    as `pane_id` and never needs this fallback.
     """
     agents = ctx.live.agents()
     by_pane = {a.get("pane_id"): a for a in agents if a.get("pane_id")}
+    snap = ctx.live.snapshot() or {}
+    labels = tab_labels(snap)
 
     def from_pane(pid: str | None) -> dict | None:
         return by_pane.get(pid) if pid else None
+
+    def from_hint(word: str | None) -> dict | None:
+        if not word:
+            return None
+        hit = from_pane(word)
+        if hit:
+            return hit
+        hits = [a for a in agents if (sit := sitting_of(a, labels))
+                and (sit == word or slug(sit) == slug(word))]
+        if len(hits) > 1:
+            raise SystemExit(f"cowbell: ambiguous sitting {word!r}")
+        return hits[0] if hits else None
 
     if pane_id:
         hit = from_pane(pane_id)
@@ -1744,7 +1773,6 @@ def live_agent_to_adopt(ctx: Ctx, pane_id: str | None = None) -> dict:
     hit = from_pane(ctx.pane_id)
     if hit:
         return hit
-    snap = ctx.live.snapshot() or {}
     hit = from_pane(snap.get("focused_pane_id"))
     if hit:
         return hit
@@ -1756,22 +1784,27 @@ def live_agent_to_adopt(ctx: Ctx, pane_id: str | None = None) -> dict:
     focused = [a for a in agents if a.get("focused")]
     if focused:
         return focused[0]
+    hit = from_hint(hint)
+    if hit:
+        return hit
     here = [a for a in agents if a.get("cwd") and at_or_beneath(a["cwd"], ctx.cwd)]
     if len(here) == 1:
         return here[0]
     if len(agents) == 1:
         return agents[0]
-    show = here[:12] or agents[:12]
-    lines = ["cowbell: no focused agent pane to adopt. Live here:"]
+    show, scope = (here[:12], " here") if here else (agents[:12], "")
+    lines = [f"cowbell: no focused agent pane to adopt. Live{scope}:"]
     for a in show:
-        lines.append(f"  {a.get('pane_id')}  {a.get('agent') or '?'}  {tilde(a.get('cwd') or '')}")
-    lines.append("pass --pane ID")
+        bits = [a.get("pane_id") or "?", sitting_of(a, labels), a.get("agent") or "?",
+                tilde(a.get("cwd") or "")]
+        lines.append("  " + "  ".join(b for b in bits if b))
+    lines.append("cowbell adopt --pane ID  (or a sitting name)")
     raise SystemExit("\n".join(lines))
 
 
 def cmd_adopt(ctx: Ctx, cat: dict, name: str | None = None, pane_id: str | None = None) -> dict:
     """Bind a live sitting cowbell did not start onto the roster. Returns the new row."""
-    a = live_agent_to_adopt(ctx, pane_id)
+    a = live_agent_to_adopt(ctx, pane_id, hint=name)
     kind = a.get("agent") or ""
     if not kind:
         raise SystemExit(f"cowbell: pane {a.get('pane_id')} hosts no recognized agent")
@@ -1784,11 +1817,13 @@ def cmd_adopt(ctx: Ctx, cat: dict, name: str | None = None, pane_id: str | None 
         except HerdrError:
             pass
     snap = ctx.live.snapshot()
-    sitting = tab_labels(snap).get(a.get("tab_id") or "", "")
+    sitting = sitting_of(a, tab_labels(snap))
     title = a.get("terminal_title_stripped") or ""
     noisy = (not title or title.startswith("-") or " - grok " in title.lower()
              or "waiting" in title.lower() or "running:" in title.lower())
-    base = slug(name or sitting or (title if not noisy else kind))
+    # `cowbell adopt wK:pK` used the pane as identity, not as the roster sitting.
+    roster_as = None if name and name == a.get("pane_id") else name
+    base = slug(roster_as or sitting or (title if not noisy else kind))
     rows = load_roster()
     nm = unique_name(base, {r["name"] for r in rows if r.get("pane_id") != a.get("pane_id")})
     rows = [r for r in rows if r.get("pane_id") != a.get("pane_id")]
@@ -2058,7 +2093,7 @@ def menu(body: list[str], rows: list[int], hints: list[tuple[str, str, str]], se
          numbered: list[int] | None = None, scr: Screen | None = None, tick: float | None = None) -> tuple:
     """Pick one of `rows` (line indexes into body).
 
-    Returns ("pick", i), ("key", ch) for a hotkey, clicked hint or clicked `line_keys` line, ("cancel",),
+    Returns ("pick", i), ("key", ch, i) for a hotkey, clicked hint or clicked `line_keys` line, ("cancel",),
     or ("tick", i) after `tick` idle seconds so the caller can refresh (pass `scr` to keep the screen up).
     `numbered[n-1]` is the row a typed digit n selects (default: rows in order).
     Click or arrows / j k / wheel select; enter (or the ⏎ button) confirms; digits jump (and pick when
@@ -2069,6 +2104,7 @@ def menu(body: list[str], rows: list[int], hints: list[tuple[str, str, str]], se
     by_line = {ln: i for i, ln in enumerate(rows)}
     numbered = list(range(len(rows))) if numbered is None else numbered
     digits, top = "", 0
+    flash = ((flash or "").splitlines() or [""])[0]
     bar, spans = hint_bar(hints)
     own = scr is None
     scr = (scr or Screen()).open()
@@ -2108,9 +2144,9 @@ def menu(body: list[str], rows: list[int], hints: list[tuple[str, str, str]], se
                                     if rows:
                                         return ("pick", selected)
                                     continue
-                                return ("key", hit)
+                                return ("key", hit, selected)
                         elif line in (line_keys or {}) and y <= view:
-                            return ("key", line_keys[line])
+                            return ("key", line_keys[line], selected)
                         elif line in by_line and y <= view:
                             selected = by_line[line]
                     continue
@@ -2147,7 +2183,7 @@ def menu(body: list[str], rows: list[int], hints: list[tuple[str, str, str]], se
                 elif val == "q":
                     return ("cancel",)
                 elif val.lower() in hotkeys:
-                    return ("key", val.lower())
+                    return ("key", val.lower(), selected)
     finally:
         if own:
             scr.close()
@@ -2399,6 +2435,8 @@ def picker(ctx: Ctx, cat: dict) -> int:
                            numbered=[i for i, c in enumerate(choices) if c.get("idx")], scr=scr, tick=REFRESH_S)
                 if res[0] in ("pick", "tick") and choices:
                     sel_key, sel_at = choices[res[1]].get("key") or "", res[1]
+                elif res[0] == "key" and len(res) > 2 and choices and 0 <= res[2] < len(choices):
+                    sel_key, sel_at = choices[res[2]].get("key") or "", res[2]
                 if res[0] == "tick":
                     continue
                 flash = ""
@@ -2407,9 +2445,14 @@ def picker(ctx: Ctx, cat: dict) -> int:
                 if res[0] == "pick":
                     hit = choices[res[1]]
                     raw = ""
+                elif res[0] == "key":
+                    raw = res[1]
+                    # only `a` means "this highlighted row"; n/w/g must not focus it
+                    hit = (choices[sel_at] if raw == "a" and choices and 0 <= sel_at < len(choices)
+                           else None)
                 else:
-                    hit, raw = None, res[1]
-                if hit and hit["action"] == "more":
+                    hit, raw = None, res[1] if len(res) > 1 else ""
+                if hit and hit["action"] == "more" and raw != "a":
                     expanded.add(hit["section"])
                     continue
             else:
@@ -2428,12 +2471,18 @@ def picker(ctx: Ctx, cat: dict) -> int:
                 sel_key = ""
                 continue
             if raw == "a":
-                pane = (hit["target"].get("pane_id") if hit and hit.get("action") == "focus" else None)
+                pane = adopt_pane_from_choice(hit)
+                if not pane and tui:
+                    flash = "select a running sitting to adopt"
+                    continue
                 try:
                     cmd_adopt(ctx, full_cat, pane_id=pane)
                     flash = "adopted"
                 except SystemExit as e:
-                    flash = str(e)
+                    if tui:
+                        flash = str(e).splitlines()[0]
+                    else:
+                        print(f"  {e}")
                 continue
             if raw not in ("w", "n") and not hit:
                 continue
@@ -2515,7 +2564,8 @@ def main(argv: list[str]) -> int:
     if cmd == "adopt" and (opts.get("help") or opts.get("h") or (pos and pos[0] in ("-h", "--help"))):
         print("cowbell adopt [name] [--pane ID]")
         print("  Bind a live sitting cowbell did not start onto the roster.")
-        print("  Default: this pane if it is an agent, else herdr's focused agent pane.")
+        print("  Default: this pane if it is an agent, else the highlighted Running row,")
+        print("  else herdr's focused agent pane. name may be a pane id or live sitting.")
         return 0
     ctx = choose_host(server_up())
     cat = load_catalog()

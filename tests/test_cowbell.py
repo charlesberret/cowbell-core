@@ -1241,6 +1241,66 @@ class Adopt(unittest.TestCase):
         self.assertEqual(row["pane_id"], "wK:p6")
         self.assertEqual(row["harness"], "claude")
 
+    def _two_unfocused(self):
+        grok = agent("wK:pK", "grok", str(Path.home()), "idle", "metawork")
+        grok["focused"] = False
+        grok["tab_id"] = "wK:tK"
+        grok["name"] = "metawork"
+        claude = agent("wK:p6", "claude", str(Path.home()), "idle", "coord")
+        claude["focused"] = False
+        claude["tab_id"] = "wK:t6"
+        claude["name"] = "coord-career"
+
+        class TwoLive(hm.LiveSource):
+            def agents(self):
+                return [grok, claude]
+
+            def snapshot(self):
+                return {
+                    "focused_pane_id": "wK:p9",  # the shell where adopt was typed
+                    "panes": [{"pane_id": "wK:p9", "focused": True}],
+                    "tabs": [{"tab_id": "wK:tK", "label": "metawork"},
+                             {"tab_id": "wK:t6", "label": "coord-career"}],
+                }
+
+        ctx = hm.Ctx(cwd=ROOT, mode="tab", pane_id="wK:p9", live=TwoLive(), launch=hm.HereLaunch())
+        return ctx, grok, claude
+
+    def test_adopt_from_shell_needs_a_target(self):
+        """Typing adopt in a shell: that shell is focused, and there are several agents."""
+        ctx, grok, claude = self._two_unfocused()
+        with self.assertRaises(SystemExit) as e:
+            hm.cmd_adopt(ctx, CAT)
+        msg = str(e.exception)
+        self.assertIn("no focused agent pane to adopt", msg)
+        self.assertIn("wK:pK", msg)
+        self.assertIn("metawork", msg)
+        self.assertNotIn("Live here:", msg)  # those agents sit at ~, not under ROOT
+        self.assertIn("Live:", msg)
+
+    def test_adopt_positional_pane_id(self):
+        ctx, grok, claude = self._two_unfocused()
+        row = hm.cmd_adopt(ctx, CAT, name="wK:pK")
+        self.assertEqual(row["pane_id"], "wK:pK")
+        self.assertEqual(row["name"], "metawork")  # pane id is identity, not the sitting
+        self.assertEqual(row["harness"], "grok")
+
+    def test_adopt_positional_sitting(self):
+        ctx, grok, claude = self._two_unfocused()
+        row = hm.cmd_adopt(ctx, CAT, name="coord-career")
+        self.assertEqual(row["pane_id"], "wK:p6")
+        self.assertEqual(row["name"], "coord-career")
+
+    def test_picker_a_adopts_the_highlighted_running_row(self):
+        grok = {"name": "metawork", "harness": "grok", "kind": "grok", "status": "idle",
+                "pane_id": "wK:pK", "workspace_id": "wK"}
+        resume = {"name": "old", "harness": "claude", "kind": "claude", "pane_id": "wK:p1"}
+        running = {"action": "focus", "target": grok}
+        cold = {"action": "enter", "target": resume}
+        self.assertEqual(hm.adopt_pane_from_choice(running), "wK:pK")
+        self.assertIsNone(hm.adopt_pane_from_choice(cold))
+        self.assertIsNone(hm.adopt_pane_from_choice(None))
+
 
 class ExtensionPoints(unittest.TestCase):
     """The two hooks onto tools cowbell does not own (LAB-318)."""
