@@ -7,16 +7,19 @@
   cowbell status [--json] [--place P]   what is raised here (running · resume · new)
                                 --json: machine rows (name, harness, place, cwd, host, state)
   cowbell <harness>             attach to that harness here, or raise it with defaults
-  cowbell new --harness ID [--model M] [--lane L] [--allow T] [--deny T] [--name N] [--place P] [--spawn]
+  cowbell new --harness ID [--model M] [--lane L] [--allow T] [--deny T] [--name N] [--place P] [--spawn] [--pen]
                                 --spawn: start and return (assemblies raise N times). default: exec here
+                                --pen: a person asks for the place's own herdr pen (a new machine-list line)
   cowbell enter <name>          focus if live, else resume
   cowbell adopt [name] [--pane ID]  put a live sitting cowbell did not start on the roster
   cowbell list [--all]          roster rows (default: this directory)
   cowbell catalog               every harness: kind, egress, installed, trust badge
 
-Inside a herdr pane, starting or resuming opens a new herdr tab. Anywhere else it
-runs the agent in this terminal, and Running also lists agent processes found
-by working directory.
+A person inside herdr gets a new pane in the existing `proj:<directory>` workspace.
+`--pen` opens the place's own pen (a new machine-list line) instead. An agent caller always runs in this
+terminal, even inside a pane (`COWBELL_CALLER=person` overrides). Anywhere
+else, or with `COWBELL_MODE=here`, the agent runs in this terminal. Running
+also lists agent processes found by working directory.
 
 The herdr plugin (herdr-cowbell) adds prefix+c, stop and import-seats on top of this.
 
@@ -1082,6 +1085,21 @@ def in_herdr_pane(env=None) -> bool:
     return bool(env.get("HERDR_PANE_ID") or env.get("HERDR_PLUGIN_CONTEXT_JSON") or env.get("COWBELL_CTX"))
 
 
+# Harnesses set these. COWBELL_CALLER=person|agent wins when a sitting must override.
+_AGENT_ENV = ("GROK_AGENT", "CLAUDECODE", "CLAUDE_CODE")
+
+
+def caller_is_agent(env=None) -> bool:
+    """True when this process is an agent sitting, not a person at the keyboard."""
+    env = os.environ if env is None else env
+    who = (env.get("COWBELL_CALLER") or "").strip().lower()
+    if who == "agent":
+        return True
+    if who == "person":
+        return False
+    return any(env.get(k) for k in _AGENT_ENV)
+
+
 def ps_table(text: str | None = None) -> dict[int, dict]:
     """pid -> {ppid, tty, argv}. `text` is `ps -axo pid=,ppid=,tty=,args=` output (for tests)."""
     if text is None:
@@ -1330,6 +1348,7 @@ class HereLaunch(HostLaunch):
 
     def start(self, cat, h, name, root, ctx, *args, **kw):
         spawn = kw.pop("spawn", False)
+        kw.pop("pen", None)  # a pen is a herdr workspace; this host has no tab
         fn = spawn_here if spawn else exec_here
         return fn(cat, h, name, root, ctx, *args, **kw)
 
@@ -1469,6 +1488,40 @@ def workspace_by_label(label: str) -> str | None:
     return next((w["workspace_id"] for w in workspaces() if w.get("label") == label), None)
 
 
+def project_workspace(root: str, ctx: Ctx) -> str | None:
+    """An existing project line for this directory. Never creates one."""
+    base = os.path.basename(os.path.realpath(root).rstrip(os.sep))
+    labelled = workspace_by_label(f"proj:{base}") if base else None
+    if labelled:
+        return labelled
+    if ctx.workspace_id:
+        return ctx.workspace_id
+    for p in live_panes():
+        if p.get("cwd") and at_or_beneath(p["cwd"], root) and p.get("workspace_id"):
+            return p["workspace_id"]
+    return None
+
+
+def split_pane(workspace_id: str, root: str) -> dict | None:
+    """A new pane inside an existing workspace. None when that workspace has no pane to split."""
+    panes = [p for p in live_panes() if p.get("workspace_id") == workspace_id and p.get("pane_id")]
+    panes.sort(key=lambda p: 0 if p.get("cwd") and at_or_beneath(p["cwd"], root) else 1)
+    if not panes:
+        return None
+    res = herdr("pane", "split", panes[0]["pane_id"], "--cwd", root, "--direction", "right", "--no-focus")
+    pane = res.get("pane") or res.get("root_pane") or res
+    if not isinstance(pane, dict):
+        return None
+    pid = pane.get("pane_id")
+    if not pid:
+        return None
+    return {
+        "pane_id": pid,
+        "tab_id": pane.get("tab_id") or panes[0].get("tab_id"),
+        "workspace_id": pane.get("workspace_id") or workspace_id,
+    }
+
+
 def create_tab(workspace_id: str | None, root: str, label: str, workspace_label: str | None = None) -> dict:
     """New tab labelled with the sitting. Identity is the tab, never pane --title / rename."""
     if workspace_id:
@@ -1540,15 +1593,23 @@ def start_native(name: str, kind: str, pane_id: str, argv: list[str]) -> dict:
 
 def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", lane="", allow="", deny="",
                   seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None,
-                  focus: bool = True) -> dict:
+                  focus: bool = True, pen: bool = False, split: bool = False) -> dict:
     argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, sitting=name, extra=extra)
     place = place_for(cat, root)
     base = ([h["command"], *argv] if is_wrapper(h) else [h["kind"], *argv])
     confined = unix_confine(cat, root, base)
-    if place and place.get("workspace_label"):  # a place's sittings open in its own pen, not the caller's
+    # --pen is a new machine-list line (the place's workspace_label).
+    # Otherwise create a tab in the project workspace that already exists (proj:<dir>).
+    if pen and place and place.get("workspace_label"):
         pane = create_tab(workspace_by_label(place["workspace_label"]), root, name, place["workspace_label"])
     else:
-        pane = create_tab(pick_workspace(ctx, root), root, name)
+        wid = project_workspace(root, ctx)
+        if split:
+            pane = split_pane(wid, root) if wid else None
+            if not pane:
+                pane = create_tab(pick_workspace(ctx, root), root, name)
+        else:
+            pane = create_tab(wid or pick_workspace(ctx, root), root, name)
     pid = pane["pane_id"]
     launched_session = ""
     try:
@@ -1873,7 +1934,7 @@ def gate(cat_h: dict, root: str, interactive: bool, assume_yes: bool) -> dict:
 
 def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="", name="", no_seat=False,
             assume_yes=False, root: str | None = None, extra: list[str] | None = None, focus: bool = True,
-            place: str = "", spawn=None) -> None:
+            place: str = "", spawn=None, pen: bool = False, split: bool = False) -> None:
     if place:
         pl = places(cat).get(place)
         if not pl:
@@ -1902,7 +1963,8 @@ def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="",
     gate(h, root, interactive=False, assume_yes=assume_yes)
     base = slug(name or h["id"])
     nm = unique_name(base, live_names(ctx.live.snapshot()) | {r["name"] for r in load_roster()})
-    pane = launch(cat, h, nm, root, ctx, model, lane, allow, deny, seat, extra=extra, focus=focus, spawn=spawn)
+    pane = launch(cat, h, nm, root, ctx, model, lane, allow, deny, seat, extra=extra, focus=focus, spawn=spawn,
+                  pen=pen)
     print(f"raised {nm}  {h['id']}{(' ' + model) if model else ''}{(' ' + lane) if lane else ''}  in {pane['pane_id']}  {tilde(root)}")
 
 
@@ -2533,7 +2595,7 @@ def parse_flags(args: list[str]) -> tuple[dict, list[str]]:
         if a.startswith("--") and "=" in a:
             k, v = a[2:].split("=", 1); opts[k] = v
         elif a in ("--yes", "-y", "--all", "--no-seat", "--no-focus", "-i", "--json", "--spawn",
-                   "--help", "-h"):
+                   "--pen", "--split", "--help", "-h"):
             opts[a.lstrip("-")] = True
         elif a.startswith("--") and i + 1 < len(args):
             opts[a[2:]] = args[i + 1]; i += 1
@@ -2544,10 +2606,11 @@ def parse_flags(args: list[str]) -> tuple[dict, list[str]]:
 
 
 def choose_host(herdr_up: bool, env=None) -> Ctx:
-    """Once per run. Inside a herdr pane (or its popup): herdr tabs and herdr's agents. Anywhere else, or
-    with COWBELL_MODE=here: this terminal, plus herdr's agents only when a server is actually listening."""
+    """Once per run. An agent caller inside a herdr pane gets herdr tabs. A person, anywhere else, or
+    COWBELL_MODE=here: this terminal. Herdr's agents are listed only when a server is actually listening."""
     env = os.environ if env is None else env
-    if env.get("COWBELL_MODE") != "here" and herdr_up and in_herdr_pane(env):
+    if (caller_is_agent(env) and env.get("COWBELL_MODE") != "here"
+            and herdr_up and in_herdr_pane(env)):
         return Ctx.from_env(env)
     return Ctx(cwd=os.getcwd(), mode="here", live=CombinedLive(HerdrLive() if herdr_up else None, ProcessScan()))
 
@@ -2591,7 +2654,7 @@ def main(argv: list[str]) -> int:
         cmd_new(ctx, cat, hid, opts.get("model", ""), opts.get("lane", ""), opts.get("allow", ""), opts.get("deny", ""),
                 opts.get("name", ""), bool(opts.get("no-seat")), bool(opts.get("yes")), opts.get("root"),
                 extra=extra_pos, focus=not opts.get("no-focus"),
-                place=opts.get("place", ""), spawn=bool(opts.get("spawn")))
+                place=opts.get("place", ""), spawn=bool(opts.get("spawn")), pen=bool(opts.get("pen")))
         return 0
     if harness_by_id(cat, cmd):
         cmd_dispatch(ctx, cat, cmd, bool(opts.get("yes"))); return 0

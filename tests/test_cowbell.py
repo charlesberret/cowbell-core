@@ -582,7 +582,7 @@ class Places(unittest.TestCase):
         hm.load_roster = lambda: []
         try:
             pane = hm.raise_harness(self.cat, hm.harness_by_id(self.cat, "grok"), "grok-3", self.pad,
-                                    hm.Ctx(workspace_id="wK", cwd=self.home))
+                                    hm.Ctx(workspace_id="wK", cwd=self.home), pen=True)
         finally:
             hm.herdr, hm.start_native, hm.save_roster, hm.load_roster = saved
         return pane, calls
@@ -602,6 +602,69 @@ class Places(unittest.TestCase):
         tab = next(c for c in calls if c[:2] == ("tab", "create"))
         self.assertEqual(tab[tab.index("--workspace") + 1], "wL")
         self.assertFalse(any(c[:2] == ("workspace", "create") for c in calls))
+
+    def test_without_pen_stays_on_the_caller_line(self):
+        pane, calls = self._raise([{"workspace_id": "wK", "label": "home ~"},
+                                   {"workspace_id": "wL", "label": "lobby"}])
+        # _raise passes pen=True. Call again without it.
+        calls.clear()
+        saved = (hm.herdr, hm.start_native, hm.save_roster, hm.load_roster)
+        def fake_herdr(*args, expect_json=True):
+            calls.append(args)
+            if args[:2] == ("workspace", "list"):
+                return {"workspaces": [{"workspace_id": "wK", "label": "home ~"},
+                                       {"workspace_id": "wL", "label": "lobby"}]}
+            if args[:2] == ("tab", "create"):
+                return {"root_pane": {"pane_id": "wK:p9", "tab_id": "wK:t9", "workspace_id": args[3]}}
+            return {}
+        hm.herdr = fake_herdr
+        hm.start_native = lambda *a, **k: {}
+        hm.save_roster = lambda rows: None
+        hm.load_roster = lambda: []
+        try:
+            pane = hm.raise_harness(self.cat, hm.harness_by_id(self.cat, "grok"), "grok-4", self.pad,
+                                    hm.Ctx(workspace_id="wK", cwd=self.home))
+        finally:
+            hm.herdr, hm.start_native, hm.save_roster, hm.load_roster = saved
+        tab = next(c for c in calls if c[:2] == ("tab", "create"))
+        self.assertEqual(tab[tab.index("--workspace") + 1], "wK")
+        self.assertEqual(pane["workspace_id"], "wK")
+        self.assertFalse(any(c[:2] == ("workspace", "create") for c in calls))
+
+    def test_without_pen_creates_a_tab_in_proj_workspace(self):
+        calls = []
+
+        def fake_herdr(*args, expect_json=True):
+            calls.append(args)
+            if args[:2] == ("workspace", "list"):
+                return {"workspaces": [
+                    {"workspace_id": "w1B", "label": "proj:agent-lobby"},
+                    {"workspace_id": "wL", "label": "lobby"},
+                ]}
+            if args[:2] == ("pane", "list"):
+                return {"panes": [{"pane_id": "w1B:p1", "workspace_id": "w1B", "tab_id": "w1B:t1",
+                                   "cwd": self.pad}]}
+            if args[:2] == ("tab", "create"):
+                return {"tab": {"tab_id": "w1B:t2", "workspace_id": "w1B"}, "root_pane": {"pane_id": "w1B:p9", "tab_id": "w1B:t2", "workspace_id": "w1B"}}
+            return {}
+
+        saved = (hm.herdr, hm.start_native, hm.save_roster, hm.load_roster)
+        hm.herdr = fake_herdr
+        hm.start_native = lambda *a, **k: {}
+        hm.save_roster = lambda rows: None
+        hm.load_roster = lambda: []
+        try:
+            pane = hm.raise_harness(self.cat, hm.harness_by_id(self.cat, "grok"), "grok-5", self.pad,
+                                    hm.Ctx(workspace_id="wL", cwd=self.pad))
+        finally:
+            hm.herdr, hm.start_native, hm.save_roster, hm.load_roster = saved
+        tab_create = next(c for c in calls if c[:2] == ("tab", "create"))
+        self.assertEqual(tab_create[2], "--workspace")
+        self.assertEqual(tab_create[3], "w1B")
+        self.assertEqual(pane["pane_id"], "w1B:p9")
+        self.assertEqual(pane["workspace_id"], "w1B")
+        self.assertFalse(any(c[:2] == ("workspace", "create") for c in calls))
+        self.assertFalse(any(c[:2] == ("pane", "split") for c in calls))
 
 
 class Hosts(unittest.TestCase):
@@ -633,9 +696,9 @@ class Hosts(unittest.TestCase):
     def test_host_is_chosen_once(self):
         pane = {"HERDR_PANE_ID": "w1:p1", "HERDR_WORKSPACE_ID": "w1"}
         inside = hm.choose_host(True, pane)
-        self.assertEqual(inside.mode, "tab")
-        self.assertIsInstance(inside.launch, hm.HerdrLaunch)
-        self.assertIsInstance(inside.live, hm.HerdrLive)
+        self.assertEqual(inside.mode, "here")
+        self.assertIsInstance(inside.launch, hm.HereLaunch)
+        self.assertIsInstance(inside.live, hm.CombinedLive)
         forced = hm.choose_host(True, {**pane, "COWBELL_MODE": "here"})
         self.assertEqual(forced.mode, "here")
         self.assertIsInstance(forced.launch, hm.HereLaunch)
@@ -644,6 +707,12 @@ class Hosts(unittest.TestCase):
         self.assertEqual(offline.mode, "here")
         self.assertFalse(offline.live.herdr)
         self.assertEqual([type(x) for x in offline.live.sources], [hm.ProcessScan])
+        agent = hm.choose_host(True, {**pane, "GROK_AGENT": "1"})
+        self.assertEqual(agent.mode, "tab")
+        self.assertIsInstance(agent.launch, hm.HerdrLaunch)
+        self.assertIsInstance(agent.live, hm.HerdrLive)
+        person = hm.choose_host(True, {**pane, "GROK_AGENT": "1", "COWBELL_CALLER": "person"})
+        self.assertEqual(person.mode, "here")
 
     def test_here_never_creates_a_tab(self):
         calls = []
