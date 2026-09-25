@@ -2609,8 +2609,8 @@ def choose_host(herdr_up: bool, env=None) -> Ctx:
     """Once per run. An agent caller inside a herdr pane gets herdr tabs. A person, anywhere else, or
     COWBELL_MODE=here: this terminal. Herdr's agents are listed only when a server is actually listening."""
     env = os.environ if env is None else env
-    if (caller_is_agent(env) and env.get("COWBELL_MODE") != "here"
-            and herdr_up and in_herdr_pane(env)):
+    wants_tab = env.get("COWBELL_MODE") == "tab" or (caller_is_agent(env) and env.get("COWBELL_MODE") != "here")
+    if wants_tab and herdr_up and in_herdr_pane(env):
         return Ctx.from_env(env)
     return Ctx(cwd=os.getcwd(), mode="here", live=CombinedLive(HerdrLive() if herdr_up else None, ProcessScan()))
 

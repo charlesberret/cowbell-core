@@ -713,6 +713,8 @@ class Hosts(unittest.TestCase):
         self.assertIsInstance(agent.live, hm.HerdrLive)
         person = hm.choose_host(True, {**pane, "GROK_AGENT": "1", "COWBELL_CALLER": "person"})
         self.assertEqual(person.mode, "here")
+        tabbed_person = hm.choose_host(True, {**pane, "COWBELL_MODE": "tab"})
+        self.assertEqual(tabbed_person.mode, "tab")
 
     def test_here_never_creates_a_tab(self):
         calls = []
