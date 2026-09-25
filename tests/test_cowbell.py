@@ -790,6 +790,36 @@ class NoHerdrCalls(unittest.TestCase):
         self.assertIn("FAKE-AGENT --continue", enter.stdout, enter.stderr)
         self.assertFalse(self.log.exists(), self.log.read_text() if self.log.exists() else "")
 
+    def test_new_never_runs_herdr(self):
+        res = self.run_cowbell("new", "--harness", "fake", "--name", "test1")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertFalse(self.log.exists(), self.log.read_text() if self.log.exists() else "")
+
+    def test_list_never_runs_herdr(self):
+        res = self.run_cowbell("list")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertFalse(self.log.exists(), self.log.read_text() if self.log.exists() else "")
+
+    def test_dispatch_never_runs_herdr(self):
+        res = self.run_cowbell("fake", "--name", "test2")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertFalse(self.log.exists(), self.log.read_text() if self.log.exists() else "")
+
+    def test_server_socket_listening_but_no_herdr_bin(self):
+        import socket, subprocess
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.bind(self.env["HERDR_SOCKET_PATH"])
+        sock.listen(1)
+        try:
+            env = {**self.env}
+            env.pop("HERDR_BIN_PATH", None)
+            env["PATH"] = "/usr/sbin:/usr/bin:/bin"
+            res = subprocess.run([sys.executable, str(Hosts.SRC), "status"], env=env, cwd=self.base, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertIn("sitting", res.stdout)
+        finally:
+            sock.close()
+
 
 class Standalone(unittest.TestCase):
     PS = """\

@@ -1392,8 +1392,17 @@ def herdr_socket() -> Path:
     return (Path(cfg).expanduser().parent if cfg else Path("~/.config/herdr").expanduser()) / "herdr.sock"
 
 
+def has_herdr() -> bool:
+    bin_path = os.environ.get("HERDR_BIN_PATH")
+    if bin_path:
+        return os.path.isfile(bin_path) and os.access(bin_path, os.X_OK)
+    return bool(shutil.which("herdr") or (os.path.isfile(os.path.expanduser("~/.local/bin/herdr")) and os.access(os.path.expanduser("~/.local/bin/herdr"), os.X_OK)))
+
+
 def server_up() -> bool:
     """A herdr server is listening. Probes the socket, so it never runs the herdr CLI."""
+    if not has_herdr():
+        return False
     import socket
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(0.3)

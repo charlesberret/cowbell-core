@@ -11,6 +11,11 @@ checker's own reason, and the picker badge is a dim `! more reach than needed` (
 Blocked (`⊘`) still refuses, and is now the red mark in `status`. `parse_match` keeps only the reason
 in `flag`, not the checker's bracketed aside. Patron ruling in the metawork sitting (T4: visible, not silent).
 
+## 2026-09-25 — delegation vision & standalone without herdr CLI (LAB-497)
+
+- **Delegation & tab defaults (`3d5cfb2`, `af00c45`)**: Human callers running `cowbell new` default to `mode="here"` (replacing the current shell). Agent callers (`caller_is_agent()`) default to creating a new tab via herdr. The `herdr-cowbell` plugin sets `COWBELL_MODE=tab` so `prefix+c` retains tab-creation behavior for humans. `raise_harness` defaults to `create_tab` within the project workspace (`--split` opts into pane splitting).
+- **LAB-497 standalone without herdr binary**: Added `has_herdr()` check in the herdr adapter; `server_up()` returns `False` if the `herdr` binary is missing from PATH/environment, so standalone cowbell (`COWBELL_MODE=here` or outside herdr) never attempts to run a missing binary even if a server socket exists. All standalone operations (`status`, `picker`, `enter`, `new`, `list`, `dispatch`) run with zero `herdr` subprocess calls. Tested in `tests/test_cowbell.py` (`NoHerdrCalls`).
+
 ## 2026-09-24 — picker `a` adopts the highlighted Running row
 
 Typing `cowbell adopt` (or picker `a`) in a shell made that shell the focused pane, so
