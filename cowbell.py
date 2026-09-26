@@ -1765,14 +1765,39 @@ def cmd_registry(ctx: Ctx, cat: dict, root: str | None = None, as_json: bool = F
     return reg
 
 
-def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None) -> None:
+def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None, target: dict | None = None) -> None:
     root, place, _ = resolve_root(cat, root or ctx.cwd)
     scoped = scoped_catalog(cat, place)
-    rows = load_roster()
-    hits = [r for r in rows if r["name"] == name] or [r for r in rows if name in r["name"]]
-    if len(hits) != 1:
-        raise SystemExit(f"cowbell: {'no' if not hits else 'ambiguous'} roster entry {name!r}")
-    r = hits[0]
+    r = target
+    if r is None:
+        rows = load_roster()
+        hits = [x for x in rows if x.get("name") == name and at_or_beneath(x.get("cwd", ""), root)]
+        if not hits:
+            hits = [x for x in rows if x.get("name") == name]
+        if not hits:
+            hits = [x for x in rows if x.get("session_id") == name or (x.get("session_id") or "").startswith(name)]
+        if not hits:
+            hits = [x for x in rows if name in x.get("name", "")]
+        if not hits:
+            history = discover_sessions(root, cat)
+            hits = [x for x in history if x.get("name") == name]
+            if not hits:
+                hits = [x for x in history if x.get("session_id") == name or (x.get("session_id") or "").startswith(name)]
+            if not hits:
+                hits = [x for x in history if name in x.get("name", "")]
+            if not hits:
+                hits = [x for x in history if name in (x.get("title") or "")]
+        if len(hits) == 1:
+            r = hits[0]
+        elif len(hits) > 1:
+            exact = [x for x in hits if x.get("name") == name or x.get("session_id") == name]
+            if len(exact) == 1:
+                r = exact[0]
+            else:
+                matches = ", ".join(repr(x.get("name") or (x.get("session_id") or "")[:8]) for x in hits[:5])
+                raise SystemExit(f"cowbell: ambiguous session {name!r} matches: {matches}")
+        else:
+            raise SystemExit(f"cowbell: no session {name!r} on roster or in history")
     live = ctx.live.agent(r["name"])
     if live and live.get("pane_id"):
         print(ctx.live.focus({**live, "name": r["name"]}))
@@ -1782,15 +1807,16 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None) -> None:
             print(ctx.live.focus({**a, "name": r["name"]}))
             return
     hid = r.get("harness") or r.get("kind") or ""
-    h = harness_by_id(scoped, hid)
+    h = harness_by_id(scoped, hid) or next((x for x in scoped.get("harness", []) if x.get("kind") == r.get("kind")), None)
     if not h:
         where = f"place {place['name']}" if place else "this catalog"
         raise SystemExit(f"cowbell: {r['name']} uses harness {hid!r} which may not resume in {where}")
     cat = scoped
     seat = Path(r["seat"]) if r.get("seat") and Path(r["seat"]).is_file() else None
     pane = launch(cat, h, r["name"], r.get("cwd") or root or ctx.cwd, ctx, r.get("model", ""), r.get("lane", ""),
-                         r.get("allow", ""), r.get("deny", ""), seat, resume_id=r.get("session_id", ""))
-    print(f"resumed {r['name']} ({h['id']}) in {pane['pane_id']}")
+                  r.get("allow", ""), r.get("deny", ""), seat, resume_id=r.get("session_id", ""))
+    pid = (pane or {}).get("pane_id") or ""
+    print(f"resumed {r['name']} ({h['id']}){(' in ' + pid) if pid else ''}")
 
 
 def adopt_pane_from_choice(choice: dict | None) -> str | None:
@@ -1988,7 +2014,7 @@ def cmd_dispatch(ctx: Ctx, cat: dict, hid: str, assume_yes: bool) -> None:
             return
     for r in reg["cold"]:
         if (r.get("harness") or r.get("kind")) == hid:
-            cmd_enter(ctx, cat, r["name"], root)
+            cmd_enter(ctx, cat, r["name"], root, target=r)
             return
     cmd_new(ctx, cat, hid, assume_yes=assume_yes, root=root)
 
@@ -2575,7 +2601,7 @@ def picker(ctx: Ctx, cat: dict) -> int:
                 if raw in ("w", "n"):
                     done = wizard(ctx, cat, root)
                 elif hit["action"] == "enter":
-                    cmd_enter(ctx, cat, hit["target"]["name"], root)
+                    cmd_enter(ctx, cat, hit["target"]["name"], root, target=hit["target"])
                     done = True
                 else:
                     done = raise_quick(ctx, cat, hit["target"]["harness"], root)

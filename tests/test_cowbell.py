@@ -1018,6 +1018,55 @@ class ResumeOutside(unittest.TestCase):
         # only claude claims a cowbell-chosen session id; the others are honestly absent
         self.assertEqual([h["id"] for h in cat["harness"] if h.get("session_id_flag")], ["claude"])
 
+    def test_cmd_enter_with_target_resumes_directly(self):
+        claude = dict(CAT["harness"][0], session_id_flag="--session-id", name_flag="--name")
+        cat = {**CAT, "harness": [claude] + [h for h in CAT["harness"] if h["id"] != "claude"]}
+        captured = []
+        orig_exec, orig_roster = hm.exec_here, hm.load_roster
+        hm.exec_here = lambda *a, **k: captured.append((a, k)) or {"pane_id": "here"}
+        hm.load_roster = lambda: []  # empty roster
+        try:
+            ctx = hm.Ctx(cwd=ROOT, mode="here", live=hm.LiveSource())
+            target = {"name": "target-sess", "cwd": ROOT, "harness": "claude", "kind": "claude",
+                      "session_id": "target-sid", "pane_id": None}
+            hm.cmd_enter(ctx, cat, "target-sess", target=target)
+        finally:
+            hm.exec_here, hm.load_roster = orig_exec, orig_roster
+        self.assertEqual(len(captured), 1)
+        args, kwargs = captured[0]
+        self.assertEqual(kwargs.get("resume_id"), "target-sid")
+
+    def test_cmd_enter_finds_history_session_when_absent_from_roster(self):
+        claude = dict(CAT["harness"][0], session_id_flag="--session-id", name_flag="--name")
+        cat = {**CAT, "harness": [claude] + [h for h in CAT["harness"] if h["id"] != "claude"]}
+        hist_session = {"name": "metawork-history", "cwd": ROOT, "harness": "claude", "kind": "claude",
+                        "session_id": "sess-hist-123", "title": "fix parser", "pane_id": None}
+        captured = []
+        orig_exec, orig_roster, orig_discover = hm.exec_here, hm.load_roster, hm.discover_sessions
+        hm.exec_here = lambda *a, **k: captured.append((a, k)) or {"pane_id": "here"}
+        hm.load_roster = lambda: []  # empty roster
+        hm.discover_sessions = lambda root, cat, home=None: [hist_session]
+        try:
+            ctx = hm.Ctx(cwd=ROOT, mode="here", live=hm.LiveSource())
+            # Find by name
+            hm.cmd_enter(ctx, cat, "metawork-history")
+            self.assertEqual(captured[-1][1].get("resume_id"), "sess-hist-123")
+
+            # Find by session_id prefix
+            hm.cmd_enter(ctx, cat, "sess-hist")
+            self.assertEqual(captured[-1][1].get("resume_id"), "sess-hist-123")
+
+            # Find by title
+            hm.cmd_enter(ctx, cat, "fix parser")
+            self.assertEqual(captured[-1][1].get("resume_id"), "sess-hist-123")
+
+            # Missing session raises SystemExit
+            with self.assertRaises(SystemExit) as cm:
+                hm.cmd_enter(ctx, cat, "nonexistent")
+            self.assertIn("no session 'nonexistent' on roster or in history", str(cm.exception))
+        finally:
+            hm.exec_here, hm.load_roster, hm.discover_sessions = orig_exec, orig_roster, orig_discover
+
 
 class StandaloneIdentify(unittest.TestCase):
     """LAB-294: a live CLI is identified by its cwd — harness id + place — with no herdr anywhere."""
@@ -1520,6 +1569,21 @@ class SessionHistory(unittest.TestCase):
         rows = [r for r in reg["cold"] if r.get("session_id") == "sess-a"]
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["name"], "adopted")
+
+    def test_cmd_enter_resumes_discovered_history_session(self):
+        cat = {**CAT, "defaults": {"session_history": "on"}}
+        captured = []
+        orig_exec, orig_roster, orig_discover = hm.exec_here, hm.load_roster, hm.discover_sessions
+        hm.exec_here = lambda *a, **k: captured.append((a, k)) or {"pane_id": "here"}
+        hm.load_roster = lambda: []
+        hm.discover_sessions = lambda r, c, home=None: orig_discover(r, c, home=self.home)
+        try:
+            ctx = hm.Ctx(cwd=self.root, mode="here", live=hm.LiveSource())
+            hm.cmd_enter(ctx, cat, "parser-work")
+        finally:
+            hm.exec_here, hm.load_roster, hm.discover_sessions = orig_exec, orig_roster, orig_discover
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0][1].get("resume_id"), "sess-a")
 
 
 class UnixConfine(unittest.TestCase):

@@ -11,6 +11,14 @@ checker's own reason, and the picker badge is a dim `! more reach than needed` (
 Blocked (`⊘`) still refuses, and is now the red mark in `status`. `parse_match` keeps only the reason
 in `flag`, not the checker's bracketed aside. Patron ruling in the metawork sitting (T4: visible, not silent).
 
+## 2026-09-25 — resume history-discovered sessions when absent from roster
+
+- **History-discovered resume**: Sessions discovered by `discover_sessions` (Claude Code `~/.claude/projects/...` and Grok `~/.grok/sessions/...`) appear in the picker's Resume list, but previously failed upon selection or `cowbell enter <name>` with `no roster entry for that session` if they were created outside cowbell.
+- `cmd_enter` now accepts an optional `target` record directly (passed from `picker()` and `cmd_dispatch()`).
+- When called from the CLI (`cowbell enter <target>`), `cmd_enter` queries `load_roster()`, and if absent, queries `discover_sessions(root, cat)` by exact name, session ID prefix, substring, or title.
+- Resuming automatically records the sitting into `roster.json` via `raise_harness` or `_record_here`.
+- Tested in `tests/test_cowbell.py` (`ResumeOutside`, `SessionHistory`; 127/127 tests pass).
+
 ## 2026-09-25 — delegation vision & standalone without herdr CLI (LAB-497)
 
 - **Delegation & tab defaults (`3d5cfb2`, `af00c45`)**: Human callers running `cowbell new` default to `mode="here"` (replacing the current shell). Agent callers (`caller_is_agent()`) default to creating a new tab via herdr. The `herdr-cowbell` plugin sets `COWBELL_MODE=tab` so `prefix+c` retains tab-creation behavior for humans. `raise_harness` defaults to `create_tab` within the project workspace (`--split` opts into pane splitting).
