@@ -2684,12 +2684,29 @@ def main(argv: list[str]) -> int:
         cmd_adopt(ctx, cat, name=pos[0] if pos else None, pane_id=opts.get("pane"))
         return 0
     if cmd == "new":
+        if opts.get("help") or opts.get("h") or (pos and pos[0] in ("-h", "--help")):
+            print("cowbell new [harness] [options...]")
+            print("  --harness ID    The agent definition to run")
+            print("  --name N        Give this sitting a specific name (e.g. majordomo)")
+            print("  --model M       Override the harness default model")
+            print("  --lane L        Queue lane (default: yellow)")
+            print("  --allow T       Add a comma-separated list of paths to the allowlist")
+            print("  --deny T        Add a comma-separated list of paths to the denylist")
+            print("  --place P       Run as if inside place P (finds workspace_label, default_harness, etc)")
+            print("  --spawn         Start the agent and return immediately (assemblies raise N times)")
+            print("  --pen           Create a new herdr pen (a new machine-list line)")
+            print("  --split         Split a pane in herdr instead of creating a new tab")
+            print("  --no-seat       Skip creating or linking a seat (ephemeral run)")
+            print("  --no-focus      Do not automatically focus the agent after launching it")
+            print("  -y, --yes       Assume yes to all prompts")
+            print("\nIf [harness] is omitted, the place's default harness is used.")
+            return 0
         hid = opts.get("harness") or (pos[0] if pos else "")
         extra_pos = pos[1:] if pos and pos[0] == hid else (pos if not hid else pos)
         cmd_new(ctx, cat, hid, opts.get("model", ""), opts.get("lane", ""), opts.get("allow", ""), opts.get("deny", ""),
                 opts.get("name", ""), bool(opts.get("no-seat")), bool(opts.get("yes")), opts.get("root"),
                 extra=extra_pos, focus=not opts.get("no-focus"),
-                place=opts.get("place", ""), spawn=bool(opts.get("spawn")), pen=bool(opts.get("pen")))
+                place=opts.get("place", ""), spawn=bool(opts.get("spawn")), pen=bool(opts.get("pen")), split=bool(opts.get("split")))
         return 0
     if harness_by_id(cat, cmd):
         cmd_dispatch(ctx, cat, cmd, bool(opts.get("yes"))); return 0
