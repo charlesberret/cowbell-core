@@ -8,6 +8,7 @@ import tempfile
 import unittest
 import warnings
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import cowbell as hm  # noqa: E402
@@ -1355,6 +1356,27 @@ class UnixConfine(unittest.TestCase):
         with self.assertRaises(SystemExit) as e:
             hm.unix_confine(cat, tmp, ["bash"])
         self.assertIn("not on this host", str(e.exception))
+
+    def _as_other_user(self, which):
+        pw = mock.Mock(pw_uid=4242)
+        return mock.patch("pwd.getpwnam", return_value=pw), mock.patch.object(
+            hm.os, "geteuid", return_value=0), mock.patch.object(hm.shutil, "which", side_effect=which)
+
+    def test_agent_run_prefixes_when_present(self):
+        tmp = tempfile.mkdtemp()
+        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "lab"}}}
+        patches = self._as_other_user(lambda name: "/usr/local/bin/agent-run" if name == "agent-run" else None)
+        with patches[0], patches[1], patches[2]:
+            out = hm.unix_confine(cat, tmp, ["/bin/bash"])
+        self.assertEqual(out, ["/usr/local/bin/agent-run", "lab", "--", "/bin/bash"])
+
+    def test_sudo_substitutes_when_agent_run_is_absent(self):
+        tmp = tempfile.mkdtemp()
+        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "lab"}}}
+        patches = self._as_other_user(lambda name: "/usr/bin/sudo" if name == "sudo" else None)
+        with patches[0], patches[1], patches[2]:
+            out = hm.unix_confine(cat, tmp, ["/bin/bash"])
+        self.assertEqual(out, ["/usr/bin/sudo", "-u", "lab", "--", "/bin/bash"])
 
 
 if __name__ == "__main__":

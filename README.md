@@ -96,6 +96,41 @@ cold `oll-memo` in that cwd is not a guest). `cowbell new --place lobby`
 with no `--harness` uses `default_harness`. Claude/Grok in that directory are
 house labor — they are not the guest wall.
 
+### A place that drops to another unix account
+
+This does not depend on a shared agent-home directory. `unix_user` is an
+account name (`getpwnam`), not a path. Create the account with the tools on
+your own machine, give it a directory it can write, and add a wrapper harness
+plus the place to `~/.config/cowbell/harnesses.toml`:
+
+```toml
+[[harness]]
+id = "lab"
+kind = "lab"
+title = "Lab shell"
+command = "/bin/bash"
+
+[places.lab]
+cwd = "~/lab"
+allow_harness = ["lab"]
+default_harness = "lab"
+unix_user = "lab"
+require_uid = true
+# nono_profile = "~/.config/nono/lab.json"   # optional; omit if you do not use nono
+```
+
+`cowbell new --harness claude --place lab` refuses to start: `claude` is not
+in `allow_harness`. `cowbell new --place lab` starts the bash wrapper.
+
+When `unix_user` is set and the process is not already that user, cowbell
+prefixes `agent-run <user> --` if `agent-run` is on PATH. That helper is not
+part of cowbell. If it is absent, cowbell uses `sudo -u <user> --` instead.
+You can also leave `unix_user` unset and drop privileges yourself
+(`sudo -u lab -- cowbell new --place lab`). `require_uid = true` with no
+`unix_user` refuses to start. `nono_profile`, when set, wraps the command as
+`nono run --silent --profile <path> --allow-cwd --` inside the uid drop, and
+`nono` must be on PATH.
+
 ## Commands
 
 ```
