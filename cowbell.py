@@ -2441,6 +2441,37 @@ def choose_host(herdr_up: bool, env=None) -> Ctx:
     return Ctx(cwd=os.getcwd(), mode="here", live=CombinedLive(HerdrLive() if herdr_up else None, ProcessScan()))
 
 
+_NEW_USAGE = """\
+cowbell new [--harness ID] [options]
+  --harness ID    agent to start (else the place default_harness)
+  --name NAME
+  --model M
+  --lane L        green, yellow, or red
+  --allow LIST
+  --deny LIST
+  --place NAME
+  --root PATH
+  --spawn
+  --no-seat
+  --no-focus
+  -y, --yes
+"""
+_NEW_OPTS = {
+    "harness", "name", "model", "lane", "allow", "deny", "place", "root",
+    "spawn", "no-seat", "no-focus", "yes", "y", "help", "h",
+}
+
+
+def _new_wants_help(opts: dict, pos: list[str]) -> bool:
+    return bool(opts.get("help") or opts.get("h") or any(p in ("-h", "--help") for p in pos))
+
+
+def _new_unknown(opts: dict, pos: list[str]) -> str:
+    bad = [f"--{k}" for k in opts if k not in _NEW_OPTS]
+    bad += [p for p in pos if p.startswith("-")]
+    return ", ".join(bad)
+
+
 def main(argv: list[str]) -> int:
     if argv and argv[0] in ("-h", "--help"):
         print(__doc__); return 0
@@ -2450,6 +2481,15 @@ def main(argv: list[str]) -> int:
         argv = ["picker"] if tui_ok() else ["status"]
     cmd, *rest = argv
     opts, pos = parse_flags(rest)
+    if cmd == "new" and _new_wants_help(opts, pos):
+        print(_NEW_USAGE, end="")
+        return 0
+    if cmd == "new":
+        unknown = _new_unknown(opts, pos)
+        if unknown:
+            print(_NEW_USAGE, end="", file=sys.stderr)
+            print(f"cowbell: unknown flag: {unknown}", file=sys.stderr)
+            return 2
     if cmd == "adopt" and (opts.get("help") or opts.get("h") or (pos and pos[0] in ("-h", "--help"))):
         print("cowbell adopt [name] [--pane ID]")
         print("  Bind a live sitting cowbell did not start onto the roster.")

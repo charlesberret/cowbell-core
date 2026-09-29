@@ -1031,6 +1031,24 @@ class Flags(unittest.TestCase):
         self.assertEqual(opts, {"harness": "claude", "lane": "green", "yes": True})
         self.assertEqual(pos, ["extra", "--raw"])
 
+    def test_new_help_prints_usage_and_does_not_raise(self):
+        for argv in (["new", "--help"], ["new", "-h"]):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = hm.main(argv)
+            self.assertEqual(rc, 0, argv)
+            self.assertIn("--harness", buf.getvalue())
+
+    def test_new_unknown_flag_exits_2_with_usage(self):
+        for argv in (["new", "--not-a-flag"], ["new", "--harness", "claude", "--bogus"]):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = hm.main(argv)
+            self.assertEqual(rc, 2, argv)
+            text = err.getvalue()
+            self.assertIn("--harness", text)
+            self.assertIn("unknown flag", text)
+
 
 class Sitting(unittest.TestCase):
     def test_head(self):
