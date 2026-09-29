@@ -7,19 +7,21 @@
   cowbell status [--json] [--place P]   what is raised here (running · resume · new)
                                 --json: machine rows (name, harness, place, cwd, host, state)
   cowbell <harness>             attach to that harness here, or raise it with defaults
-  cowbell new --harness ID [--model M] [--lane L] [--allow T] [--deny T] [--name N] [--place P] [--spawn] [--pen]
+  cowbell new --harness ID [--model M] [--lane L] [--allow T] [--deny T] [--name N] [--place P] [--spawn] [--pen] [--split]
                                 --spawn: start and return (assemblies raise N times). default: exec here
                                 --pen: a person asks for the place's own herdr pen (a new machine-list line)
+                                --split: a pane split instead of a new tab. `cowbell new -h` prints new's usage
   cowbell enter <name>          focus if live, else resume
   cowbell adopt [name] [--pane ID]  put a live sitting cowbell did not start on the roster
   cowbell list [--all]          roster rows (default: this directory)
   cowbell catalog               every harness: kind, egress, installed, trust badge
 
-A person inside herdr gets a new pane in the existing `proj:<directory>` workspace.
-`--pen` opens the place's own pen (a new machine-list line) instead. An agent caller always runs in this
-terminal, even inside a pane (`COWBELL_CALLER=person` overrides). Anywhere
-else, or with `COWBELL_MODE=here`, the agent runs in this terminal. Running
-also lists agent processes found by working directory.
+A person running cowbell gets the session in this terminal, including inside herdr
+(`COWBELL_CALLER=person` forces that). An agent caller inside a herdr pane opens a new tab
+in the project workspace (`COWBELL_MODE=here` forces this terminal; `COWBELL_MODE=tab` forces
+a tab, which is how prefix+c still opens a tab). `--split` asks for a pane split instead of a
+tab. `--pen` opens the place's own pen (a new machine-list line). Running also lists agent
+processes found by working directory.
 
 The herdr plugin (herdr-cowbell) adds prefix+c, stop and import-seats on top of this.
 
@@ -2650,6 +2652,49 @@ def choose_host(herdr_up: bool, env=None) -> Ctx:
     return Ctx(cwd=os.getcwd(), mode="here", live=CombinedLive(HerdrLive() if herdr_up else None, ProcessScan()))
 
 
+NEW_OPTS = frozenset({
+    "harness", "model", "lane", "allow", "deny", "name", "place", "root",
+    "spawn", "pen", "split", "no-seat", "no-focus", "yes", "y", "help", "h",
+})
+
+
+def new_usage(file=None) -> None:
+    print("cowbell new [harness] [options...] [-- extra...]", file=file)
+    print("  --harness ID    Harness to run (or the first positional)", file=file)
+    print("  --model M       Override the harness default model", file=file)
+    print("  --lane L        Queue lane (default: yellow)", file=file)
+    print("  --allow T       Tool allow list passed to the harness", file=file)
+    print("  --deny T        Tool deny list passed to the harness", file=file)
+    print("  --name N        Sitting name", file=file)
+    print("  --place P       Place whose cwd, workspace, and default harness apply", file=file)
+    print("  --root DIR      Directory to raise in", file=file)
+    print("  --spawn         Start the agent and return immediately", file=file)
+    print("  --pen           Open the place's own herdr pen", file=file)
+    print("  --split         Split a pane instead of opening a new tab", file=file)
+    print("  --no-seat       Do not attach a seat file", file=file)
+    print("  --no-focus      Do not focus the new pane", file=file)
+    print("  -y, --yes       Assume yes to prompts", file=file)
+    print("  -h, --help      Print this usage and exit", file=file)
+    print("Tokens after -- are passed to the harness. Any other flag exits 2.", file=file)
+
+
+def split_passthrough(args: list[str]) -> tuple[list[str], list[str]]:
+    """Flags before the first -- belong to cowbell. Tokens after it go to the harness."""
+    if "--" in args:
+        i = args.index("--")
+        return args[:i], args[i + 1:]
+    return args, []
+
+
+def new_unknown_flags(opts: dict, pos: list[str]) -> list[str]:
+    bad = []
+    for k in opts:
+        if k not in NEW_OPTS:
+            bad.append(f"-{k}" if len(k) == 1 else f"--{k}")
+    bad += [p for p in pos if p.startswith("-")]
+    return bad
+
+
 def main(argv: list[str]) -> int:
     if argv and argv[0] in ("-h", "--help"):
         print(__doc__); return 0
@@ -2658,6 +2703,27 @@ def main(argv: list[str]) -> int:
     if not argv:
         argv = ["picker"] if tui_ok() else ["status"]
     cmd, *rest = argv
+    if cmd == "new":
+        pre, passthrough = split_passthrough(rest)
+        opts, pos = parse_flags(pre)
+        if opts.get("help") or opts.get("h") or (pos and pos[0] in ("-h", "--help")):
+            new_usage()
+            return 0
+        bad = new_unknown_flags(opts, pos)
+        if bad:
+            print(f"cowbell: unknown flag {bad[0]}", file=sys.stderr)
+            new_usage(sys.stderr)
+            return 2
+        ctx = choose_host(server_up())
+        cat = load_catalog()
+        hid = opts.get("harness") or (pos[0] if pos else "")
+        extra_pos = pos[1:] if pos and pos[0] == hid else pos
+        cmd_new(ctx, cat, hid, opts.get("model", ""), opts.get("lane", ""), opts.get("allow", ""), opts.get("deny", ""),
+                opts.get("name", ""), bool(opts.get("no-seat")), bool(opts.get("yes")), opts.get("root"),
+                extra=extra_pos + passthrough, focus=not opts.get("no-focus"),
+                place=opts.get("place", ""), spawn=bool(opts.get("spawn")), pen=bool(opts.get("pen")),
+                split=bool(opts.get("split")))
+        return 0
     opts, pos = parse_flags(rest)
     if cmd == "adopt" and (opts.get("help") or opts.get("h") or (pos and pos[0] in ("-h", "--help"))):
         print("cowbell adopt [name] [--pane ID]")
@@ -2682,31 +2748,6 @@ def main(argv: list[str]) -> int:
         cmd_enter(ctx, cat, pos[0]); return 0
     if cmd == "adopt":
         cmd_adopt(ctx, cat, name=pos[0] if pos else None, pane_id=opts.get("pane"))
-        return 0
-    if cmd == "new":
-        if opts.get("help") or opts.get("h") or (pos and pos[0] in ("-h", "--help")):
-            print("cowbell new [harness] [options...]")
-            print("  --harness ID    The agent definition to run")
-            print("  --name N        Give this sitting a specific name (e.g. majordomo)")
-            print("  --model M       Override the harness default model")
-            print("  --lane L        Queue lane (default: yellow)")
-            print("  --allow T       Add a comma-separated list of paths to the allowlist")
-            print("  --deny T        Add a comma-separated list of paths to the denylist")
-            print("  --place P       Run as if inside place P (finds workspace_label, default_harness, etc)")
-            print("  --spawn         Start the agent and return immediately (assemblies raise N times)")
-            print("  --pen           Create a new herdr pen (a new machine-list line)")
-            print("  --split         Split a pane in herdr instead of creating a new tab")
-            print("  --no-seat       Skip creating or linking a seat (ephemeral run)")
-            print("  --no-focus      Do not automatically focus the agent after launching it")
-            print("  -y, --yes       Assume yes to all prompts")
-            print("\nIf [harness] is omitted, the place's default harness is used.")
-            return 0
-        hid = opts.get("harness") or (pos[0] if pos else "")
-        extra_pos = pos[1:] if pos and pos[0] == hid else (pos if not hid else pos)
-        cmd_new(ctx, cat, hid, opts.get("model", ""), opts.get("lane", ""), opts.get("allow", ""), opts.get("deny", ""),
-                opts.get("name", ""), bool(opts.get("no-seat")), bool(opts.get("yes")), opts.get("root"),
-                extra=extra_pos, focus=not opts.get("no-focus"),
-                place=opts.get("place", ""), spawn=bool(opts.get("spawn")), pen=bool(opts.get("pen")), split=bool(opts.get("split")))
         return 0
     if harness_by_id(cat, cmd):
         cmd_dispatch(ctx, cat, cmd, bool(opts.get("yes"))); return 0

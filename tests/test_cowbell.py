@@ -1185,6 +1185,44 @@ class Flags(unittest.TestCase):
         self.assertEqual(pos, ["extra", "--raw"])
 
 
+class NewUsage(unittest.TestCase):
+    """LAB-424: `new -h|--help` prints usage and exits 0; an unknown flag exits 2. Neither raises."""
+
+    def setUp(self):
+        self._server_up = hm.server_up
+        hm.server_up = lambda: (_ for _ in ()).throw(AssertionError("server_up called"))
+
+    def tearDown(self):
+        hm.server_up = self._server_up
+
+    def test_help_exits_0_without_raising(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(hm.main(["new", "--help"]), 0)
+            self.assertEqual(hm.main(["new", "-h"]), 0)
+        text = out.getvalue()
+        self.assertIn("cowbell new", text)
+        self.assertIn("--harness", text)
+        self.assertIn("--split", text)
+
+    def test_unknown_flag_exits_2_with_usage(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(hm.main(["new", "--not-a-real-flag"]), 2)
+            self.assertEqual(hm.main(["new", "--bogus", "claude"]), 2)
+        text = err.getvalue()
+        self.assertIn("unknown flag --not-a-real-flag", text)
+        self.assertIn("unknown flag --bogus", text)
+        self.assertIn("cowbell new", text)
+
+    def test_double_dash_passthrough_is_not_an_unknown_flag(self):
+        pre, passthrough = hm.split_passthrough(["claude", "--", "--resume", "abc"])
+        opts, pos = hm.parse_flags(pre)
+        self.assertEqual(hm.new_unknown_flags(opts, pos), [])
+        self.assertEqual(pos, ["claude"])
+        self.assertEqual(passthrough, ["--resume", "abc"])
+
+
 class Sitting(unittest.TestCase):
     def test_head(self):
         self.assertEqual(hm.sitting_head("builder-minaret"), "builder")
