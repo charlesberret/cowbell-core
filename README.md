@@ -12,9 +12,10 @@ installed and allowed here, most used here first.
 ```
   ~/code/projects/acme                         g widen to projects · 4 running
 
-  Active
-       nomogenesis-claude     claude      idle
-       philologist            grok        working  14s   in sys:clubhouse
+  ┌─ Active ──────────────────────────────────────────────────────────────┐
+  │    nomogenesis-claude     claude      idle                            │
+  │    philologist            grok        working  14s   in sys:clubhouse │
+  └───────────────────────────────────────────────────────────────────────┘
 
   Resume
     1  kimi-ballots           oll-mid     2 days ago

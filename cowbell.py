@@ -64,13 +64,11 @@ class HerdrError(RuntimeError):
 
 # --- colour ------------------------------------------------------------------
 # Palette: mostly grey, with one accent. Reads the terminal theme, not a config file.
-# hierarchy; gold is spent on the one thing to press (the numbers and the prompt).
-# State words borrow the sidebar's chroma; red only for a trust warning.
+# Gold is Resume. Green is New Session. Blue is the numbers on rows you can open.
+# Active stays ink so a live sitting does not read as dim/dead. Prompt > stays gold.
 
 INK, SECONDARY, MUTED, FAINT = "#d8d8e0", "#a9a9b2", "#8a8a92", "#6c6d74"
-GOLD, GREEN, RED, TEAL = "#c8a24a", "#7dba6f", "#d4756b", "#389bb4"
-# Gold is Resume (and the numbers on rows you can open). Green is New Session.
-# Active stays ink so a live sitting does not read as dim/dead.
+GOLD, GREEN, RED, TEAL, BLUE = "#c8a24a", "#7dba6f", "#d4756b", "#389bb4", "#7d9fc7"
 STATUS_FG = {"working": INK, "blocked": RED, "done": TEAL, "idle": MUTED, "cold": FAINT}
 
 
@@ -94,7 +92,7 @@ def paint(text: str, fg: str = "", bold: bool = False) -> str:
 
 
 def key(n, width: int = 3) -> str:
-    return paint(f"{n:>{width}}", GOLD, bold=True)
+    return paint(f"{n:>{width}}", BLUE, bold=True)
 
 
 def status_cell(status: str, width: int = 8) -> str:
@@ -984,9 +982,27 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
     return out
 
 
+def _active_box(title: str, rows: list[dict]) -> tuple[str, list[str], str]:
+    """Ink light box around the Active census. Heading sits on the top rule.
+
+    Inner names start at the same column as numbered Resume / New Session rows.
+    """
+    inners = [f"    {c['line']}" for c in rows]
+    head = f"─ {title} "
+    inner_w = max(len(head) + 1, max((visible_len(s) + 1 for s in inners), default=0))
+    rest = inner_w - len(head)
+    top = "  " + paint("┌─ ", INK) + paint(title, INK, bold=True) + paint(" " + "─" * rest + "┐", INK)
+    bot = "  " + paint("└" + "─" * inner_w + "┘", INK)
+    sides = []
+    for inner in inners:
+        pad = " " * (inner_w - visible_len(inner))
+        sides.append("  " + paint("│", INK) + inner + pad + paint("│", INK))
+    return top, sides, bot
+
+
 def render_picker(reg: dict, choices: list[dict], git_top: str | None = None, wider: int | None = None,
                   width: int = 84) -> str:
-    """New-tab surface: Active (census), Resume, New Session. Numbers are for rows you can open."""
+    """New-tab surface: Active (census in an ink box), Resume, New Session. Numbers open a row."""
     path = tilde(reg["root"])
     right = reg.get("place_note", "")
     if git_top and wider is not None and wider > len(reg["live"]):
@@ -999,14 +1015,19 @@ def render_picker(reg: dict, choices: list[dict], git_top: str | None = None, wi
         if not rows:
             continue
         out.append("")
+        if section == "running":
+            top, sides, bot = _active_box(title, rows)
+            out.append(top)
+            for c, line in zip(rows, sides):
+                c["row"] = len(out)
+                c["idx"] = None
+                out.append(line)
+            out.append(bot)
+            continue
         out.append(section_title(title, fg))
         for c in rows:
             c["row"] = len(out)
             if c["action"] == "more":
-                c["idx"] = None
-                out.append(f"       {c['line']}")
-                continue
-            if section == "running":
                 c["idx"] = None
                 out.append(f"       {c['line']}")
                 continue

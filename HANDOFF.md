@@ -8,10 +8,11 @@ Locked: none
 
 Selecting a live sitting used to try `focus` (herdr pane) or print that cowbell
 cannot switch terminals. That is not a takeover, and the failure is a dead end.
-Active (was Running) stays ink, unnumbered, not in the cursor/digit/Enter set.
-Resume heading is gold; New Session heading is green (kettle `#7dba6f`). `+ N more`
-on Active still expands. `a` adopt uses the focused pane when no live row is a
-menu item. Box/aside treatment for Active is still open.
+Active (was Running) stays ink, unnumbered, not in the cursor/digit/Enter set,
+inside an ink light box with the heading on the top rule. Resume heading is gold;
+New Session heading is green (kettle `#7dba6f`). Option numbers are kettle blue
+(`#7d9fc7`). `+ N more` on Active still expands, from inside the box. `a` adopt
+uses the focused pane when no live row is a menu item.
 
 ## 2026-09-30 — prefix+c claim survives herdr upgrades (plugin)
 

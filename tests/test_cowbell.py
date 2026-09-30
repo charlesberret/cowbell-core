@@ -231,13 +231,47 @@ class PickerList(unittest.TestCase):
         self.assertEqual([c["target"]["harness"] for c in choices if c["action"] == "raise"], ["claude", "grok", "pi"])
         self.assertEqual([hm.picker_selectable(c) for c in choices], [False, False, True, True, True, True])
         text = hm.render_picker(reg, choices)
-        for needle in ("  Active\n", "  Resume\n", "  New Session\n", "majordomo", "in sys:clubhouse", "4m",
+        for needle in ("┌─ Active ", "  Resume\n", "  New Session\n", "majordomo", "in sys:clubhouse", "4m",
                        "Claude Code", "! more reach than needed"):
             self.assertIn(needle, text)
         self.assertNotIn("  1  majordomo", text)
         self.assertTrue(any(c.get("idx") == 1 and c["action"] == "enter" for c in choices))
         for gone in ("LIVE", "RAISE", "subject", "omp", "local-ornith", "⊘", "?", "w1:p1", "cold", "no-session"):
             self.assertNotIn(gone, text)
+
+    def test_active_sits_in_an_ink_box(self):
+        reg = self.reg()
+        choices = hm.picker_choices(reg, [], here_ws="w1", ws_labels={"w2": "sys:clubhouse"})
+        lines = hm.render_picker(reg, choices).split("\n")
+        top = next(i for i, ln in enumerate(lines) if "┌─ Active" in ln)
+        bot = next(i for i, ln in enumerate(lines) if ln.strip().startswith("└"))
+        inner = "\n".join(lines[top:bot + 1])
+        self.assertIn("majordomo", inner)
+        self.assertIn("scholar", inner)
+        self.assertNotIn("Resume", inner)
+        self.assertGreater(next(i for i, ln in enumerate(lines) if ln == "  Resume"), bot)
+        name = next(ln for ln in lines[top + 1:bot] if "majordomo" in ln)
+        self.assertTrue(name.lstrip().startswith("│"))
+        self.assertTrue(name.rstrip().endswith("│"))
+        self.assertEqual(hm.visible_len(lines[top]), hm.visible_len(name))
+        self.assertEqual(hm.visible_len(lines[top]), hm.visible_len(lines[bot]))
+
+    def test_active_more_row_stays_inside_the_box(self):
+        reg = self.reg()
+        reg["live"] = [{"name": f"a{i}", "harness": "claude", "kind": "claude", "status": "idle",
+                        "pane_id": f"w1:p{i}", "workspace_id": "w1", "on_roster": True, "since": ""}
+                       for i in range(8)]
+        choices = hm.picker_choices(reg, [])
+        running = [c for c in choices if c["section"] == "running"]
+        self.assertEqual(running[-1]["action"], "more")
+        self.assertTrue(hm.picker_selectable(running[-1]))
+        body = hm.render_picker(reg, choices).split("\n")
+        more = running[-1]
+        self.assertIsNone(more["idx"])
+        self.assertIn("+ 4 more", body[more["row"]])
+        self.assertIn("│", body[more["row"]])
+        self.assertTrue(any("┌─ Active" in ln for ln in body[:more["row"]]))
+        self.assertTrue(any(ln.strip().startswith("└") for ln in body[more["row"] + 1:]))
 
     def test_long_clock_does_not_run_into_the_workspace(self):
         reg = self.reg()
