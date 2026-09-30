@@ -945,7 +945,9 @@ class SidebarTokens(unittest.TestCase):
         self.assertIn("w1B:p5", args)
         self.assertEqual(args[args.index("--source") + 1], "cowbell")
         self.assertEqual(args[args.index("--display-agent") + 1], "ϟ")
-        self.assertEqual(args[args.index("--token") + 1], "line1=ϟ droid")
+        tokens = [args[i + 1] for i, a in enumerate(args) if a == "--token"]
+        self.assertIn("glyph=ϟ", tokens)
+        self.assertIn("line1=ϟ droid", tokens)
         self.assertFalse(hm.report_identity("pid:42", "n", "grok"))   # no herdr pane: no publish
 
     def test_identity_events_publish_once_per_change(self):
