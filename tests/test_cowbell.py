@@ -239,7 +239,7 @@ class PickerList(unittest.TestCase):
         for gone in ("LIVE", "RAISE", "subject", "omp", "local-ornith", "⊘", "?", "w1:p1", "cold", "no-session"):
             self.assertNotIn(gone, text)
 
-    def test_active_sits_in_an_ink_box(self):
+    def test_active_sits_in_a_box(self):
         reg = self.reg()
         choices = hm.picker_choices(reg, [], here_ws="w1", ws_labels={"w2": "sys:clubhouse"})
         lines = hm.render_picker(reg, choices).split("\n")
