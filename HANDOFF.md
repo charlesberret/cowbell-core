@@ -75,7 +75,7 @@ Charles has been launching herdr seats **through agent-deck inside a herdr pane*
 
 Live probe: `herdmark new --harness grok --name herdmark-probe` created tab `w1A:t6` labelled **herdmark-probe**, herdr detected grok idle at this cwd; probe tab closed. `prefix+c` smoke-tested the same day — it works, and it is clunky.
 
-- Tab label = sitting (`--name`); never pane `--title` / rename.
+- Tab label = sitting (`--name`). The pane border is a cache, `sitting · harness`, written when cowbell raises a harness and rewritten by `cowbell reconcile` from the agent Herdr detects. A border with no harness claim is left alone.
 - Wait for a single foreground shell before `agent start` (fresh tabs were `agent_pane_busy`).
 - Grok lanes verified against `grok --help`; `--agent <sitting-head>` when `~/.grok/agents/<head>.md` exists.
 

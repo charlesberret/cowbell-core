@@ -108,6 +108,7 @@ cowbell new --harness grok --place lobby
 cowbell enter <name>         focus if live, else resume
 cowbell list [--all]
 cowbell catalog              every harness: kind, egress, installed, trust badge
+cowbell reconcile [--dry-run]   pane borders that claim a harness, matched to the agent Herdr detects
 ```
 
 `bin/cowbell` picks a python ≥ 3.11 (tomllib) and follows symlinks; macOS
