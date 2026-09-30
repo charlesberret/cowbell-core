@@ -701,8 +701,28 @@ def discover_sessions(root: str, cat: dict, home: Path | None = None) -> list[di
         r.setdefault("name", (title[:21] + "…") if len(title) > 22 else (title or r["session_id"][:8]))
         r["cwd"], r["source"] = os.path.realpath(root), "history"
         r["last_seen"] = (r.get("last") or "")[:10]
+    _disambiguate_history_names(rows)
     rows.sort(key=lambda r: r.get("last") or "", reverse=True)
     return rows
+
+
+def _disambiguate_history_names(rows: list[dict]) -> None:
+    """Two sittings can share a truncated title. The picker passes the row; the CLI matches the name."""
+    groups: dict[str, list[dict]] = {}
+    for r in rows:
+        groups.setdefault(r.get("name") or "", []).append(r)
+    for name, group in groups.items():
+        if len(group) < 2 or not name:
+            continue
+        for n in (4, 8, 12):
+            tails = [(r.get("session_id") or "")[:n] for r in group]
+            if all(tails) and len(set(tails)) == len(group):
+                for r, tail in zip(group, tails):
+                    r["name"] = f"{name} {tail}"
+                break
+        else:
+            for i, r in enumerate(group, 1):
+                r["name"] = f"{name} {i}"
 
 
 # --- trust (delegated to EXT["trust_command"]; never re-encoded here) ----------------
@@ -1977,10 +1997,34 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None, target: d
 
 
 def adopt_pane_from_choice(choice: dict | None) -> str | None:
-    """The picker `a` key adopts the highlighted Running row, not herdr's focused pane."""
+    """A highlighted Active row, when the cursor can land on one."""
     if choice and choice.get("action") == "focus":
         return (choice.get("target") or {}).get("pane_id")
     return None
+
+
+def adopt_pane_for_picker(choice: dict | None, live: list[dict], focused_pane_id: str | None) -> str | None:
+    """Which pane `a` adopts. Active is a census, so the cursor is usually on Resume.
+
+    Prefer a highlighted Active row. Otherwise the focused agent, when that pane
+    is in the census (the picker popup itself is not). One running sitting is
+    enough on its own. Several, with focus on a shell, is not a guess.
+    """
+    pane = adopt_pane_from_choice(choice)
+    if pane:
+        return pane
+    ids = [r.get("pane_id") for r in live if r.get("pane_id")]
+    if focused_pane_id and focused_pane_id in ids:
+        return focused_pane_id
+    if len(ids) == 1:
+        return ids[0]
+    return None
+
+
+def adopt_picker_flash(n_live: int) -> str:
+    if n_live > 1:
+        return "several running — cowbell adopt <name>"
+    return "no running sitting here to adopt"
 
 
 def sitting_of(a: dict, labels: dict | None = None) -> str:
@@ -1994,8 +2038,8 @@ def live_agent_to_adopt(ctx: Ctx, pane_id: str | None = None, hint: str | None =
     `herdr agent list` often has focused=False on every row. The focused pane
     is snapshot.focused_pane_id (and panes[].focused). Typing `cowbell adopt`
     in a shell makes that shell the focused pane, so a sitting name or pane id
-    in `hint` is tried before giving up. The picker passes the highlighted row
-    as `pane_id` and never needs this fallback.
+    in `hint` is tried before giving up. The picker passes a census pane as
+    `pane_id` when it can tell which sitting `a` means.
     """
     agents = ctx.live.agents()
     by_pane = {a.get("pane_id"): a for a in agents if a.get("pane_id")}
@@ -2726,9 +2770,9 @@ def picker(ctx: Ctx, cat: dict) -> int:
                 sel_key = ""
                 continue
             if raw == "a":
-                pane = adopt_pane_from_choice(hit)
+                pane = adopt_pane_for_picker(hit, reg["live"], (snap or {}).get("focused_pane_id"))
                 if not pane and tui:
-                    flash = "select a running sitting to adopt"
+                    flash = adopt_picker_flash(len([r for r in reg["live"] if r.get("pane_id")]))
                     continue
                 try:
                     cmd_adopt(ctx, full_cat, pane_id=pane)
@@ -2757,8 +2801,9 @@ def picker(ctx: Ctx, cat: dict) -> int:
             except KeyboardInterrupt:  # esc / ctrl-c inside a prompt: back to the list
                 continue
             except (HerdrError, SystemExit) as e:
-                flash = str(e)
-                print(f"  {e}")
+                flash = ((str(e) or "").splitlines() or ["error"])[0]
+                if not tui:
+                    print(f"  {e}")
                 continue
             if done:
                 return 0
@@ -2875,8 +2920,9 @@ def main(argv: list[str]) -> int:
     if cmd == "adopt" and (opts.get("help") or opts.get("h") or (pos and pos[0] in ("-h", "--help"))):
         print("cowbell adopt [name] [--pane ID]")
         print("  Bind a live sitting cowbell did not start onto the roster.")
-        print("  Default: this pane if it is an agent, else the highlighted Running row,")
-        print("  else herdr's focused agent pane. name may be a pane id or live sitting.")
+        print("  Default: this pane if it is an agent, else the focused agent pane.")
+        print("  name may be a pane id or a sitting. In the picker, a adopts the")
+        print("  focused agent in Active, or the only running sitting.")
         return 0
     if cmd == "reconcile" and (opts.get("help") or opts.get("h")):
         print("cowbell reconcile [--dry-run]")

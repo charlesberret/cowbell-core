@@ -1532,6 +1532,19 @@ class Adopt(unittest.TestCase):
         self.assertIsNone(hm.adopt_pane_from_choice(cold))
         self.assertIsNone(hm.adopt_pane_from_choice(None))
 
+    def test_picker_a_adopts_from_the_active_census(self):
+        """Active is not a menu. `a` still adopts the focused agent, or the only one."""
+        live = [
+            {"pane_id": "wK:pK", "name": "metawork"},
+            {"pane_id": "wK:p6", "name": "coord-career"},
+        ]
+        resume = {"action": "enter", "target": {"pane_id": "wK:p1"}}
+        self.assertEqual(hm.adopt_pane_for_picker(resume, live, "wK:p6"), "wK:p6")
+        self.assertIsNone(hm.adopt_pane_for_picker(None, live, "wK:p9"))  # popup, not an agent
+        self.assertEqual(hm.adopt_pane_for_picker(None, [live[0]], "wK:p9"), "wK:pK")
+        self.assertEqual(hm.adopt_picker_flash(2), "several running — cowbell adopt <name>")
+        self.assertEqual(hm.adopt_picker_flash(0), "no running sitting here to adopt")
+
 
 class ExtensionPoints(unittest.TestCase):
     """The two hooks onto tools cowbell does not own (LAB-318)."""
@@ -1635,6 +1648,17 @@ class SessionHistory(unittest.TestCase):
     def test_catalog_governs_which_stores_are_read(self):
         only_grok = {"defaults": {"session_history": "on"}, "harness": [{"id": "grok"}]}
         self.assertEqual({r["harness"] for r in self.rows(only_grok)}, {"grok"})
+
+    def test_duplicate_titles_stay_distinct_names(self):
+        cdir = self.home / ".claude" / "projects" / "-Users-x-code-acme"
+        (cdir / "sess-c.jsonl").write_text(
+            json.dumps({"type": "custom-title", "customTitle": "parser-work"}) + "\n")
+        (cdir / "sess-d.jsonl").write_text(
+            json.dumps({"type": "custom-title", "customTitle": "parser-work"}) + "\n")
+        named = [r for r in self.rows() if r["session_id"] in ("sess-a", "sess-c", "sess-d")]
+        names = [r["name"] for r in named]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertTrue(all(n.startswith("parser-work") for n in names))
 
     def test_newest_first(self):
         stamps = [r.get("last") or "" for r in self.rows()]

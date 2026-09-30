@@ -12,8 +12,9 @@ Active (was Running) stays unnumbered, not in the cursor/digit/Enter set,
 inside a light-gray (secondary) box with the heading on the top rule. Resume,
 New Session, and Active names are the same ink. Resume heading is gold;
 New Session heading is green (kettle `#7dba6f`). Option numbers are kettle blue
-(`#7d9fc7`). `+ N more` on Active still expands, from inside the box. `a` adopt
-uses the focused pane when no live row is a menu item.
+(`#7d9fc7`). `+ N more` on Active still expands, from inside the box. `a`
+adopts the focused agent in that census, or the only running sitting. Several
+running, with focus on the popup, asks for `cowbell adopt <name>`.
 
 ## 2026-09-30 — prefix+c claim survives herdr upgrades (plugin)
 
