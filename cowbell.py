@@ -65,7 +65,7 @@ class HerdrError(RuntimeError):
 # --- colour ------------------------------------------------------------------
 # Palette: mostly grey, with one accent. Reads the terminal theme, not a config file.
 # Gold is Resume. Green is New Session. Blue is the numbers on rows you can open.
-# Active heading and box are light gray (secondary). Names inside stay ink.
+# Active heading and box are light gray (secondary). Sitting and harness names are ink.
 
 INK, SECONDARY, MUTED, FAINT = "#d8d8e0", "#a9a9b2", "#8a8a92", "#6c6d74"
 GOLD, GREEN, RED, TEAL, BLUE = "#c8a24a", "#7dba6f", "#d4756b", "#389bb4", "#7d9fc7"
@@ -961,7 +961,7 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
     for r in cold:
         name, kind = f"{r['name']:<22}", f"{r.get('harness') or r.get('kind') or '':<11}"
         resume.append({"action": "enter", "target": r, "key": f"enter:{r['name']}",
-                       "line": f"{paint(name, SECONDARY)} {paint(kind, MUTED)} "
+                       "line": f"{paint(name, INK, bold=True)} {paint(kind, MUTED)} "
                                f"{paint(ago(r.get('last_seen') or r.get('created') or ''), FAINT)}"})
     pool = {a["harness"]: a for a in reg.get("startable", reg["absent"])
             if a.get("installed") and a.get("trust", {}).get("verdict") != "blocked"}
@@ -974,7 +974,7 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
         warn = f"   {paint('! more reach than needed', FAINT)}" \
             if a.get("trust", {}).get("verdict") == "overprivilege" else ""
         start.append({"action": "raise", "target": a, "key": f"raise:{hid}",
-                      "line": f"{paint(f'{hid:<22}', SECONDARY)} "
+                      "line": f"{paint(f'{hid:<22}', INK, bold=True)} "
                               + paint(f"{a.get('title') or '':<{title_w}}" if warn else a.get("title") or "", MUTED) + warn})
     out = []
     for section, rows in (("running", live), ("resume", resume), ("start", start)):

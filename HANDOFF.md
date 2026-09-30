@@ -9,8 +9,8 @@ Locked: none
 Selecting a live sitting used to try `focus` (herdr pane) or print that cowbell
 cannot switch terminals. That is not a takeover, and the failure is a dead end.
 Active (was Running) stays unnumbered, not in the cursor/digit/Enter set,
-inside a light-gray (secondary) box with the heading on the top rule; names
-inside stay ink. Resume heading is gold;
+inside a light-gray (secondary) box with the heading on the top rule. Resume,
+New Session, and Active names are the same ink. Resume heading is gold;
 New Session heading is green (kettle `#7dba6f`). Option numbers are kettle blue
 (`#7d9fc7`). `+ N more` on Active still expands, from inside the box. `a` adopt
 uses the focused pane when no live row is a menu item.
