@@ -1689,5 +1689,88 @@ class UnixConfine(unittest.TestCase):
         self.assertIn("not on this host", str(e.exception))
 
 
+class Coherence(unittest.TestCase):
+    """Pane border is a cache of the harness Herdr detects. The tab stays the sitting."""
+
+    def test_no_claim_is_left_alone(self):
+        self.assertIsNone(hm.harness_claim("butler"))
+        self.assertIsNone(hm.harness_claim("butler · Hello"))
+        self.assertIsNone(hm.reconcile_label("butler", "butler", "grok"))
+        self.assertIsNone(hm.reconcile_label("", "butler", "grok"))
+
+    def test_matching_claim_stays(self):
+        self.assertEqual(hm.harness_claim("butler · grok"), ("butler", "grok"))
+        self.assertIsNone(hm.reconcile_label("butler · grok", "butler", "grok"))
+
+    def test_detected_agent_replaces_the_claimed_harness(self):
+        self.assertEqual(
+            hm.reconcile_label("butler · local-ornith", "butler", "grok"),
+            "butler · grok",
+        )
+
+    def test_tab_sitting_wins_over_the_name_in_the_claim(self):
+        self.assertEqual(hm.reconcile_label("butler · grok", "clerk", "grok"), "clerk · grok")
+
+    def test_idle_shell_drops_the_claim(self):
+        self.assertEqual(
+            hm.reconcile_label("butler · local-ornith", "butler", "", idle_shell=True),
+            "butler",
+        )
+
+    def test_unseen_wrapper_keeps_its_claim(self):
+        self.assertIsNone(hm.reconcile_label("butler · oll-mid", "butler", "", idle_shell=False))
+
+    def test_coherent_label_without_a_harness_is_the_sitting(self):
+        self.assertEqual(hm.coherent_pane_label("butler", ""), "butler")
+        self.assertEqual(hm.coherent_pane_label("butler", "grok"), "butler · grok")
+
+    def test_idle_shell_is_a_prompt_with_no_agent(self):
+        self.assertTrue(hm.pane_is_idle_shell({"terminal_title_stripped": "charles@avicenna: ~/x"}))
+        self.assertFalse(hm.pane_is_idle_shell({"agent": "grok", "terminal_title_stripped": "charles@avicenna: ~/x"}))
+        self.assertFalse(hm.pane_is_idle_shell({"terminal_title_stripped": "✳ butler"}))
+
+    def test_dry_run_does_not_consume_the_next_argument(self):
+        opts, pos = hm.parse_flags(["--dry-run", "extra"])
+        self.assertIs(opts.get("dry-run"), True)
+        self.assertEqual(pos, ["extra"])
+
+    def test_raise_caches_the_harness_id_on_the_pane_border(self):
+        calls = []
+        saved = (hm.herdr, hm.report_identity, hm.start_native, hm.save_roster, hm.load_roster,
+                 hm.create_tab, hm.pick_workspace)
+        hm.herdr = lambda *a, **k: calls.append(a) or {}
+        hm.report_identity = lambda *a, **k: True
+        hm.create_tab = lambda *a, **k: {"pane_id": "w1C:p1", "tab_id": "w1C:t1", "workspace_id": "w1C"}
+        hm.pick_workspace = lambda *a, **k: "w1C"
+        hm.start_native = lambda *a, **k: {}
+        hm.save_roster = lambda rows: None
+        hm.load_roster = lambda: []
+        try:
+            hm.raise_harness(CAT, hm.harness_by_id(CAT, "grok"), "probe", ROOT, hm.Ctx(cwd=ROOT))
+            hm.mark_harness("pid:9", "probe", "grok")
+        finally:
+            (hm.herdr, hm.report_identity, hm.start_native, hm.save_roster, hm.load_roster,
+             hm.create_tab, hm.pick_workspace) = saved
+        self.assertIn(("pane", "rename", "w1C:p1", "probe · grok"), calls)
+        self.assertFalse(any(c[1] == "rename" and c[2] == "pid:9" for c in calls if len(c) > 2))
+
+    def test_reconcile_command_is_not_a_harness(self):
+        called = {}
+        saved = (hm.apply_coherence, hm.server_up, hm.load_catalog)
+        hm.server_up = lambda: False
+        hm.load_catalog = lambda: CAT
+        hm.apply_coherence = lambda dry_run=False: called.update(dry_run=dry_run) or []
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(hm.main(["reconcile", "--dry-run"]), 0)
+                self.assertEqual(hm.main(["reconcile", "--help"]), 0)
+        finally:
+            hm.apply_coherence, hm.server_up, hm.load_catalog = saved
+        self.assertEqual(called, {"dry_run": True})
+        self.assertIn("cowbell reconcile", out.getvalue())
+        self.assertIn("no harness claim", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -15,6 +15,7 @@
   cowbell adopt [name] [--pane ID]  put a live sitting cowbell did not start on the roster
   cowbell list [--all]          roster rows (default: this directory)
   cowbell catalog               every harness: kind, egress, installed, trust badge
+  cowbell reconcile [--dry-run] rewrite a claimed pane border from the agent Herdr detects
 
 A person running cowbell gets the session in this terminal, including inside herdr
 (`COWBELL_CALLER=person` forces that). An agent caller inside a herdr pane opens a new tab
@@ -459,6 +460,59 @@ def now() -> str:
 
 def tab_labels(snap: dict) -> dict[str, str]:
     return {t["tab_id"]: (t.get("label") or "") for t in snap.get("tabs") or [] if t.get("tab_id")}
+
+
+# A pane border may cache `sitting · harness`. The tab label is the sitting.
+# Herdr's detected agent is the harness. A border with no claim is not a cache.
+HARNESS_TOKEN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+
+
+def harness_claim(label: str):
+    """The harness a pane border claims, or None when the border makes no claim."""
+    if " · " not in (label or ""):
+        return None
+    sitting, tool = (label or "").split(" · ", 1)
+    sitting, tool = sitting.strip(), tool.strip()
+    if not sitting or not HARNESS_TOKEN.match(tool):
+        return None
+    return sitting, tool
+
+
+def coherent_pane_label(sitting: str, harness: str) -> str:
+    """`sitting · harness` when both are present, otherwise the sitting alone."""
+    sitting, harness = (sitting or "").strip(), (harness or "").strip()
+    if sitting and harness:
+        return f"{sitting} · {harness}"
+    return sitting
+
+
+def reconcile_label(label, sitting, detected, idle_shell=False):
+    """The border a claimed pane should wear, or None when the claim should stay.
+
+    A detected agent replaces the claimed harness. An idle shell with no agent
+    drops the claim back to the sitting. Anything else — including a wrapper
+    Herdr cannot see — keeps the claim it has.
+    """
+    claim = harness_claim(label)
+    if not claim:
+        return None
+    name, _tool = claim
+    sitting = (sitting or name).strip() or name
+    detected = (detected or "").strip()
+    if detected:
+        want = coherent_pane_label(sitting, detected)
+        return None if want == (label or "") else want
+    if idle_shell:
+        return None if sitting == (label or "") else sitting
+    return None
+
+
+def pane_is_idle_shell(pane: dict) -> bool:
+    """A pane whose foreground is a shell prompt, and which has no detected agent."""
+    if pane.get("agent"):
+        return False
+    title = pane.get("terminal_title_stripped") or pane.get("terminal_title") or ""
+    return "@" in title and ":" in title
 
 
 # --- session history (read-only discovery from each harness's own store) -------
@@ -1679,6 +1733,9 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
     })
     save_roster(rows)
     report_identity(pid, name, h["kind"], model)   # one publish per raise (LAB-297)
+    # Tab stays the sitting. The pane border caches the harness just launched;
+    # `cowbell reconcile` rewrites it from the agent Herdr detects.
+    mark_harness(pid, name, h["id"])
     if focus and pane.get("tab_id"):
         try:
             herdr("tab", "focus", pane["tab_id"])
@@ -1769,6 +1826,71 @@ class HerdrLaunch(HostLaunch):
     def start(self, cat, h, name, root, ctx, *args, **kw):
         kw.pop("spawn", None)  # here-only; a herdr tab is already its own session
         return raise_harness(cat, h, name, root, ctx, *args, **kw)
+
+
+def mark_harness(pane_id: str, sitting: str, harness: str) -> None:
+    """Cache `sitting · harness` on the pane border. A failed rename does not fail the raise."""
+    if not pane_id or str(pane_id).startswith("pid:"):
+        return
+    harness = (harness or "").strip()
+    if not HARNESS_TOKEN.match(harness):
+        return
+    label = coherent_pane_label(sitting, harness)
+    if not label or label == (sitting or "").strip():
+        return
+    try:
+        herdr("pane", "rename", pane_id, label)
+    except HerdrError:
+        pass
+
+
+def coherence_rows() -> list[dict]:
+    """Claimed panes whose border disagrees with the sitting and the agent Herdr detects.
+
+    The unscoped pane list omits the border label, so each workspace is listed on its own.
+    Panes that make no harness claim are left out.
+    """
+    snap = snapshot()
+    labels = tab_labels(snap)
+    by_id = {p.get("pane_id"): p for p in (snap.get("panes") or []) if p.get("pane_id")}
+    ws_ids = [w.get("workspace_id") for w in (snap.get("workspaces") or []) if w.get("workspace_id")]
+    if not ws_ids:
+        ws_ids = [w.get("workspace_id") for w in workspaces() if w.get("workspace_id")]
+    out, seen = [], set()
+    for wid in ws_ids:
+        try:
+            listed = herdr("pane", "list", "--workspace", wid).get("panes") or []
+        except HerdrError:
+            continue
+        for pane in listed:
+            pid = pane.get("pane_id")
+            if not pid or pid in seen:
+                continue
+            seen.add(pid)
+            detected = ((by_id.get(pid) or {}).get("agent") or pane.get("agent") or "").strip()
+            label = pane.get("label") or ""
+            sitting = (labels.get(pane.get("tab_id")) or "").strip()
+            new = reconcile_label(label, sitting, detected, idle_shell=pane_is_idle_shell({**pane, "agent": detected}))
+            if new:
+                out.append({"pane_id": pid, "old": label, "new": new})
+    return out
+
+
+def apply_coherence(dry_run: bool = False) -> list[dict]:
+    """Print `pane_id old → new` and rename, unless dry_run. Exit path stays with the caller."""
+    rows = coherence_rows()
+    if not rows:
+        print("panes agree with the harness Herdr detects")
+        return rows
+    for row in rows:
+        print(f"{row['pane_id']} {row['old']} → {row['new']}")
+        if dry_run:
+            continue
+        try:
+            herdr("pane", "rename", row["pane_id"], row["new"])
+        except HerdrError as e:
+            print(f"cowbell: {row['pane_id']} rename failed: {e}", file=sys.stderr)
+    return rows
 
 
 # --- commands ------------------------------------------------------------------
@@ -2657,7 +2779,7 @@ def parse_flags(args: list[str]) -> tuple[dict, list[str]]:
         if a.startswith("--") and "=" in a:
             k, v = a[2:].split("=", 1); opts[k] = v
         elif a in ("--yes", "-y", "--all", "--no-seat", "--no-focus", "-i", "--json", "--spawn",
-                   "--pen", "--split", "--help", "-h"):
+                   "--pen", "--split", "--dry-run", "--help", "-h"):
             opts[a.lstrip("-")] = True
         elif a.startswith("--") and i + 1 < len(args):
             opts[a[2:]] = args[i + 1]; i += 1
@@ -2756,6 +2878,11 @@ def main(argv: list[str]) -> int:
         print("  Default: this pane if it is an agent, else the highlighted Running row,")
         print("  else herdr's focused agent pane. name may be a pane id or live sitting.")
         return 0
+    if cmd == "reconcile" and (opts.get("help") or opts.get("h")):
+        print("cowbell reconcile [--dry-run]")
+        print("  Rewrite pane borders that claim a harness so they match the agent Herdr detects.")
+        print("  The tab label stays the sitting. A border with no harness claim is left alone.")
+        return 0
     ctx = choose_host(server_up())
     cat = load_catalog()
     if cmd == "picker":
@@ -2773,6 +2900,9 @@ def main(argv: list[str]) -> int:
         cmd_enter(ctx, cat, pos[0]); return 0
     if cmd == "adopt":
         cmd_adopt(ctx, cat, name=pos[0] if pos else None, pane_id=opts.get("pane"))
+        return 0
+    if cmd == "reconcile":
+        apply_coherence(dry_run=bool(opts.get("dry-run")))
         return 0
     if harness_by_id(cat, cmd):
         cmd_dispatch(ctx, cat, cmd, bool(opts.get("yes"))); return 0
