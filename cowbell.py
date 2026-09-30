@@ -68,8 +68,9 @@ class HerdrError(RuntimeError):
 # State words borrow the sidebar's chroma; red only for a trust warning.
 
 INK, SECONDARY, MUTED, FAINT = "#d8d8e0", "#a9a9b2", "#8a8a92", "#6c6d74"
-GOLD, RED, TEAL = "#c8a24a", "#d4756b", "#389bb4"
-# working stays ink, not the sidebar's running gold: here gold means "press this".
+GOLD, GREEN, RED, TEAL = "#c8a24a", "#7dba6f", "#d4756b", "#389bb4"
+# Gold is Resume (and the numbers on rows you can open). Green is New Session.
+# Active stays ink so a live sitting does not read as dim/dead.
 STATUS_FG = {"working": INK, "blocked": RED, "done": TEAL, "idle": MUTED, "cold": FAINT}
 
 
@@ -117,8 +118,8 @@ def header(reg: dict, git_top: str | None, wider: int | None, widen_hint: bool =
     return out
 
 
-def section_title(title: str) -> str:
-    return f"  {paint(title, MUTED, bold=True)}"
+def section_title(title: str, fg: str = MUTED) -> str:
+    return f"  {paint(title, fg, bold=True)}"
 
 
 def section(title: str, note: str = "") -> str:
@@ -890,6 +891,13 @@ def render_registry(reg: dict, git_top: str | None = None, wider: int | None = N
 
 
 FOLD = 5  # a section longer than this shows FOLD-1 rows and a "+ N more" row
+# Census first (not a menu), then the two menus chroma marks as openable.
+PICKER_SECTIONS = (("running", "Active", INK), ("resume", "Resume", GOLD), ("start", "New Session", GREEN))
+
+
+def picker_selectable(c: dict) -> bool:
+    """Rows the cursor, digits, and Enter can land on. Active sittings are a census."""
+    return c.get("section") != "running" or c.get("action") == "more"
 
 
 def rank_harnesses(ids: list[str], roster: list[dict], root: str, default: str = "") -> list[str]:
@@ -934,7 +942,7 @@ def fold(rows: list[dict], section: str, expanded: set[str]) -> list[dict]:
 
 def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | None = None,
                    ws_labels: dict[str, str] | None = None, expanded: set[str] | None = None) -> list[dict]:
-    """Popup rows: running here, resume, start new. Only what changes a choice is on the row."""
+    """Popup rows: active census, resume, start new. Only Resume and New Session are a menu."""
     expanded = expanded or set()
     ws_labels = ws_labels or {}
     live: list[dict] = []
@@ -978,7 +986,7 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
 
 def render_picker(reg: dict, choices: list[dict], git_top: str | None = None, wider: int | None = None,
                   width: int = 84) -> str:
-    """New-tab surface: Running, Resume, New. Numbers are for rows you can open."""
+    """New-tab surface: Active (census), Resume, New Session. Numbers are for rows you can open."""
     path = tilde(reg["root"])
     right = reg.get("place_note", "")
     if git_top and wider is not None and wider > len(reg["live"]):
@@ -986,15 +994,19 @@ def render_picker(reg: dict, choices: list[dict], git_top: str | None = None, wi
     gap = width - 2 - len(path) - len(right)
     out = [f"  {paint(path, SECONDARY, bold=True)}" + (f"{' ' * max(3, gap)}{paint(right, FAINT)}" if right else "")]
     n = 0
-    for section, title in (("running", "Running"), ("resume", "Resume"), ("start", "New")):
+    for section, title, fg in PICKER_SECTIONS:
         rows = [c for c in choices if c.get("section") == section]
         if not rows:
             continue
         out.append("")
-        out.append(section_title(title))
+        out.append(section_title(title, fg))
         for c in rows:
             c["row"] = len(out)
             if c["action"] == "more":
+                c["idx"] = None
+                out.append(f"       {c['line']}")
+                continue
+            if section == "running":
                 c["idx"] = None
                 out.append(f"       {c['line']}")
                 continue
@@ -2525,29 +2537,30 @@ def picker(ctx: Ctx, cat: dict) -> int:
             text = render_picker(reg, choices, top, wider, width=width)
             can_widen = bool(top and wider is not None and wider > len(reg["live"]))
             if tui:
-                keys = [c.get("key") for c in choices]
+                openable = [c for c in choices if picker_selectable(c)]
+                keys = [c.get("key") for c in openable]
                 selected = keys.index(sel_key) if sel_key in keys else min(sel_at, max(0, len(keys) - 1))
                 hints = [hh for hh in PICKER_HINTS if hh[2] != "g" or can_widen]
-                res = menu([""] + text.split("\n"), [c["row"] + 1 for c in choices], hints,
+                res = menu([""] + text.split("\n"), [c["row"] + 1 for c in openable], hints,
                            selected=selected, hotkeys="nwga", flash=flash,
                            line_keys={1: "g"} if can_widen else None,
-                           numbered=[i for i, c in enumerate(choices) if c.get("idx")], scr=scr, tick=REFRESH_S)
-                if res[0] in ("pick", "tick") and choices:
-                    sel_key, sel_at = choices[res[1]].get("key") or "", res[1]
-                elif res[0] == "key" and len(res) > 2 and choices and 0 <= res[2] < len(choices):
-                    sel_key, sel_at = choices[res[2]].get("key") or "", res[2]
+                           numbered=[i for i, c in enumerate(openable) if c.get("idx")], scr=scr, tick=REFRESH_S)
+                if res[0] in ("pick", "tick") and openable:
+                    sel_key, sel_at = openable[res[1]].get("key") or "", res[1]
+                elif res[0] == "key" and len(res) > 2 and openable and 0 <= res[2] < len(openable):
+                    sel_key, sel_at = openable[res[2]].get("key") or "", res[2]
                 if res[0] == "tick":
                     continue
                 flash = ""
                 if res[0] == "cancel":
                     return 0
                 if res[0] == "pick":
-                    hit = choices[res[1]]
+                    hit = openable[res[1]]
                     raw = ""
                 elif res[0] == "key":
                     raw = res[1]
                     # only `a` means "this highlighted row"; n/w/g must not focus it
-                    hit = (choices[sel_at] if raw == "a" and choices and 0 <= sel_at < len(choices)
+                    hit = (openable[sel_at] if raw == "a" and openable and 0 <= sel_at < len(openable)
                            else None)
                 else:
                     hit, raw = None, res[1] if len(res) > 1 else ""
@@ -2586,16 +2599,7 @@ def picker(ctx: Ctx, cat: dict) -> int:
             if raw not in ("w", "n") and not hit:
                 continue
             if hit and hit["action"] == "focus":
-                try:
-                    said = live.focus(hit["target"])
-                except SystemExit as e:  # e.g. a process in another terminal: say where, stay open
-                    flash = str(e)
-                    continue
-                if scr:
-                    scr.close()
-                if ctx.mode == "here":
-                    print(f"  {said}")
-                return 0
+                continue  # Active is a census; cowbell cannot take over a sitting already running
             if scr:
                 scr.close()
                 sys.stdout.write("\x1b[H\x1b[2J")  # prompts that follow start on a clean popup

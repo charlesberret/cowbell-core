@@ -229,10 +229,13 @@ class PickerList(unittest.TestCase):
         choices = hm.picker_choices(reg, [], here_ws="w1", ws_labels={"w2": "sys:clubhouse"})
         self.assertEqual([c["section"] for c in choices], ["running", "running", "resume", "start", "start", "start"])
         self.assertEqual([c["target"]["harness"] for c in choices if c["action"] == "raise"], ["claude", "grok", "pi"])
+        self.assertEqual([hm.picker_selectable(c) for c in choices], [False, False, True, True, True, True])
         text = hm.render_picker(reg, choices)
-        for needle in ("  Running\n", "  Resume\n", "  New\n", "  1  majordomo", "in sys:clubhouse", "4m",
+        for needle in ("  Active\n", "  Resume\n", "  New Session\n", "majordomo", "in sys:clubhouse", "4m",
                        "Claude Code", "! more reach than needed"):
             self.assertIn(needle, text)
+        self.assertNotIn("  1  majordomo", text)
+        self.assertTrue(any(c.get("idx") == 1 and c["action"] == "enter" for c in choices))
         for gone in ("LIVE", "RAISE", "subject", "omp", "local-ornith", "⊘", "?", "w1:p1", "cold", "no-session"):
             self.assertNotIn(gone, text)
 
@@ -261,7 +264,8 @@ class PickerList(unittest.TestCase):
         self.assertIn("+ 4 more", start[-1]["line"])
         hm.render_picker(reg, choices)
         self.assertIsNone(start[-1]["idx"])
-        self.assertEqual([c["idx"] for c in choices if c["action"] != "more"], list(range(1, 8)))
+        self.assertEqual([c["idx"] for c in choices if c["action"] != "more"],
+                         [None, None, 1, 2, 3, 4, 5])
         self.assertEqual(len([c for c in hm.picker_choices(reg, [], expanded={"start"}) if c["section"] == "start"]), 8)
 
     def test_rank_here_beats_elsewhere_beats_catalog_order(self):
@@ -785,7 +789,7 @@ class NoHerdrCalls(unittest.TestCase):
         self.assertIn("sitting", status.stdout)
         picker = self.run_cowbell("picker", stdin="q\n")
         self.assertEqual(picker.returncode, 0, picker.stderr)
-        self.assertIn("  New\n", picker.stdout)
+        self.assertIn("  New Session\n", picker.stdout)
         enter = self.run_cowbell("enter", "sitting")
         self.assertIn("FAKE-AGENT --continue", enter.stdout, enter.stderr)
         self.assertFalse(self.log.exists(), self.log.read_text() if self.log.exists() else "")
@@ -960,11 +964,16 @@ class SidebarTokens(unittest.TestCase):
         self.assertEqual(published[-1], ("w1C:p1", "probe-seat", "grok"))
 
     def test_plugin_has_no_reporter(self):
-        # the herdr-cowbell plugin runs no reporter process: no [[startup]] in its manifest
+        # LAB-297: no report-metadata clock. keys ensure may run at startup (prefix+c claim).
         plugin = Path(__file__).resolve().parent.parent.parent / "herdr-cowbell" / "herdr-plugin.toml"
         if not plugin.exists():
             self.skipTest("plugin tree not present")
-        self.assertNotIn("[[startup]]", plugin.read_text())
+        text = plugin.read_text()
+        self.assertNotIn("bt-reporter", text)
+        code = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+        self.assertNotIn("report-metadata", code)
+        if "[[startup]]" in code:
+            self.assertIn('command = ["./bin/cowbell", "keys", "ensure"]', code)
 
 
 class ResumeOutside(unittest.TestCase):

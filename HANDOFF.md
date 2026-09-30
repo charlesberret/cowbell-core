@@ -4,6 +4,26 @@ Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 
 Milestone: Split (Now)
 Locked: none
 
+## 2026-09-30 — picker: Active is a census; Resume and New Session are the menus
+
+Selecting a live sitting used to try `focus` (herdr pane) or print that cowbell
+cannot switch terminals. That is not a takeover, and the failure is a dead end.
+Active (was Running) stays ink, unnumbered, not in the cursor/digit/Enter set.
+Resume heading is gold; New Session heading is green (kettle `#7dba6f`). `+ N more`
+on Active still expands. `a` adopt uses the focused pane when no live row is a
+menu item. Box/aside treatment for Active is still open.
+
+## 2026-09-30 — prefix+c claim survives herdr upgrades (plugin)
+
+Herdr 0.9.1 / native-tab rewrites of `~/.config/herdr/config.toml` dropped the
+cowbell `[[keys.command]]` block and the blanked `new_tab`, so `prefix+c` went
+back to herdr's bare new-tab. `keys install` now writes
+`~/.config/cowbell/prefix-c.claimed`. A `[[startup]]` hook runs `keys ensure`:
+one-shot, no panes, no `report-metadata`, no clocks (LAB-297 still holds). If
+the claim file is present and the block is gone, it puts the binding back and
+reloads config. `keys uninstall` restores herdr's binding and deletes the claim.
+Strangers who never ran install-keys are left alone.
+
 ## 2026-09-23 — over-privilege is advisory, never a gate
 
 Trust exit 3 (over-privilege) no longer asks `start anyway? [y/N]`; it prints one dim note with the
