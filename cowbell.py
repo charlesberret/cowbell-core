@@ -1303,7 +1303,7 @@ def _here_exe(h: dict, cmd: list[str]) -> str:
 
 
 def unix_confine(cat: dict, root: str, cmd: list[str]) -> list[str]:
-    """Prefix agent-run + nono when the place names a unix_user. Identity first, then Landlock/Seatbelt."""
+    """Drop to the place's unix_user, then optional nono. agent-run if it is on PATH, else sudo -u."""
     import pwd
     pl = place_for(cat, root)
     defaults = cat.get("defaults") or {}
@@ -1321,10 +1321,7 @@ def unix_confine(cat: dict, root: str, cmd: list[str]) -> list[str]:
     try:
         pw = pwd.getpwnam(uid)
     except KeyError:
-        raise SystemExit(f"cowbell: unix_user {uid!r} is not on this host (agent-uids/provision.sh)")
-    helper = shutil.which("agent-run") or "/usr/local/bin/agent-run"
-    if not os.path.isfile(helper):
-        raise SystemExit("cowbell: agent-run is not installed")
+        raise SystemExit(f"cowbell: unix_user {uid!r} is not on this host")
     profile = os.path.expanduser((pl or {}).get("nono_profile") or defaults.get("nono_profile") or "")
     inner = list(cmd)
     if profile:
@@ -1334,7 +1331,16 @@ def unix_confine(cat: dict, root: str, cmd: list[str]) -> list[str]:
         inner = [nono, "run", "--silent", "--profile", profile, "--allow-cwd", "--"] + inner
     if os.geteuid() == pw.pw_uid:
         return inner
-    return [helper, uid, "--"] + inner
+    helper = shutil.which("agent-run")
+    if helper:
+        return [helper, uid, "--"] + inner
+    sudo = shutil.which("sudo")
+    if not sudo:
+        raise SystemExit(
+            f"cowbell: cannot drop to unix user {uid!r} "
+            "(agent-run is not installed and sudo is not on PATH)"
+        )
+    return [sudo, "-u", uid, "--"] + inner
 
 
 def _record_here(h: dict, name: str, root: str, model: str, lane: str, allow: str, deny: str,

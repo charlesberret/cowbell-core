@@ -8,6 +8,7 @@ import tempfile
 import unittest
 import warnings
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import cowbell as hm  # noqa: E402
@@ -1713,6 +1714,61 @@ class UnixConfine(unittest.TestCase):
         with self.assertRaises(SystemExit) as e:
             hm.unix_confine(cat, tmp, ["bash"])
         self.assertIn("not on this host", str(e.exception))
+
+    def _as_user(self, which, euid=0, pw_uid=4242):
+        pw = mock.Mock(pw_uid=pw_uid)
+        return (
+            mock.patch("pwd.getpwnam", return_value=pw),
+            mock.patch.object(hm.os, "geteuid", return_value=euid),
+            mock.patch.object(hm.shutil, "which", side_effect=lambda name: which.get(name)),
+        )
+
+    def test_agent_run_prefixes_when_present(self):
+        tmp = tempfile.mkdtemp()
+        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "lab"}}}
+        patches = self._as_user({"agent-run": "/usr/local/bin/agent-run"})
+        with patches[0], patches[1], patches[2]:
+            out = hm.unix_confine(cat, tmp, ["/bin/bash"])
+        self.assertEqual(out, ["/usr/local/bin/agent-run", "lab", "--", "/bin/bash"])
+
+    def test_sudo_substitutes_when_agent_run_is_absent(self):
+        tmp = tempfile.mkdtemp()
+        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "lab"}}}
+        patches = self._as_user({"sudo": "/usr/bin/sudo"})
+        with patches[0], patches[1], patches[2]:
+            out = hm.unix_confine(cat, tmp, ["/bin/bash"])
+        self.assertEqual(out, ["/usr/bin/sudo", "-u", "lab", "--", "/bin/bash"])
+
+    def test_neither_helper_refuses(self):
+        tmp = tempfile.mkdtemp()
+        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "lab"}}}
+        patches = self._as_user({})
+        with patches[0], patches[1], patches[2]:
+            with self.assertRaises(SystemExit) as e:
+                hm.unix_confine(cat, tmp, ["/bin/bash"])
+        self.assertIn("sudo is not on PATH", str(e.exception))
+
+    def test_same_uid_skips_the_drop(self):
+        tmp = tempfile.mkdtemp()
+        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "lab"}}}
+        patches = self._as_user({"sudo": "/usr/bin/sudo"}, euid=4242, pw_uid=4242)
+        with patches[0], patches[1], patches[2]:
+            out = hm.unix_confine(cat, tmp, ["/bin/bash"])
+        self.assertEqual(out, ["/bin/bash"])
+
+    def test_nono_wraps_inside_the_uid_drop(self):
+        tmp = tempfile.mkdtemp()
+        cat = {**CAT, "places": {"lab": {
+            "cwd": tmp, "unix_user": "lab", "nono_profile": "~/lab.json",
+        }}}
+        patches = self._as_user({"sudo": "/usr/bin/sudo", "nono": "/usr/bin/nono"})
+        with patches[0], patches[1], patches[2]:
+            out = hm.unix_confine(cat, tmp, ["/bin/bash"])
+        self.assertEqual(out, [
+            "/usr/bin/sudo", "-u", "lab", "--",
+            "/usr/bin/nono", "run", "--silent", "--profile",
+            os.path.expanduser("~/lab.json"), "--allow-cwd", "--", "/bin/bash",
+        ])
 
 
 class Coherence(unittest.TestCase):
