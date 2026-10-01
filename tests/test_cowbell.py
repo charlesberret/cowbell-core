@@ -58,6 +58,19 @@ class Scope(unittest.TestCase):
         self.assertFalse(hm.at_or_beneath(ROOT + "-core", ROOT))        # sibling with prefix
         self.assertFalse(hm.at_or_beneath("/Users/x/code/projects", ROOT))
 
+    def test_same_tree_and_occupant(self):
+        self.assertTrue(hm.same_tree(ROOT, ROOT + "/src"))
+        self.assertTrue(hm.same_tree(ROOT + "/src", ROOT))
+        self.assertFalse(hm.same_tree(ROOT, "/Users/x/mise"))
+        row = {"name": "herdr-dev", "cwd": ROOT}
+        here = agent("w1A:pD", "grok", ROOT)
+        other = agent("w19:p3", "grok", "/Users/x/mise", sid="stolen")
+        self.assertTrue(hm.occupant_same(row, here, "herdr-dev"))
+        self.assertFalse(hm.occupant_same(row, other, "mise"))
+        moved = {"name": "scholar", "cwd": ROOT + "/old"}
+        self.assertTrue(hm.occupant_same(moved, agent("wM:pE", "grok", ROOT + "/new"), "scholar"))
+        self.assertFalse(hm.occupant_same(moved, agent("wM:pE", "grok", ROOT + "/new"), "metawork"))
+
     def test_seat_file_walks_up_and_stops_at_home(self):
         # Same semantics as code/bin/lib/pi-project-seat.sh: check each dir up to and
         # including $HOME, never above it.
@@ -334,6 +347,76 @@ class PickerList(unittest.TestCase):
             hm.save_roster = orig
         self.assertEqual(rows[-1]["name"], "ballots-2")
         self.assertEqual(rows[-1]["session_id"], "s9")
+        self.assertEqual(len(saved), 1)
+
+    def test_refresh_unbinds_when_pane_holds_another_project(self):
+        rows = [{"name": "herdr-dev", "cwd": ROOT, "kind": "grok", "harness": "grok",
+                 "pane_id": "w19:p3", "session_id": "stolen", "tab_id": "w19:t3", "workspace_id": "w19"}]
+        agents = [agent("w19:p3", "grok", "/Users/x/mise", sid="stolen")]
+        saved = []
+        orig, hm.save_roster = hm.save_roster, saved.append
+        try:
+            hm.refresh_sessions(rows, agents=agents, tab_labels={"w19:t3": "mise"})
+        finally:
+            hm.save_roster = orig
+        self.assertEqual(rows[0]["pane_id"], "")
+        self.assertEqual(rows[0]["session_id"], "")
+        self.assertEqual(rows[0]["cwd"], ROOT)  # sitting's home stays; the pane does not
+        self.assertEqual(len(saved), 1)
+
+    def test_refresh_updates_kind_when_the_sitting_is_still_there(self):
+        rows = [{"name": "cowbell", "cwd": ROOT, "kind": "claude", "harness": "claude",
+                 "pane_id": "w1A:p3", "session_id": "s1", "tab_id": "w1A:t3"}]
+        agents = [agent("w1A:p3", "grok", ROOT, sid="s1")]
+        agents[0]["tab_id"] = "w1A:t3"
+        saved = []
+        orig, hm.save_roster = hm.save_roster, saved.append
+        try:
+            hm.refresh_sessions(rows, agents=agents, tab_labels={"w1A:t3": "herdr-cowbell"})
+        finally:
+            hm.save_roster = orig
+        self.assertEqual(rows[0]["pane_id"], "w1A:p3")
+        self.assertEqual(rows[0]["kind"], "grok")
+        self.assertEqual(rows[0]["harness"], "grok")
+
+    def test_refresh_keeps_a_sitting_that_moved_directories_when_the_tab_matches(self):
+        rows = [{"name": "scholar", "cwd": ROOT + "/old", "kind": "claude", "harness": "claude",
+                 "pane_id": "wM:pE", "session_id": "s1", "tab_id": "wM:tE"}]
+        agents = [agent("wM:pE", "grok", ROOT + "/new", sid="s1")]
+        agents[0]["tab_id"] = "wM:tE"
+        orig, hm.save_roster = hm.save_roster, lambda rows: None
+        try:
+            hm.refresh_sessions(rows, agents=agents, tab_labels={"wM:tE": "scholar"})
+        finally:
+            hm.save_roster = orig
+        self.assertEqual(rows[0]["pane_id"], "wM:pE")
+        self.assertEqual(rows[0]["kind"], "grok")
+        self.assertEqual(rows[0]["cwd"], ROOT + "/new")
+
+    def test_bind_sitting_keeps_sonnet_model_from_quota_token(self):
+        row = {"name": "blender", "kind": "claude", "harness": "claude", "model": ""}
+        live = agent("w13:p8", "claude", ROOT)
+        live["tokens"] = {"quota_model": "Sonnet 5"}
+        hm.bind_sitting(row, live)
+        self.assertEqual(row["model"], "Sonnet 5")
+        self.assertEqual(hm.glyph_for(row["kind"], row["model"]), "✳")
+
+    def test_remember_live_reclaims_cold_sitting_by_name_and_cwd(self):
+        reg = {"live": [{"name": "herdr-dev", "harness": "grok", "kind": "grok", "cwd": ROOT,
+                         "pane_id": "w1A:pD", "session_id": "s-new", "tab_id": "w1A:tA",
+                         "workspace_id": "w1A", "on_roster": False}]}
+        rows = [{"name": "herdr-dev", "cwd": ROOT, "kind": "grok", "harness": "grok",
+                 "pane_id": "", "session_id": ""}]
+        saved = []
+        orig, hm.save_roster = hm.save_roster, saved.append
+        try:
+            self.assertEqual(hm.remember_live(reg, rows), 0)
+        finally:
+            hm.save_roster = orig
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["pane_id"], "w1A:pD")
+        self.assertEqual(rows[0]["session_id"], "s-new")
+        self.assertTrue(reg["live"][0]["on_roster"])
         self.assertEqual(len(saved), 1)
 
 
@@ -950,6 +1033,21 @@ class SidebarTokens(unittest.TestCase):
         self.assertIn("glyph=ϟ", tokens)
         self.assertIn("line1=ϟ droid", tokens)
         self.assertFalse(hm.report_identity("pid:42", "n", "grok"))   # no herdr pane: no publish
+
+    def test_clear_identity_drops_cowbell_tokens(self):
+        calls = []
+        orig = hm.herdr
+        hm.herdr = lambda *a, **k: calls.append(a) or {}
+        try:
+            self.assertTrue(hm.clear_identity("w19:p3"))
+        finally:
+            hm.herdr = orig
+        args = calls[0]
+        self.assertEqual(args[:2], ("pane", "report-metadata"))
+        self.assertIn("--clear-display-agent", args)
+        self.assertIn("glyph", args)
+        self.assertIn("line1", args)
+        self.assertFalse(hm.clear_identity("pid:9"))
 
     def test_identity_events_publish_once_per_change(self):
         seen = {}
