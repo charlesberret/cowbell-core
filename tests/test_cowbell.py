@@ -3,8 +3,10 @@ import io
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
+import tomllib
 import unittest
 import warnings
 from pathlib import Path
@@ -1867,6 +1869,167 @@ class UnixConfine(unittest.TestCase):
             "/usr/bin/nono", "run", "--silent", "--profile",
             os.path.expanduser("~/lab.json"), "--allow-cwd", "--", "/bin/bash",
         ])
+
+
+class CatalogWriter(unittest.TestCase):
+    """LAB-254: splice [[harness]] blocks, keep comments, backup first."""
+
+    SEED = Path(__file__).resolve().parent.parent / "harnesses.toml"
+    HOUSE = Path.home() / ".config" / "cowbell" / "harnesses.toml"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _copy(self, src: Path) -> Path:
+        dest = self.dir / "harnesses.toml"
+        shutil.copy2(src, dest)
+        return dest
+
+    def _load(self, p: Path) -> dict:
+        with open(p, "rb") as fh:
+            return tomllib.load(fh)
+
+    def _outside(self, text: str, hid: str) -> str:
+        span = next(s for s in hm.harness_blocks(text) if s["id"] == hid)
+        return text[:span["start"]] + text[span["end"]:]
+
+    def _baks(self, p: Path) -> list[Path]:
+        return sorted(p.parent.glob(p.name + ".bak-*"))
+
+    def test_set_field_keeps_comments_on_seed(self):
+        p = self._copy(self.SEED)
+        before = p.read_text(encoding="utf-8")
+        parsed = self._load(p)
+        hm.harness_set_field("claude", "title", "Claude Code (edited)", path=p)
+        after = p.read_text(encoding="utf-8")
+        self.assertIn("# cowbell — which agents can be started", after)
+        self.assertIn("system_prompt_flag = \"--append-system-prompt-file\"   # used only when", after)
+        self.assertIn('id = "grok"', after)
+        self.assertEqual(self._outside(before, "claude"), self._outside(after, "claude"))
+        got = self._load(p)
+        self.assertEqual(got["harness"][0]["title"], "Claude Code (edited)")
+        parsed["harness"][0]["title"] = "Claude Code (edited)"
+        self.assertEqual(got, parsed)
+        baks = self._baks(p)
+        self.assertEqual(len(baks), 1)
+        self.assertEqual(baks[0].read_text(encoding="utf-8"), before)
+
+    def test_set_field_keeps_inline_comment_on_the_same_line(self):
+        p = self._copy(self.SEED)
+        hm.harness_set_field("claude", "session_id_flag", "--sid", path=p)
+        line = next(ln for ln in p.read_text(encoding="utf-8").splitlines()
+                    if ln.startswith("session_id_flag"))
+        self.assertIn("# outside herdr:", line)
+        self.assertIn('"--sid"', line)
+
+    def test_noop_replace_keeps_tomllib_and_bytes_outside_the_block(self):
+        p = self._copy(self.SEED)
+        before = p.read_text(encoding="utf-8")
+        parsed = self._load(p)
+        claude = next(h for h in parsed["harness"] if h["id"] == "claude")
+        hm.harness_replace("claude", dict(claude), path=p)
+        after = p.read_text(encoding="utf-8")
+        self.assertEqual(self._load(p), parsed)
+        self.assertEqual(self._outside(before, "claude"), self._outside(after, "claude"))
+        self.assertEqual(self._baks(p)[0].read_text(encoding="utf-8"), before)
+
+    def test_insert_then_delete_restores_seed_bytes(self):
+        p = self._copy(self.SEED)
+        before = p.read_bytes()
+        hm.harness_insert({"id": "lab-probe", "kind": "bash", "title": "probe",
+                           "command": "/bin/bash", "resume": []}, path=p)
+        ids = [h["id"] for h in self._load(p)["harness"]]
+        self.assertIn("lab-probe", ids)
+        self.assertIn("# cowbell — which agents can be started", p.read_text(encoding="utf-8"))
+        hm.harness_delete("lab-probe", path=p)
+        self.assertEqual(p.read_bytes(), before)
+
+    def test_delete_missing_id_is_noop(self):
+        p = self._copy(self.SEED)
+        before = p.read_bytes()
+        hm.harness_delete("no-such-harness", path=p)
+        self.assertEqual(p.read_bytes(), before)
+        self.assertEqual(self._baks(p), [])
+
+    def test_failed_write_leaves_prior(self):
+        p = self._copy(self.SEED)
+        prior = p.read_bytes()
+        orig = hm.write_atomic
+
+        def boom(path, text):
+            raise OSError("disk full")
+
+        hm.write_atomic = boom
+        try:
+            with self.assertRaises(OSError):
+                hm.harness_set_field("claude", "title", "nope", path=p)
+        finally:
+            hm.write_atomic = orig
+        self.assertEqual(p.read_bytes(), prior)
+        self.assertEqual(self._baks(p)[0].read_bytes(), prior)
+
+    def test_newer_schema_refuses_write(self):
+        p = self._copy(self.SEED)
+        text = p.read_text(encoding="utf-8").replace("schema = 1", f"schema = {hm.SCHEMA + 1}", 1)
+        p.write_text(text, encoding="utf-8")
+        prior = p.read_bytes()
+        with self.assertRaises(hm.SchemaError):
+            hm.harness_set_field("claude", "title", "nope", path=p)
+        self.assertEqual(p.read_bytes(), prior)
+        self.assertEqual(self._baks(p), [])
+
+    def test_set_field_adds_a_missing_key(self):
+        p = self._copy(self.SEED)
+        hm.harness_set_field("gemini", "family", "gemini", path=p)
+        gem = next(h for h in self._load(p)["harness"] if h["id"] == "gemini")
+        self.assertEqual(gem["family"], "gemini")
+        self.assertIn("family = \"gemini\"", p.read_text(encoding="utf-8"))
+
+    def test_insert_duplicate_id_refuses(self):
+        p = self._copy(self.SEED)
+        prior = p.read_bytes()
+        with self.assertRaises(SystemExit) as e:
+            hm.harness_insert({"id": "claude", "kind": "claude"}, path=p)
+        self.assertIn("already exists", str(e.exception))
+        self.assertEqual(p.read_bytes(), prior)
+
+    @unittest.skipUnless(
+        (Path.home() / ".config" / "cowbell" / "harnesses.toml").is_file(),
+        "no patron config-dir catalog on this host",
+    )
+    def test_round_trip_on_patron_catalog_copy(self):
+        p = self._copy(self.HOUSE)
+        before = p.read_text(encoding="utf-8")
+        parsed = self._load(p)
+        self.assertIn("# cowbell — the constitution of the herd.", before)
+        self.assertIn("[places.lobby]", before)
+        self.assertIn("unix_user = \"guest\"", before)
+        hm.harness_set_field("local-ornith", "title", "ornith 9b — edited", path=p)
+        after = p.read_text(encoding="utf-8")
+        self.assertIn("# cowbell — the constitution of the herd.", after)
+        self.assertIn("# House wrappers", after)
+        self.assertIn("[places.lobby]", after)
+        self.assertIn("unix_user = \"guest\"", after)
+        self.assertIn("# --- aider on OpenRouter", after)
+        self.assertEqual(self._outside(before, "local-ornith"), self._outside(after, "local-ornith"))
+        got = self._load(p)
+        self.assertEqual(got["harness"][4]["id"], "local-ornith")
+        self.assertEqual(got["harness"][4]["title"], "ornith 9b — edited")
+        parsed["harness"][4]["title"] = "ornith 9b — edited"
+        self.assertEqual(got, parsed)
+        self.assertEqual(self._baks(p)[0].read_text(encoding="utf-8"), before)
+        hm.harness_insert({"id": "lab-probe", "kind": "bash", "title": "probe",
+                           "command": "/bin/true"}, path=p)
+        self.assertIn("[places.local-lab]", p.read_text(encoding="utf-8"))
+        hm.harness_delete("lab-probe", path=p)
+        # title edit remains; probe is gone; places comments still there
+        self.assertNotIn("lab-probe", p.read_text(encoding="utf-8"))
+        self.assertIn("[places.lobby]", p.read_text(encoding="utf-8"))
+        self.assertIn("ornith 9b — edited", p.read_text(encoding="utf-8"))
 
 
 class Coherence(unittest.TestCase):

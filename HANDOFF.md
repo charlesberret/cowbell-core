@@ -4,6 +4,14 @@ Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 
 Milestone: Split (Now)
 Locked: none
 
+## 2026-10-01 — LAB-254: [[harness]] block writer
+
+`harness_insert` / `harness_replace` / `harness_delete` / `harness_set_field` splice
+the config-dir catalog as text. Comments and neighbouring tables stay; each write
+leaves `.bak-<timestamp>`; a failed write leaves the prior file. Delete of a
+missing id is a no-op. Picker keys unchanged. Tests on the seed and a copy of
+`~/.config/cowbell/harnesses.toml`.
+
 ## 2026-09-30 — picker: Active is a census; Resume and New Session are the menus
 
 Selecting a live sitting used to try `focus` (herdr pane) or print that cowbell
