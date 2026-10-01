@@ -4,6 +4,56 @@ Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 
 Milestone: Split (Now)
 Locked: none
 
+## 2026-09-30 — picker: Active is a census; Resume and New Session are the menus
+
+Selecting a live sitting used to try `focus` (herdr pane) or print that cowbell
+cannot switch terminals. That is not a takeover, and the failure is a dead end.
+Active (was Running) stays unnumbered, not in the cursor/digit/Enter set,
+inside a light-gray (secondary) box with the heading on the top rule. Resume,
+New Session, and Active names are the same ink. Resume heading is gold;
+New Session heading is green (kettle `#7dba6f`). Option numbers are kettle blue
+(`#7d9fc7`). `+ N more` on Active still expands, from inside the box. `a`
+adopts the focused agent in that census, or the only running sitting. Several
+running, with focus on the popup, asks for `cowbell adopt <name>`.
+
+## 2026-09-30 — prefix+c claim survives herdr upgrades (plugin)
+
+Herdr 0.9.1 / native-tab rewrites of `~/.config/herdr/config.toml` dropped the
+cowbell `[[keys.command]]` block and the blanked `new_tab`, so `prefix+c` went
+back to herdr's bare new-tab. `keys install` now writes
+`~/.config/cowbell/prefix-c.claimed`. A `[[startup]]` hook runs `keys ensure`:
+one-shot, no panes, no `report-metadata`, no clocks (LAB-297 still holds). If
+the claim file is present and the block is gone, it puts the binding back and
+reloads config. `keys uninstall` restores herdr's binding and deletes the claim.
+Strangers who never ran install-keys are left alone.
+
+## 2026-09-23 — over-privilege is advisory, never a gate
+
+Trust exit 3 (over-privilege) no longer asks `start anyway? [y/N]`; it prints one dim note with the
+checker's own reason, and the picker badge is a dim `! more reach than needed` (was red `! asks first`).
+Blocked (`⊘`) still refuses, and is now the red mark in `status`. `parse_match` keeps only the reason
+in `flag`, not the checker's bracketed aside. Patron ruling in the metawork sitting (T4: visible, not silent).
+
+## 2026-09-25 — resume history-discovered sessions when absent from roster
+
+- **History-discovered resume**: Sessions discovered by `discover_sessions` (Claude Code `~/.claude/projects/...` and Grok `~/.grok/sessions/...`) appear in the picker's Resume list, but previously failed upon selection or `cowbell enter <name>` with `no roster entry for that session` if they were created outside cowbell.
+- `cmd_enter` now accepts an optional `target` record directly (passed from `picker()` and `cmd_dispatch()`).
+- When called from the CLI (`cowbell enter <target>`), `cmd_enter` queries `load_roster()`, and if absent, queries `discover_sessions(root, cat)` by exact name, session ID prefix, substring, or title.
+- Resuming automatically records the sitting into `roster.json` via `raise_harness` or `_record_here`.
+- Tested in `tests/test_cowbell.py` (`ResumeOutside`, `SessionHistory`; 127/127 tests pass).
+
+## 2026-09-25 — delegation vision & standalone without herdr CLI (LAB-497)
+
+- **Delegation & tab defaults (`3d5cfb2`, `af00c45`)**: Human callers running `cowbell new` default to `mode="here"` (replacing the current shell). Agent callers (`caller_is_agent()`) default to creating a new tab via herdr. The `herdr-cowbell` plugin sets `COWBELL_MODE=tab` so `prefix+c` retains tab-creation behavior for humans. `raise_harness` defaults to `create_tab` within the project workspace (`--split` opts into pane splitting).
+- **LAB-497 standalone without herdr binary**: Added `has_herdr()` check in the herdr adapter; `server_up()` returns `False` if the `herdr` binary is missing from PATH/environment, so standalone cowbell (`COWBELL_MODE=here` or outside herdr) never attempts to run a missing binary even if a server socket exists. All standalone operations (`status`, `picker`, `enter`, `new`, `list`, `dispatch`) run with zero `herdr` subprocess calls. Tested in `tests/test_cowbell.py` (`NoHerdrCalls`).
+
+## 2026-09-24 — picker `a` adopts the highlighted Running row
+
+Typing `cowbell adopt` (or picker `a`) in a shell made that shell the focused pane, so
+adopt died with `no focused agent pane` and dumped a multi-line list into the popup.
+`a` now adopts the highlighted Running sitting; a positional pane id or sitting name
+selects when focus is a shell; the TUI flash stays one line.
+
 ## 2026-09-20 — Wrangler accuracy batch: LAB-294, 295, 297, 298
 
 - **LAB-295 places**: `cowbell status` names the resolved place (header line + `--json`, matching the picker); tie rule documented (longest cwd wins, first declared on equal length); nested-place, status, and `new`/`--place` tests. Commit `9bd47f0`.

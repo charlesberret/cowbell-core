@@ -2,25 +2,28 @@
 
 Type `cowbell` in this directory.
 
-cowbell picks an agent for the directory you are in: **Running**, **Resume**, or
-**New**. Running is every coding agent whose working directory is this one or below
-it. Resume is the sessions cowbell can pick up again. New is the agents in your
-catalog that are installed and allowed here, most used here first.
+cowbell picks an agent for the directory you are in: **Resume** or **New
+Session**, with an **Active** census of who is already working here. Active is
+every coding agent whose working directory is this one or below it — you can
+see them, you cannot take them over from this list. Resume is the sessions
+cowbell can pick up again. New Session is the agents in your catalog that are
+installed and allowed here, most used here first.
 
 ```
   ~/code/projects/acme                         g widen to projects · 4 running
 
-  Running
-    1  nomogenesis-claude     claude      idle
-    2  philologist            grok        working  14s   in sys:clubhouse
+  ┌─ Active ──────────────────────────────────────────────────────────────┐
+  │    nomogenesis-claude     claude      idle                            │
+  │    philologist            grok        working  14s   in sys:clubhouse │
+  └───────────────────────────────────────────────────────────────────────┘
 
   Resume
-    3  kimi-ballots           oll-mid     2 days ago
+    1  kimi-ballots           oll-mid     2 days ago
 
-  New
-    4  claude                 Claude Code
-    5  grok                   Grok CLI                           ! asks first
-    6  agy                    Antigravity (Gemini)
+  New Session
+    2  claude                 Claude Code
+    3  grok                   Grok CLI                           ! more reach than needed
+    4  agy                    Antigravity (Gemini)
        + 9 more
 
   ⏎ open   n new with options   g widen   esc close
@@ -38,20 +41,21 @@ command read the same catalog and roster, so a session started in one resumes in
 ## Where agents open
 
 - **Inside a herdr pane**, starting or resuming opens a new herdr tab named for the
-  sitting, and Running lists herdr's agents.
+  sitting, and Active lists herdr's agents.
 - **Anywhere else** (or with `COWBELL_MODE=here`), cowbell hands this terminal to the
   agent (`exec`) in the chosen directory; quit the agent and you are back at your shell.
-  Running lists herdr's agents when a herdr server is listening, plus agent CLIs
+  Active lists herdr's agents when a herdr server is listening, plus agent CLIs
   found running in plain terminals by working directory. Those rows say where they run
   (`on ttys012`); cowbell can't switch to another terminal window.
 - **Resume** lists only sessions that can resume. Claude started outside herdr gets its
   session id up front (`session_id_flag`) so it can; agents without such a flag are not
   listed.
-- **Enter on New** opens the agent at once with an automatic name (`claude`,
+- **Enter on New Session** opens the agent at once with an automatic name (`claude`,
   `claude-2`) and the default permissions; `[defaults] ask_name = true` asks for the
   name first. `n` asks for agent, name, model, and permissions.
 - **Trust** appears only if a checker is configured and on PATH, and only as an
-  exception: `! asks first` on an over-privileged row. Blocked agents are left off.
+  exception: a dim `! more reach than needed` on a row the checker calls over-privileged.
+  That is advisory and never stops a launch; blocked agents are left off.
 
 Two hooks let cowbell use tools it does not own, both set in `[defaults]`:
 

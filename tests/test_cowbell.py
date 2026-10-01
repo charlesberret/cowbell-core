@@ -197,6 +197,9 @@ class Trust(unittest.TestCase):
         v = hm.parse_match("verdict:   ok\nflag:      (none)\n", 0)
         self.assertEqual((v["verdict"], v["flag"]), ("ok", ""))
         self.assertEqual(hm.parse_match("", 3)["verdict"], "overprivilege")
+        v = hm.parse_match("verdict:   overprivilege  (W1 mutate tools on internal work)  [W1 -- reported here]\n"
+                           "flag:      (none)\n", 3)
+        self.assertEqual(v["flag"], "W1 mutate tools on internal work")
 
 
 class PickerList(unittest.TestCase):
@@ -226,12 +229,49 @@ class PickerList(unittest.TestCase):
         choices = hm.picker_choices(reg, [], here_ws="w1", ws_labels={"w2": "sys:clubhouse"})
         self.assertEqual([c["section"] for c in choices], ["running", "running", "resume", "start", "start", "start"])
         self.assertEqual([c["target"]["harness"] for c in choices if c["action"] == "raise"], ["claude", "grok", "pi"])
+        self.assertEqual([hm.picker_selectable(c) for c in choices], [False, False, True, True, True, True])
         text = hm.render_picker(reg, choices)
-        for needle in ("  Running\n", "  Resume\n", "  New\n", "  1  majordomo", "in sys:clubhouse", "4m",
-                       "Claude Code", "! asks first"):
+        for needle in ("┌─ Active ", "  Resume\n", "  New Session\n", "majordomo", "in sys:clubhouse", "4m",
+                       "Claude Code", "! more reach than needed"):
             self.assertIn(needle, text)
+        self.assertNotIn("  1  majordomo", text)
+        self.assertTrue(any(c.get("idx") == 1 and c["action"] == "enter" for c in choices))
         for gone in ("LIVE", "RAISE", "subject", "omp", "local-ornith", "⊘", "?", "w1:p1", "cold", "no-session"):
             self.assertNotIn(gone, text)
+
+    def test_active_sits_in_a_box(self):
+        reg = self.reg()
+        choices = hm.picker_choices(reg, [], here_ws="w1", ws_labels={"w2": "sys:clubhouse"})
+        lines = hm.render_picker(reg, choices).split("\n")
+        top = next(i for i, ln in enumerate(lines) if "┌─ Active" in ln)
+        bot = next(i for i, ln in enumerate(lines) if ln.strip().startswith("└"))
+        inner = "\n".join(lines[top:bot + 1])
+        self.assertIn("majordomo", inner)
+        self.assertIn("scholar", inner)
+        self.assertNotIn("Resume", inner)
+        self.assertGreater(next(i for i, ln in enumerate(lines) if ln == "  Resume"), bot)
+        name = next(ln for ln in lines[top + 1:bot] if "majordomo" in ln)
+        self.assertTrue(name.lstrip().startswith("│"))
+        self.assertTrue(name.rstrip().endswith("│"))
+        self.assertEqual(hm.visible_len(lines[top]), hm.visible_len(name))
+        self.assertEqual(hm.visible_len(lines[top]), hm.visible_len(lines[bot]))
+
+    def test_active_more_row_stays_inside_the_box(self):
+        reg = self.reg()
+        reg["live"] = [{"name": f"a{i}", "harness": "claude", "kind": "claude", "status": "idle",
+                        "pane_id": f"w1:p{i}", "workspace_id": "w1", "on_roster": True, "since": ""}
+                       for i in range(8)]
+        choices = hm.picker_choices(reg, [])
+        running = [c for c in choices if c["section"] == "running"]
+        self.assertEqual(running[-1]["action"], "more")
+        self.assertTrue(hm.picker_selectable(running[-1]))
+        body = hm.render_picker(reg, choices).split("\n")
+        more = running[-1]
+        self.assertIsNone(more["idx"])
+        self.assertIn("+ 4 more", body[more["row"]])
+        self.assertIn("│", body[more["row"]])
+        self.assertTrue(any("┌─ Active" in ln for ln in body[:more["row"]]))
+        self.assertTrue(any(ln.strip().startswith("└") for ln in body[more["row"] + 1:]))
 
     def test_long_clock_does_not_run_into_the_workspace(self):
         reg = self.reg()
@@ -258,7 +298,8 @@ class PickerList(unittest.TestCase):
         self.assertIn("+ 4 more", start[-1]["line"])
         hm.render_picker(reg, choices)
         self.assertIsNone(start[-1]["idx"])
-        self.assertEqual([c["idx"] for c in choices if c["action"] != "more"], list(range(1, 8)))
+        self.assertEqual([c["idx"] for c in choices if c["action"] != "more"],
+                         [None, None, 1, 2, 3, 4, 5])
         self.assertEqual(len([c for c in hm.picker_choices(reg, [], expanded={"start"}) if c["section"] == "start"]), 8)
 
     def test_rank_here_beats_elsewhere_beats_catalog_order(self):
@@ -579,7 +620,7 @@ class Places(unittest.TestCase):
         hm.load_roster = lambda: []
         try:
             pane = hm.raise_harness(self.cat, hm.harness_by_id(self.cat, "grok"), "grok-3", self.pad,
-                                    hm.Ctx(workspace_id="wK", cwd=self.home))
+                                    hm.Ctx(workspace_id="wK", cwd=self.home), pen=True)
         finally:
             hm.herdr, hm.start_native, hm.save_roster, hm.load_roster = saved
         return pane, calls
@@ -599,6 +640,69 @@ class Places(unittest.TestCase):
         tab = next(c for c in calls if c[:2] == ("tab", "create"))
         self.assertEqual(tab[tab.index("--workspace") + 1], "wL")
         self.assertFalse(any(c[:2] == ("workspace", "create") for c in calls))
+
+    def test_without_pen_stays_on_the_caller_line(self):
+        pane, calls = self._raise([{"workspace_id": "wK", "label": "home ~"},
+                                   {"workspace_id": "wL", "label": "lobby"}])
+        # _raise passes pen=True. Call again without it.
+        calls.clear()
+        saved = (hm.herdr, hm.start_native, hm.save_roster, hm.load_roster)
+        def fake_herdr(*args, expect_json=True):
+            calls.append(args)
+            if args[:2] == ("workspace", "list"):
+                return {"workspaces": [{"workspace_id": "wK", "label": "home ~"},
+                                       {"workspace_id": "wL", "label": "lobby"}]}
+            if args[:2] == ("tab", "create"):
+                return {"root_pane": {"pane_id": "wK:p9", "tab_id": "wK:t9", "workspace_id": args[3]}}
+            return {}
+        hm.herdr = fake_herdr
+        hm.start_native = lambda *a, **k: {}
+        hm.save_roster = lambda rows: None
+        hm.load_roster = lambda: []
+        try:
+            pane = hm.raise_harness(self.cat, hm.harness_by_id(self.cat, "grok"), "grok-4", self.pad,
+                                    hm.Ctx(workspace_id="wK", cwd=self.home))
+        finally:
+            hm.herdr, hm.start_native, hm.save_roster, hm.load_roster = saved
+        tab = next(c for c in calls if c[:2] == ("tab", "create"))
+        self.assertEqual(tab[tab.index("--workspace") + 1], "wK")
+        self.assertEqual(pane["workspace_id"], "wK")
+        self.assertFalse(any(c[:2] == ("workspace", "create") for c in calls))
+
+    def test_without_pen_creates_a_tab_in_proj_workspace(self):
+        calls = []
+
+        def fake_herdr(*args, expect_json=True):
+            calls.append(args)
+            if args[:2] == ("workspace", "list"):
+                return {"workspaces": [
+                    {"workspace_id": "w1B", "label": "proj:agent-lobby"},
+                    {"workspace_id": "wL", "label": "lobby"},
+                ]}
+            if args[:2] == ("pane", "list"):
+                return {"panes": [{"pane_id": "w1B:p1", "workspace_id": "w1B", "tab_id": "w1B:t1",
+                                   "cwd": self.pad}]}
+            if args[:2] == ("tab", "create"):
+                return {"tab": {"tab_id": "w1B:t2", "workspace_id": "w1B"}, "root_pane": {"pane_id": "w1B:p9", "tab_id": "w1B:t2", "workspace_id": "w1B"}}
+            return {}
+
+        saved = (hm.herdr, hm.start_native, hm.save_roster, hm.load_roster)
+        hm.herdr = fake_herdr
+        hm.start_native = lambda *a, **k: {}
+        hm.save_roster = lambda rows: None
+        hm.load_roster = lambda: []
+        try:
+            pane = hm.raise_harness(self.cat, hm.harness_by_id(self.cat, "grok"), "grok-5", self.pad,
+                                    hm.Ctx(workspace_id="wL", cwd=self.pad))
+        finally:
+            hm.herdr, hm.start_native, hm.save_roster, hm.load_roster = saved
+        tab_create = next(c for c in calls if c[:2] == ("tab", "create"))
+        self.assertEqual(tab_create[2], "--workspace")
+        self.assertEqual(tab_create[3], "w1B")
+        self.assertEqual(pane["pane_id"], "w1B:p9")
+        self.assertEqual(pane["workspace_id"], "w1B")
+        self.assertFalse(any(c[:2] == ("workspace", "create") for c in calls))
+        self.assertFalse(any(c[:2] == ("pane", "split") for c in calls))
 
 
 class Hosts(unittest.TestCase):
@@ -630,9 +734,9 @@ class Hosts(unittest.TestCase):
     def test_host_is_chosen_once(self):
         pane = {"HERDR_PANE_ID": "w1:p1", "HERDR_WORKSPACE_ID": "w1"}
         inside = hm.choose_host(True, pane)
-        self.assertEqual(inside.mode, "tab")
-        self.assertIsInstance(inside.launch, hm.HerdrLaunch)
-        self.assertIsInstance(inside.live, hm.HerdrLive)
+        self.assertEqual(inside.mode, "here")
+        self.assertIsInstance(inside.launch, hm.HereLaunch)
+        self.assertIsInstance(inside.live, hm.CombinedLive)
         forced = hm.choose_host(True, {**pane, "COWBELL_MODE": "here"})
         self.assertEqual(forced.mode, "here")
         self.assertIsInstance(forced.launch, hm.HereLaunch)
@@ -641,6 +745,14 @@ class Hosts(unittest.TestCase):
         self.assertEqual(offline.mode, "here")
         self.assertFalse(offline.live.herdr)
         self.assertEqual([type(x) for x in offline.live.sources], [hm.ProcessScan])
+        agent = hm.choose_host(True, {**pane, "GROK_AGENT": "1"})
+        self.assertEqual(agent.mode, "tab")
+        self.assertIsInstance(agent.launch, hm.HerdrLaunch)
+        self.assertIsInstance(agent.live, hm.HerdrLive)
+        person = hm.choose_host(True, {**pane, "GROK_AGENT": "1", "COWBELL_CALLER": "person"})
+        self.assertEqual(person.mode, "here")
+        tabbed_person = hm.choose_host(True, {**pane, "COWBELL_MODE": "tab"})
+        self.assertEqual(tabbed_person.mode, "tab")
 
     def test_here_never_creates_a_tab(self):
         calls = []
@@ -711,10 +823,40 @@ class NoHerdrCalls(unittest.TestCase):
         self.assertIn("sitting", status.stdout)
         picker = self.run_cowbell("picker", stdin="q\n")
         self.assertEqual(picker.returncode, 0, picker.stderr)
-        self.assertIn("  New\n", picker.stdout)
+        self.assertIn("  New Session\n", picker.stdout)
         enter = self.run_cowbell("enter", "sitting")
         self.assertIn("FAKE-AGENT --continue", enter.stdout, enter.stderr)
         self.assertFalse(self.log.exists(), self.log.read_text() if self.log.exists() else "")
+
+    def test_new_never_runs_herdr(self):
+        res = self.run_cowbell("new", "--harness", "fake", "--name", "test1")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertFalse(self.log.exists(), self.log.read_text() if self.log.exists() else "")
+
+    def test_list_never_runs_herdr(self):
+        res = self.run_cowbell("list")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertFalse(self.log.exists(), self.log.read_text() if self.log.exists() else "")
+
+    def test_dispatch_never_runs_herdr(self):
+        res = self.run_cowbell("fake", "--name", "test2")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertFalse(self.log.exists(), self.log.read_text() if self.log.exists() else "")
+
+    def test_server_socket_listening_but_no_herdr_bin(self):
+        import socket, subprocess
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.bind(self.env["HERDR_SOCKET_PATH"])
+        sock.listen(1)
+        try:
+            env = {**self.env}
+            env.pop("HERDR_BIN_PATH", None)
+            env["PATH"] = "/usr/sbin:/usr/bin:/bin"
+            res = subprocess.run([sys.executable, str(Hosts.SRC), "status"], env=env, cwd=self.base, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertIn("sitting", res.stdout)
+        finally:
+            sock.close()
 
 
 class Standalone(unittest.TestCase):
@@ -856,11 +998,16 @@ class SidebarTokens(unittest.TestCase):
         self.assertEqual(published[-1], ("w1C:p1", "probe-seat", "grok"))
 
     def test_plugin_has_no_reporter(self):
-        # the herdr-cowbell plugin runs no reporter process: no [[startup]] in its manifest
+        # LAB-297: no report-metadata clock. keys ensure may run at startup (prefix+c claim).
         plugin = Path(__file__).resolve().parent.parent.parent / "herdr-cowbell" / "herdr-plugin.toml"
         if not plugin.exists():
             self.skipTest("plugin tree not present")
-        self.assertNotIn("[[startup]]", plugin.read_text())
+        text = plugin.read_text()
+        self.assertNotIn("bt-reporter", text)
+        code = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+        self.assertNotIn("report-metadata", code)
+        if "[[startup]]" in code:
+            self.assertIn('command = ["./bin/cowbell", "keys", "ensure"]', code)
 
 
 class ResumeOutside(unittest.TestCase):
@@ -913,6 +1060,55 @@ class ResumeOutside(unittest.TestCase):
         self.assertEqual(claude.get("session_id_flag"), "--session-id")
         # only claude claims a cowbell-chosen session id; the others are honestly absent
         self.assertEqual([h["id"] for h in cat["harness"] if h.get("session_id_flag")], ["claude"])
+
+    def test_cmd_enter_with_target_resumes_directly(self):
+        claude = dict(CAT["harness"][0], session_id_flag="--session-id", name_flag="--name")
+        cat = {**CAT, "harness": [claude] + [h for h in CAT["harness"] if h["id"] != "claude"]}
+        captured = []
+        orig_exec, orig_roster = hm.exec_here, hm.load_roster
+        hm.exec_here = lambda *a, **k: captured.append((a, k)) or {"pane_id": "here"}
+        hm.load_roster = lambda: []  # empty roster
+        try:
+            ctx = hm.Ctx(cwd=ROOT, mode="here", live=hm.LiveSource())
+            target = {"name": "target-sess", "cwd": ROOT, "harness": "claude", "kind": "claude",
+                      "session_id": "target-sid", "pane_id": None}
+            hm.cmd_enter(ctx, cat, "target-sess", target=target)
+        finally:
+            hm.exec_here, hm.load_roster = orig_exec, orig_roster
+        self.assertEqual(len(captured), 1)
+        args, kwargs = captured[0]
+        self.assertEqual(kwargs.get("resume_id"), "target-sid")
+
+    def test_cmd_enter_finds_history_session_when_absent_from_roster(self):
+        claude = dict(CAT["harness"][0], session_id_flag="--session-id", name_flag="--name")
+        cat = {**CAT, "harness": [claude] + [h for h in CAT["harness"] if h["id"] != "claude"]}
+        hist_session = {"name": "metawork-history", "cwd": ROOT, "harness": "claude", "kind": "claude",
+                        "session_id": "sess-hist-123", "title": "fix parser", "pane_id": None}
+        captured = []
+        orig_exec, orig_roster, orig_discover = hm.exec_here, hm.load_roster, hm.discover_sessions
+        hm.exec_here = lambda *a, **k: captured.append((a, k)) or {"pane_id": "here"}
+        hm.load_roster = lambda: []  # empty roster
+        hm.discover_sessions = lambda root, cat, home=None: [hist_session]
+        try:
+            ctx = hm.Ctx(cwd=ROOT, mode="here", live=hm.LiveSource())
+            # Find by name
+            hm.cmd_enter(ctx, cat, "metawork-history")
+            self.assertEqual(captured[-1][1].get("resume_id"), "sess-hist-123")
+
+            # Find by session_id prefix
+            hm.cmd_enter(ctx, cat, "sess-hist")
+            self.assertEqual(captured[-1][1].get("resume_id"), "sess-hist-123")
+
+            # Find by title
+            hm.cmd_enter(ctx, cat, "fix parser")
+            self.assertEqual(captured[-1][1].get("resume_id"), "sess-hist-123")
+
+            # Missing session raises SystemExit
+            with self.assertRaises(SystemExit) as cm:
+                hm.cmd_enter(ctx, cat, "nonexistent")
+            self.assertIn("no session 'nonexistent' on roster or in history", str(cm.exception))
+        finally:
+            hm.exec_here, hm.load_roster, hm.discover_sessions = orig_exec, orig_roster, orig_discover
 
 
 class StandaloneIdentify(unittest.TestCase):
@@ -1030,6 +1226,44 @@ class Flags(unittest.TestCase):
         opts, pos = hm.parse_flags(["--harness", "claude", "--lane=green", "--yes", "extra", "--", "--raw"])
         self.assertEqual(opts, {"harness": "claude", "lane": "green", "yes": True})
         self.assertEqual(pos, ["extra", "--raw"])
+
+
+class NewUsage(unittest.TestCase):
+    """LAB-424: `new -h|--help` prints usage and exits 0; an unknown flag exits 2. Neither raises."""
+
+    def setUp(self):
+        self._server_up = hm.server_up
+        hm.server_up = lambda: (_ for _ in ()).throw(AssertionError("server_up called"))
+
+    def tearDown(self):
+        hm.server_up = self._server_up
+
+    def test_help_exits_0_without_raising(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(hm.main(["new", "--help"]), 0)
+            self.assertEqual(hm.main(["new", "-h"]), 0)
+        text = out.getvalue()
+        self.assertIn("cowbell new", text)
+        self.assertIn("--harness", text)
+        self.assertIn("--split", text)
+
+    def test_unknown_flag_exits_2_with_usage(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(hm.main(["new", "--not-a-real-flag"]), 2)
+            self.assertEqual(hm.main(["new", "--bogus", "claude"]), 2)
+        text = err.getvalue()
+        self.assertIn("unknown flag --not-a-real-flag", text)
+        self.assertIn("unknown flag --bogus", text)
+        self.assertIn("cowbell new", text)
+
+    def test_double_dash_passthrough_is_not_an_unknown_flag(self):
+        pre, passthrough = hm.split_passthrough(["claude", "--", "--resume", "abc"])
+        opts, pos = hm.parse_flags(pre)
+        self.assertEqual(hm.new_unknown_flags(opts, pos), [])
+        self.assertEqual(pos, ["claude"])
+        self.assertEqual(passthrough, ["--resume", "abc"])
 
 
 class Sitting(unittest.TestCase):
@@ -1215,6 +1449,102 @@ class Adopt(unittest.TestCase):
             hm.cmd_adopt(self.ctx, CAT, pane_id="w9:p9")
         self.assertIn("no live agent", str(e.exception))
 
+    def test_adopt_uses_snapshot_focused_pane(self):
+        """agent list often has focused=False on every row; snapshot has focused_pane_id."""
+        grok = agent("wK:p1", "grok", ROOT, "working", "majordomo")
+        grok["focused"] = False
+        grok["tab_id"] = "wK:t1"
+        claude = agent("wK:p6", "claude", ROOT, "idle", "sysadmin")
+        claude["focused"] = False
+        claude["tab_id"] = "wK:t6"
+
+        class SnapLive(hm.LiveSource):
+            def agents(self):
+                return [grok, claude]
+
+            def snapshot(self):
+                return {"focused_pane_id": "wK:p6", "panes": [
+                    {**grok, "focused": False}, {**claude, "focused": True},
+                ]}
+
+        ctx = hm.Ctx(cwd=ROOT, mode="tab", pane_id="wK:p9", live=SnapLive(), launch=hm.HereLaunch())
+        row = hm.cmd_adopt(ctx, CAT)
+        self.assertEqual(row["pane_id"], "wK:p6")
+        self.assertEqual(row["harness"], "claude")
+
+    def _two_unfocused(self):
+        grok = agent("wK:pK", "grok", str(Path.home()), "idle", "metawork")
+        grok["focused"] = False
+        grok["tab_id"] = "wK:tK"
+        grok["name"] = "metawork"
+        claude = agent("wK:p6", "claude", str(Path.home()), "idle", "coord")
+        claude["focused"] = False
+        claude["tab_id"] = "wK:t6"
+        claude["name"] = "coord-career"
+
+        class TwoLive(hm.LiveSource):
+            def agents(self):
+                return [grok, claude]
+
+            def snapshot(self):
+                return {
+                    "focused_pane_id": "wK:p9",  # the shell where adopt was typed
+                    "panes": [{"pane_id": "wK:p9", "focused": True}],
+                    "tabs": [{"tab_id": "wK:tK", "label": "metawork"},
+                             {"tab_id": "wK:t6", "label": "coord-career"}],
+                }
+
+        ctx = hm.Ctx(cwd=ROOT, mode="tab", pane_id="wK:p9", live=TwoLive(), launch=hm.HereLaunch())
+        return ctx, grok, claude
+
+    def test_adopt_from_shell_needs_a_target(self):
+        """Typing adopt in a shell: that shell is focused, and there are several agents."""
+        ctx, grok, claude = self._two_unfocused()
+        with self.assertRaises(SystemExit) as e:
+            hm.cmd_adopt(ctx, CAT)
+        msg = str(e.exception)
+        self.assertIn("no focused agent pane to adopt", msg)
+        self.assertIn("wK:pK", msg)
+        self.assertIn("metawork", msg)
+        self.assertNotIn("Live here:", msg)  # those agents sit at ~, not under ROOT
+        self.assertIn("Live:", msg)
+
+    def test_adopt_positional_pane_id(self):
+        ctx, grok, claude = self._two_unfocused()
+        row = hm.cmd_adopt(ctx, CAT, name="wK:pK")
+        self.assertEqual(row["pane_id"], "wK:pK")
+        self.assertEqual(row["name"], "metawork")  # pane id is identity, not the sitting
+        self.assertEqual(row["harness"], "grok")
+
+    def test_adopt_positional_sitting(self):
+        ctx, grok, claude = self._two_unfocused()
+        row = hm.cmd_adopt(ctx, CAT, name="coord-career")
+        self.assertEqual(row["pane_id"], "wK:p6")
+        self.assertEqual(row["name"], "coord-career")
+
+    def test_picker_a_adopts_the_highlighted_running_row(self):
+        grok = {"name": "metawork", "harness": "grok", "kind": "grok", "status": "idle",
+                "pane_id": "wK:pK", "workspace_id": "wK"}
+        resume = {"name": "old", "harness": "claude", "kind": "claude", "pane_id": "wK:p1"}
+        running = {"action": "focus", "target": grok}
+        cold = {"action": "enter", "target": resume}
+        self.assertEqual(hm.adopt_pane_from_choice(running), "wK:pK")
+        self.assertIsNone(hm.adopt_pane_from_choice(cold))
+        self.assertIsNone(hm.adopt_pane_from_choice(None))
+
+    def test_picker_a_adopts_from_the_active_census(self):
+        """Active is not a menu. `a` still adopts the focused agent, or the only one."""
+        live = [
+            {"pane_id": "wK:pK", "name": "metawork"},
+            {"pane_id": "wK:p6", "name": "coord-career"},
+        ]
+        resume = {"action": "enter", "target": {"pane_id": "wK:p1"}}
+        self.assertEqual(hm.adopt_pane_for_picker(resume, live, "wK:p6"), "wK:p6")
+        self.assertIsNone(hm.adopt_pane_for_picker(None, live, "wK:p9"))  # popup, not an agent
+        self.assertEqual(hm.adopt_pane_for_picker(None, [live[0]], "wK:p9"), "wK:pK")
+        self.assertEqual(hm.adopt_picker_flash(2), "several running — cowbell adopt <name>")
+        self.assertEqual(hm.adopt_picker_flash(0), "no running sitting here to adopt")
+
 
 class ExtensionPoints(unittest.TestCase):
     """The two hooks onto tools cowbell does not own (LAB-318)."""
@@ -1319,6 +1649,17 @@ class SessionHistory(unittest.TestCase):
         only_grok = {"defaults": {"session_history": "on"}, "harness": [{"id": "grok"}]}
         self.assertEqual({r["harness"] for r in self.rows(only_grok)}, {"grok"})
 
+    def test_duplicate_titles_stay_distinct_names(self):
+        cdir = self.home / ".claude" / "projects" / "-Users-x-code-acme"
+        (cdir / "sess-c.jsonl").write_text(
+            json.dumps({"type": "custom-title", "customTitle": "parser-work"}) + "\n")
+        (cdir / "sess-d.jsonl").write_text(
+            json.dumps({"type": "custom-title", "customTitle": "parser-work"}) + "\n")
+        named = [r for r in self.rows() if r["session_id"] in ("sess-a", "sess-c", "sess-d")]
+        names = [r["name"] for r in named]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertTrue(all(n.startswith("parser-work") for n in names))
+
     def test_newest_first(self):
         stamps = [r.get("last") or "" for r in self.rows()]
         self.assertEqual(stamps, sorted(stamps, reverse=True))
@@ -1333,6 +1674,126 @@ class SessionHistory(unittest.TestCase):
         rows = [r for r in reg["cold"] if r.get("session_id") == "sess-a"]
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["name"], "adopted")
+
+    def test_cmd_enter_resumes_discovered_history_session(self):
+        cat = {**CAT, "defaults": {"session_history": "on"}}
+        captured = []
+        orig_exec, orig_roster, orig_discover = hm.exec_here, hm.load_roster, hm.discover_sessions
+        hm.exec_here = lambda *a, **k: captured.append((a, k)) or {"pane_id": "here"}
+        hm.load_roster = lambda: []
+        hm.discover_sessions = lambda r, c, home=None: orig_discover(r, c, home=self.home)
+        try:
+            ctx = hm.Ctx(cwd=self.root, mode="here", live=hm.LiveSource())
+            hm.cmd_enter(ctx, cat, "parser-work")
+        finally:
+            hm.exec_here, hm.load_roster, hm.discover_sessions = orig_exec, orig_roster, orig_discover
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0][1].get("resume_id"), "sess-a")
+
+
+class UnixConfine(unittest.TestCase):
+    """Place unix_user: drop uid (and optional nono) before exec."""
+
+    def test_no_place_is_passthrough(self):
+        cmd = ["grok", "--foo"]
+        self.assertEqual(hm.unix_confine(CAT, "/tmp", cmd), cmd)
+
+    def test_require_uid_without_user_refuses(self):
+        tmp = tempfile.mkdtemp()
+        cat = {**CAT, "places": {"lab": {"cwd": tmp, "require_uid": True}}}
+        with self.assertRaises(SystemExit) as e:
+            hm.unix_confine(cat, tmp, ["bash"])
+        self.assertIn("unix_user", str(e.exception))
+
+    def test_unknown_uid_refuses(self):
+        tmp = tempfile.mkdtemp()
+        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "no-such-agent-uid-xyz"}}}
+        with self.assertRaises(SystemExit) as e:
+            hm.unix_confine(cat, tmp, ["bash"])
+        self.assertIn("not on this host", str(e.exception))
+
+
+class Coherence(unittest.TestCase):
+    """Pane border is a cache of the harness Herdr detects. The tab stays the sitting."""
+
+    def test_no_claim_is_left_alone(self):
+        self.assertIsNone(hm.harness_claim("butler"))
+        self.assertIsNone(hm.harness_claim("butler · Hello"))
+        self.assertIsNone(hm.reconcile_label("butler", "butler", "grok"))
+        self.assertIsNone(hm.reconcile_label("", "butler", "grok"))
+
+    def test_matching_claim_stays(self):
+        self.assertEqual(hm.harness_claim("butler · grok"), ("butler", "grok"))
+        self.assertIsNone(hm.reconcile_label("butler · grok", "butler", "grok"))
+
+    def test_detected_agent_replaces_the_claimed_harness(self):
+        self.assertEqual(
+            hm.reconcile_label("butler · local-ornith", "butler", "grok"),
+            "butler · grok",
+        )
+
+    def test_tab_sitting_wins_over_the_name_in_the_claim(self):
+        self.assertEqual(hm.reconcile_label("butler · grok", "clerk", "grok"), "clerk · grok")
+
+    def test_idle_shell_drops_the_claim(self):
+        self.assertEqual(
+            hm.reconcile_label("butler · local-ornith", "butler", "", idle_shell=True),
+            "butler",
+        )
+
+    def test_unseen_wrapper_keeps_its_claim(self):
+        self.assertIsNone(hm.reconcile_label("butler · oll-mid", "butler", "", idle_shell=False))
+
+    def test_coherent_label_without_a_harness_is_the_sitting(self):
+        self.assertEqual(hm.coherent_pane_label("butler", ""), "butler")
+        self.assertEqual(hm.coherent_pane_label("butler", "grok"), "butler · grok")
+
+    def test_idle_shell_is_a_prompt_with_no_agent(self):
+        self.assertTrue(hm.pane_is_idle_shell({"terminal_title_stripped": "charles@avicenna: ~/x"}))
+        self.assertFalse(hm.pane_is_idle_shell({"agent": "grok", "terminal_title_stripped": "charles@avicenna: ~/x"}))
+        self.assertFalse(hm.pane_is_idle_shell({"terminal_title_stripped": "✳ butler"}))
+
+    def test_dry_run_does_not_consume_the_next_argument(self):
+        opts, pos = hm.parse_flags(["--dry-run", "extra"])
+        self.assertIs(opts.get("dry-run"), True)
+        self.assertEqual(pos, ["extra"])
+
+    def test_raise_caches_the_harness_id_on_the_pane_border(self):
+        calls = []
+        saved = (hm.herdr, hm.report_identity, hm.start_native, hm.save_roster, hm.load_roster,
+                 hm.create_tab, hm.pick_workspace)
+        hm.herdr = lambda *a, **k: calls.append(a) or {}
+        hm.report_identity = lambda *a, **k: True
+        hm.create_tab = lambda *a, **k: {"pane_id": "w1C:p1", "tab_id": "w1C:t1", "workspace_id": "w1C"}
+        hm.pick_workspace = lambda *a, **k: "w1C"
+        hm.start_native = lambda *a, **k: {}
+        hm.save_roster = lambda rows: None
+        hm.load_roster = lambda: []
+        try:
+            hm.raise_harness(CAT, hm.harness_by_id(CAT, "grok"), "probe", ROOT, hm.Ctx(cwd=ROOT))
+            hm.mark_harness("pid:9", "probe", "grok")
+        finally:
+            (hm.herdr, hm.report_identity, hm.start_native, hm.save_roster, hm.load_roster,
+             hm.create_tab, hm.pick_workspace) = saved
+        self.assertIn(("pane", "rename", "w1C:p1", "probe · grok"), calls)
+        self.assertFalse(any(c[1] == "rename" and c[2] == "pid:9" for c in calls if len(c) > 2))
+
+    def test_reconcile_command_is_not_a_harness(self):
+        called = {}
+        saved = (hm.apply_coherence, hm.server_up, hm.load_catalog)
+        hm.server_up = lambda: False
+        hm.load_catalog = lambda: CAT
+        hm.apply_coherence = lambda dry_run=False: called.update(dry_run=dry_run) or []
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(hm.main(["reconcile", "--dry-run"]), 0)
+                self.assertEqual(hm.main(["reconcile", "--help"]), 0)
+        finally:
+            hm.apply_coherence, hm.server_up, hm.load_catalog = saved
+        self.assertEqual(called, {"dry_run": True})
+        self.assertIn("cowbell reconcile", out.getvalue())
+        self.assertIn("no harness claim", out.getvalue())
 
 
 class Coherence(unittest.TestCase):
