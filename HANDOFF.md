@@ -4,6 +4,13 @@ Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 
 Milestone: Split (Now)
 Locked: none
 
+## 2026-10-01 — LAB-255: pin / hide per directory
+
+`pins.json` in the XDG state dir, keyed by realpath then harness id (`pin` or
+`hide`). Overlays `rank_harnesses()`: pinned first, hidden omitted. Widen (`g`)
+uses the widened root. `harness_delete` drops orphans. Catalog bytes unchanged.
+Picker keys unchanged.
+
 ## 2026-10-01 — LAB-254: [[harness]] block writer
 
 `harness_insert` / `harness_replace` / `harness_delete` / `harness_set_field` splice

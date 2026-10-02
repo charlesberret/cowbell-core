@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -1880,8 +1881,15 @@ class CatalogWriter(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
+        self.state = self.dir / "state"
+        self._saved_state = os.environ.get("COWBELL_STATE_DIR")
+        os.environ["COWBELL_STATE_DIR"] = str(self.state)
 
     def tearDown(self):
+        if self._saved_state is None:
+            os.environ.pop("COWBELL_STATE_DIR", None)
+        else:
+            os.environ["COWBELL_STATE_DIR"] = self._saved_state
         self.tmp.cleanup()
 
     def _copy(self, src: Path) -> Path:
@@ -2030,6 +2038,106 @@ class CatalogWriter(unittest.TestCase):
         self.assertNotIn("lab-probe", p.read_text(encoding="utf-8"))
         self.assertIn("[places.lobby]", p.read_text(encoding="utf-8"))
         self.assertIn("ornith 9b — edited", p.read_text(encoding="utf-8"))
+
+
+class Pins(unittest.TestCase):
+    """LAB-255: pin/hide per directory in state, overlay rank_harnesses, leave the catalog alone."""
+
+    SEED = Path(__file__).resolve().parent.parent / "harnesses.toml"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.state = base / "state" / "cowbell"
+        self.cfg = base / "cfg" / "cowbell"
+        self.a = str(base / "proj-a")
+        self.b = str(base / "proj-b")
+        os.makedirs(self.a)
+        os.makedirs(self.b)
+        self.cfg.mkdir(parents=True)
+        self.state.mkdir(parents=True)
+        self.catalog = self.cfg / "harnesses.toml"
+        shutil.copy2(self.SEED, self.catalog)
+        self.env = {"COWBELL_STATE_DIR": str(self.state), "COWBELL_CONFIG_DIR": str(self.cfg)}
+        self.saved = {k: os.environ.get(k) for k in self.env}
+        os.environ.update(self.env)
+        self.ids = ["claude", "grok", "pi", "agy"]
+        self.roster = [{"harness": "grok", "cwd": "/Users/x/other", "last_seen": "2026-09-12"},
+                       {"harness": "pi", "cwd": self.a, "last_seen": "2026-09-01"}]
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        self.tmp.cleanup()
+
+    def _digest(self) -> str:
+        return hashlib.sha256(self.catalog.read_bytes()).hexdigest()
+
+    def test_pin_sorts_first_and_stays_in_one_directory(self):
+        before = hm.rank_harnesses(self.ids, self.roster, self.a)
+        self.assertEqual(before[0], "pi")  # usage here
+        hm.pin_harness(self.a, "agy")
+        self.assertEqual(hm.rank_harnesses(self.ids, self.roster, self.a)[0], "agy")
+        self.assertEqual(hm.rank_harnesses(self.ids, self.roster, self.b),
+                         hm.rank_harnesses(self.ids, self.roster, self.b, prefs={"pin": [], "hide": []}))
+        data = json.loads((self.state / "pins.json").read_text())
+        self.assertEqual(data["schema"], 1)
+        self.assertEqual(data["dirs"][os.path.realpath(self.a)]["agy"], "pin")
+        self.assertNotIn(os.path.realpath(self.b), data["dirs"])
+
+    def test_hide_omits_from_start_new_in_that_directory(self):
+        hm.hide_harness(self.a, "grok")
+        ranked_a = hm.rank_harnesses(self.ids, self.roster, self.a)
+        ranked_b = hm.rank_harnesses(self.ids, self.roster, self.b)
+        self.assertNotIn("grok", ranked_a)
+        self.assertIn("grok", ranked_b)
+
+    def test_widen_root_uses_the_widened_directory_prefs(self):
+        git_top = str(Path(self.a).parent)
+        os.makedirs(git_top, exist_ok=True)
+        hm.pin_harness(git_top, "claude")
+        hm.hide_harness(self.a, "claude")
+        self.assertNotIn("claude", hm.rank_harnesses(self.ids, self.roster, self.a))
+        self.assertEqual(hm.rank_harnesses(self.ids, self.roster, git_top)[0], "claude")
+
+    def test_pin_hide_do_not_touch_the_catalog(self):
+        digest = self._digest()
+        hm.pin_harness(self.a, "claude")
+        hm.hide_harness(self.a, "agy")
+        hm.pin_harness(self.b, "pi")
+        hm.clear_pref(self.a, "claude")
+        self.assertEqual(self._digest(), digest)
+
+    def test_delete_drops_orphan_pin_hide(self):
+        hm.pin_harness(self.a, "claude")
+        hm.hide_harness(self.b, "claude")
+        hm.harness_delete("claude", path=self.catalog)
+        data = json.loads((self.state / "pins.json").read_text())
+        self.assertNotIn("claude", json.dumps(data))
+        self.assertEqual(data["dirs"], {})
+        ids = [h["id"] for h in tomllib.loads(self.catalog.read_text())["harness"]]
+        self.assertNotIn("claude", ids)
+
+    def test_pin_beats_place_default(self):
+        ranked = hm.rank_harnesses(["claude", "grok", "lobby"], self.roster, self.a,
+                                   default="lobby", prefs={"pin": ["grok"], "hide": []})
+        self.assertEqual(ranked[0], "grok")
+        self.assertEqual(ranked[1], "lobby")
+
+    def test_picker_start_section_follows_pin_and_hide(self):
+        hm.pin_harness(self.a, "agy")
+        hm.hide_harness(self.a, "claude")
+        startable = [{"harness": h, "title": h, "installed": True, "trust": {"verdict": "ok"}}
+                     for h in self.ids]
+        reg = {"live": [], "cold": [], "startable": startable, "absent": startable,
+               "root": self.a, "default_harness": ""}
+        start = [c for c in hm.picker_choices(reg, self.roster) if c["section"] == "start"]
+        hids = [c["target"]["harness"] for c in start if c.get("action") == "raise"]
+        self.assertEqual(hids[0], "agy")
+        self.assertNotIn("claude", hids)
 
 
 class Coherence(unittest.TestCase):
