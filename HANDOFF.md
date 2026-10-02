@@ -1,8 +1,19 @@
 # HANDOFF — cowbell
 
 Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 (protocol: document "Cowbell — agent handoff")
-Milestone: Split (Now)
+Milestone: Harness D (Next)
 Locked: none
+
+## 2026-10-01 — LAB-256: picker save / edit / add / pin-hide
+
+`n` offers save-as (empty skip; Esc skips save, still launches). `e` edits title,
+models, default model, lane, tool allow/deny. `+` adds a herdr kind or launcher
+script, and unhides if this directory hid any. `-` removes the Start new row.
+`p` / `h` pin or hide in `pins.json` without leaving the list. Hint bar shows
+e/p/h/− only on a Start new row. Catalog writes go through the LAB-254 writer;
+pin/hide through LAB-255. Esc at a prompt writes nothing. Catalog reloads each
+picker loop. `raise_quick` honors per-harness `lane` / `tools_allow` / `tools_deny`.
+Ranking, fold at 5, and 2s refresh are unchanged. Both doors share `picker()`.
 
 ## 2026-10-01 — LAB-255: pin / hide per directory
 

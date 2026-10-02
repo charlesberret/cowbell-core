@@ -2140,6 +2140,185 @@ class Pins(unittest.TestCase):
         self.assertNotIn("claude", hids)
 
 
+class PickerEdit(unittest.TestCase):
+    """LAB-256: save-as / edit / add / remove / hints; Esc writes nothing; comments kept."""
+
+    SEED = Path(__file__).resolve().parent.parent / "harnesses.toml"
+    HOUSE = Path.home() / ".config" / "cowbell" / "harnesses.toml"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.cfg = base / "cfg"
+        self.state = base / "state"
+        self.cfg.mkdir()
+        self.state.mkdir()
+        self.catalog = self.cfg / "harnesses.toml"
+        shutil.copy2(self.SEED, self.catalog)
+        self.env = {"COWBELL_CONFIG_DIR": str(self.cfg), "COWBELL_STATE_DIR": str(self.state)}
+        self.saved = {k: os.environ.get(k) for k in self.env}
+        os.environ.update(self.env)
+        self.root = str(base / "proj")
+        os.makedirs(self.root)
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        self.tmp.cleanup()
+
+    def _text(self) -> str:
+        return self.catalog.read_text(encoding="utf-8")
+
+    def test_models_with_default_leads(self):
+        self.assertEqual(hm.models_with_default(["a", "b", "c"], "b"), ["b", "a", "c"])
+        self.assertEqual(hm.models_with_default(["a"], "z"), ["z", "a"])
+        self.assertEqual(hm.models_with_default([], "z"), ["z"])
+
+    def test_picker_hints_row_actions_only_on_start(self):
+        start = {ev for *_, ev in hm.picker_hints(False, True)}
+        other = {ev for *_, ev in hm.picker_hints(False, False)}
+        self.assertTrue({"e", "p", "h", "-", "+", "n", "a", "enter", "esc"}.issubset(start))
+        self.assertFalse({"e", "p", "h", "-"} & other)
+        self.assertTrue({"+", "n", "a", "enter", "esc"}.issubset(other))
+        self.assertIn("g", {ev for *_, ev in hm.picker_hints(True, False)})
+        self.assertNotIn("g", other)
+        _, spans = hm.hint_bar(hm.picker_hints(False, True))
+        self.assertLessEqual(spans[-1][1], 80)
+
+    def test_save_as_inserts_and_keeps_seed_comments(self):
+        src = hm.harness_by_id(hm.load_catalog(), "claude")
+        with mock.patch("cowbell.ask", return_value="lab-sonnet"):
+            hid = hm.offer_save_as(src, "claude-sonnet-5", "yellow", "Read", "")
+        self.assertEqual(hid, "lab-sonnet")
+        after = self._text()
+        self.assertIn("# cowbell — which agents can be started", after)
+        self.assertIn("system_prompt_flag = \"--append-system-prompt-file\"   # used only when", after)
+        self.assertIn('id = "lab-sonnet"', after)
+        h = hm.harness_by_id(hm.load_catalog(), "lab-sonnet")
+        self.assertEqual(h["kind"], "claude")
+        self.assertEqual(h["models"][0], "claude-sonnet-5")
+        self.assertEqual(h["lane"], "yellow")
+        self.assertEqual(h["tools_allow"], "Read")
+
+    def test_save_as_empty_and_esc_write_nothing(self):
+        before = self.catalog.read_bytes()
+        src = hm.harness_by_id(hm.load_catalog(), "claude")
+        with mock.patch("cowbell.ask", return_value=""):
+            self.assertEqual(hm.offer_save_as(src, "x", "yellow", "", ""), "")
+        with mock.patch("cowbell.ask", side_effect=KeyboardInterrupt):
+            self.assertEqual(hm.offer_save_as(src, "x", "yellow", "", ""), "")
+        self.assertEqual(self.catalog.read_bytes(), before)
+
+    def test_edit_writes_after_all_prompts(self):
+        with mock.patch("cowbell.ask", side_effect=["Claude Code (256)", "alpha, beta", "Read", "Bash"]), \
+             mock.patch("cowbell.choose", side_effect=[0, 0]):
+            self.assertTrue(hm.edit_harness(hm.load_catalog(), "claude"))
+        after = self._text()
+        self.assertIn("# cowbell — which agents can be started", after)
+        self.assertIn("system_prompt_flag = \"--append-system-prompt-file\"   # used only when", after)
+        h = hm.harness_by_id(hm.load_catalog(), "claude")
+        self.assertEqual(h["title"], "Claude Code (256)")
+        self.assertEqual(h["models"], ["alpha", "beta"])
+        self.assertEqual(h["lane"], "green")
+        self.assertEqual(h["tools_allow"], "Read")
+        self.assertEqual(h["tools_deny"], "Bash")
+
+    def test_edit_esc_writes_nothing(self):
+        before = self.catalog.read_bytes()
+        with mock.patch("cowbell.ask", side_effect=["Edited", "m1, m2"]), \
+             mock.patch("cowbell.choose", return_value=None):
+            self.assertFalse(hm.edit_harness(hm.load_catalog(), "claude"))
+        self.assertEqual(self.catalog.read_bytes(), before)
+
+    def test_add_kind_and_remove_keep_comments(self):
+        before = self._text()
+        kinds = sorted(hm.AGENT_EXES)
+        with mock.patch("cowbell.choose", side_effect=[0, kinds.index("pi")]), \
+             mock.patch("cowbell.ask", side_effect=["lab-pi", "pi probe", ""]):
+            self.assertTrue(hm.add_harness(self.root, hm.load_catalog()))
+        mid = self._text()
+        self.assertIn("# cowbell — which agents can be started", mid)
+        self.assertIn('id = "lab-pi"', mid)
+        with mock.patch("cowbell.choose", return_value=0):
+            self.assertTrue(hm.remove_harness("lab-pi"))
+        after = self._text()
+        self.assertNotIn("lab-pi", after)
+        self.assertIn("# cowbell — which agents can be started", after)
+        self.assertEqual(after.count("[[harness]]"), before.count("[[harness]]"))
+
+    def test_remove_keep_and_esc_write_nothing(self):
+        before = self.catalog.read_bytes()
+        with mock.patch("cowbell.choose", return_value=1):
+            self.assertFalse(hm.remove_harness("claude"))
+        with mock.patch("cowbell.choose", return_value=None):
+            self.assertFalse(hm.remove_harness("claude"))
+        self.assertEqual(self.catalog.read_bytes(), before)
+
+    def test_add_unhide_uses_pins(self):
+        hm.hide_harness(self.root, "claude")
+        self.assertIn("claude", hm.dir_prefs(self.root)["hide"])
+        with mock.patch("cowbell.choose", side_effect=[2, 0]):
+            self.assertTrue(hm.add_harness(self.root, hm.load_catalog()))
+        self.assertNotIn("claude", hm.dir_prefs(self.root)["hide"])
+        self.assertEqual(self.catalog.read_bytes(), self.SEED.read_bytes())
+
+    def test_raise_quick_honors_harness_lane_and_tools(self):
+        class FakeLaunch:
+            def start(self, cat, h, name, root, ctx, *args, **kw):
+                self.got = args
+                return {"pane_id": "p1"}
+
+        fake = FakeLaunch()
+        ctx = hm.Ctx(cwd=self.root, mode="tab", live=hm.LiveSource(), launch=fake)
+        h = hm.harness_by_id(hm.load_catalog(), "claude")
+        h["lane"] = "green"
+        h["tools_allow"] = "Read"
+        h["tools_deny"] = "Bash"
+        cat = {"defaults": {"lane": "yellow"}, "harness": [h], "lanes": {}}
+        with mock.patch("cowbell.trust_match", return_value={"verdict": "ok"}), \
+             mock.patch("cowbell.installed", return_value=True), \
+             mock.patch("cowbell.prompt_flag", return_value=None):
+            self.assertTrue(hm.raise_quick(ctx, cat, "claude", self.root))
+        self.assertEqual(fake.got[:4], ("claude-sonnet-5", "green", "Read", "Bash"))
+
+    @unittest.skipUnless(
+        (Path.home() / ".config" / "cowbell" / "harnesses.toml").is_file(),
+        "no patron config-dir catalog on this host",
+    )
+    def test_patron_catalog_save_edit_remove_keeps_comments(self):
+        shutil.copy2(self.HOUSE, self.catalog)
+        before = self._text()
+        self.assertIn("# cowbell — the constitution of the herd.", before)
+        src = hm.harness_by_id(hm.load_catalog(), "claude")
+        with mock.patch("cowbell.ask", return_value="lab-256-probe"):
+            hm.offer_save_as(src, "claude-sonnet-5", "yellow", "", "")
+        saved = self._text()
+        self.assertIn("# cowbell — the constitution of the herd.", saved)
+        self.assertIn("# House wrappers", saved)
+        self.assertIn("[places.lobby]", saved)
+        self.assertIn("unix_user = \"guest\"", saved)
+        with mock.patch("cowbell.ask", side_effect=["probe edited", "m1", "", ""]), \
+             mock.patch("cowbell.choose", side_effect=[0, 1]):
+            hm.edit_harness(hm.load_catalog(), "lab-256-probe")
+        edited = self._text()
+        self.assertIn("# cowbell — the constitution of the herd.", edited)
+        self.assertIn("[places.lobby]", edited)
+        self.assertIn("unix_user = \"guest\"", edited)
+        self.assertIn("probe edited", edited)
+        with mock.patch("cowbell.choose", return_value=0):
+            hm.remove_harness("lab-256-probe")
+        after = self._text()
+        self.assertNotIn("lab-256-probe", after)
+        self.assertNotIn("probe edited", after)
+        self.assertIn("# cowbell — the constitution of the herd.", after)
+        self.assertIn("# House wrappers", after)
+        self.assertIn("[places.lobby]", after)
+        self.assertIn("unix_user = \"guest\"", after)
+
+
 class Coherence(unittest.TestCase):
     """Pane border is a cache of the harness Herdr detects. The tab stays the sitting."""
 

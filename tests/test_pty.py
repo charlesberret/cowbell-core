@@ -168,6 +168,91 @@ class PickerHere(unittest.TestCase):
             self.assertIn(b"stand-in", screen)
             self.assertFalse(log.exists(), log.read_text() if log.exists() else "")
 
+    def _here(self, tmp):
+        base = Path(tmp)
+        log = base / "calls.log"
+        stub = base / "herdr"
+        stub.write_text(f"#!/bin/sh\necho \"$@\" >> {log}\nexit 1\n")
+        stub.chmod(0o755)
+        (base / "cfg").mkdir()
+        (base / "cfg" / "harnesses.toml").write_text(
+            'schema = 1\n[[harness]]\nid = "fake"\nkind = "pi"\ncommand = "/bin/echo"\n'
+            'title = "stand-in"\n# keep-me\n')
+        env = {"HERDR_BIN_PATH": str(stub), "HERDR_SOCKET_PATH": str(base / "no.sock"), "COWBELL_MODE": "here",
+               "COWBELL_CONFIG_DIR": str(base / "cfg"), "COWBELL_STATE_DIR": str(base / "state")}
+
+        def child():
+            os.environ.update(env)
+            for k in ("COWBELL_PLAIN", "HERDR_PLUGIN_CONTEXT_JSON", "COWBELL_CTX", "NO_COLOR"):
+                os.environ.pop(k, None)
+            os.chdir(tmp)
+            return hm.main(["picker"])
+
+        return child, env, log
+
+    def test_plus_minus_edit_hotkeys(self):
+        res, _ = in_pty(lambda: list(hm.menu(BODY, ROWS, HINTS, hotkeys=hm.PICKER_HOTKEYS)), ["+"])
+        self.assertEqual(res, ["key", "+", 0])
+        res, _ = in_pty(lambda: list(hm.menu(BODY, ROWS, HINTS, hotkeys=hm.PICKER_HOTKEYS)), ["-"])
+        self.assertEqual(res, ["key", "-", 0])
+        res, _ = in_pty(lambda: list(hm.menu(BODY, ROWS, HINTS, hotkeys=hm.PICKER_HOTKEYS)), ["e"])
+        self.assertEqual(res, ["key", "e", 0])
+        res, _ = in_pty(lambda: list(hm.menu(BODY, ROWS, HINTS, hotkeys=hm.PICKER_HOTKEYS)), ["p"])
+        self.assertEqual(res, ["key", "p", 0])
+
+    def test_callable_hints_follow_selection(self):
+        def hints(sel):
+            return [("⏎", "open", "enter"), ("e", "edit", "e")] if sel else \
+                   [("⏎", "open", "enter"), ("esc", "close", "esc")]
+        res, _ = in_pty(lambda: list(hm.menu(BODY, ROWS, hints, hotkeys="e")), [DOWN, "e"])
+        self.assertEqual(res, ["key", "e", 1])
+
+    def test_start_row_hint_click_is_plus(self):
+        hints = hm.picker_hints(False, True)
+        _, spans = hm.hint_bar(hints)
+        plus = next(s for s in spans if s[2] == "+")
+        x = (plus[0] + plus[1]) // 2
+        res, _ = in_pty(lambda: list(hm.menu(BODY, ROWS, hints, hotkeys=hm.PICKER_HOTKEYS)),
+                        [mouse(0, x, 24)])
+        self.assertEqual(res, ["key", "+", 0])
+        edit = next(s for s in spans if s[2] == "e")
+        res, _ = in_pty(lambda: list(hm.menu(BODY, ROWS, hints, hotkeys=hm.PICKER_HOTKEYS)),
+                        [mouse(0, (edit[0] + edit[1]) // 2, 24)])
+        self.assertEqual(res, ["key", "e", 0])
+
+    def test_pin_and_hide_keys_stay_in_picker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            child, env, log = self._here(tmp)
+            res, screen = in_pty(child, ["p", ESC], settle=1.0, gap=0.3)
+            self.assertEqual(res, 0)
+            pins = json.loads((Path(env["COWBELL_STATE_DIR"]) / "pins.json").read_text())
+            root = os.path.realpath(tmp)
+            self.assertEqual(pins["dirs"][root]["fake"], "pin")
+            self.assertIn(b"stand-in", screen)
+            self.assertFalse(log.exists())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            child, env, log = self._here(tmp)
+            res, _ = in_pty(child, ["h", ESC], settle=1.0, gap=0.3)
+            self.assertEqual(res, 0)
+            pins = json.loads((Path(env["COWBELL_STATE_DIR"]) / "pins.json").read_text())
+            root = os.path.realpath(tmp)
+            self.assertEqual(pins["dirs"][root]["fake"], "hide")
+            self.assertEqual((Path(env["COWBELL_CONFIG_DIR"]) / "harnesses.toml").read_text().count("keep-me"), 1)
+
+    def test_edit_add_remove_esc_write_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            child, env, _ = self._here(tmp)
+            catalog = Path(env["COWBELL_CONFIG_DIR"]) / "harnesses.toml"
+            before = catalog.read_bytes()
+            for steps in (["e", ESC, ESC], ["+", ESC, ESC], ["-", ESC, ESC], ["n", ESC, ESC]):
+                with self.subTest(steps=steps[0]):
+                    catalog.write_bytes(before)
+                    res, _ = in_pty(child, steps, settle=1.0, gap=0.35)
+                    self.assertEqual(res, 0)
+                    self.assertEqual(catalog.read_bytes(), before)
+                    self.assertFalse((Path(env["COWBELL_STATE_DIR"]) / "pins.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
