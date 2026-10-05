@@ -411,7 +411,7 @@ class PickerList(unittest.TestCase):
         live["tokens"] = {"quota_model": "Sonnet 5"}
         hm.bind_sitting(row, live)
         self.assertEqual(row["model"], "Sonnet 5")
-        self.assertEqual(hm.glyph_for(row["kind"], row["model"]), "✳")
+        self.assertEqual(hm.glyph_for(row["kind"], row["model"]), hm.LOBE_GLYPH["claude"])
 
     def test_remember_live_reclaims_cold_sitting_by_name_and_cwd(self):
         reg = {"live": [{"name": "herdr-dev", "harness": "grok", "kind": "grok", "cwd": ROOT,
@@ -1018,14 +1018,18 @@ class SidebarTokens(unittest.TestCase):
     """LAB-297: herdr identity tokens on raise/adopt/state-change only — never a loop."""
 
     def test_glyph_table_matches_the_sidebar(self):
-        self.assertEqual(hm.glyph_for("grok"), "ϟ")
-        self.assertEqual(hm.glyph_for("pi"), "◇")
-        self.assertEqual(hm.glyph_for("gemini"), "✦")
-        self.assertEqual(hm.glyph_for("codex"), "◈")
-        self.assertEqual(hm.glyph_for("claude", "claude-sonnet-5"), "✳")
-        self.assertEqual(hm.glyph_for("claude", "claude-opus-5"), "✼")
-        self.assertEqual(hm.glyph_for("claude"), "✼")      # unknown model: the meatier glyph
+        self.assertEqual(hm.glyph_for("grok"), hm.LOBE_GLYPH["grok"])
+        self.assertEqual(hm.glyph_for("pi"), hm.LOBE_GLYPH["pi"])
+        self.assertEqual(hm.glyph_for("gemini"), hm.LOBE_GLYPH["gemini"])
+        self.assertEqual(hm.glyph_for("codex"), hm.LOBE_GLYPH["codex"])
+        self.assertEqual(hm.glyph_for("claude", "claude-sonnet-5"), hm.LOBE_GLYPH["claude"])
+        self.assertEqual(hm.glyph_for("claude", "claude-opus-5"), hm.LOBE_GLYPH["claude"])
+        self.assertEqual(hm.glyph_for("claude"), hm.LOBE_GLYPH["claude"])
+        self.assertEqual(hm.glyph_for("devin"), hm.LOBE_GLYPH["devin"])
+        self.assertEqual(hm.glyph_for("agy"), hm.LOBE_GLYPH["antigravity"])
         self.assertEqual(hm.glyph_for("droid"), "·")
+        for ch in hm.LOBE_GLYPH.values():
+            self.assertEqual(ord(ch) >> 16, 15)   # plane 15, one cell in Menlo+lobe-icons
 
     def test_report_identity_one_publish_source_cowbell(self):
         calls = []
@@ -1040,10 +1044,12 @@ class SidebarTokens(unittest.TestCase):
         self.assertEqual(args[:2], ("pane", "report-metadata"))
         self.assertIn("w1B:p5", args)
         self.assertEqual(args[args.index("--source") + 1], "cowbell")
-        self.assertEqual(args[args.index("--display-agent") + 1], "ϟ")
+        g = hm.LOBE_GLYPH["grok"]
+        self.assertEqual(args[args.index("--display-agent") + 1], g)
+        self.assertNotIn("--ttl-ms", args)
         tokens = [args[i + 1] for i, a in enumerate(args) if a == "--token"]
-        self.assertIn("glyph=ϟ", tokens)
-        self.assertIn("line1=ϟ droid", tokens)
+        self.assertIn(f"glyph={g}", tokens)
+        self.assertIn(f"line1={g} droid", tokens)
         self.assertFalse(hm.report_identity("pid:42", "n", "grok"))   # no herdr pane: no publish
 
     def test_clear_identity_drops_cowbell_tokens(self):

@@ -1990,7 +1990,7 @@ LOBE_GLYPH = {
 
 
 def glyph_for(kind: str, model: str = "") -> str:
-    del model  # kind is the harness; Claude sonnet/opus share one mark
+    """One Lobe mark per harness kind. `model` stays on the call sites (quota_model)."""
     return LOBE_GLYPH.get(kind or "", "·")
 
 
