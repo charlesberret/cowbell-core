@@ -4,6 +4,19 @@ Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 
 Milestone: Harness D (Next)
 Locked: none
 
+## 2026-10-05 — seed documents unix_user, ships no place
+
+LAB-357's tests and the README example are already on main (`d046b48`). The
+seed now says what `unix_user`, `require_uid`, and `nono_profile` do, and
+still contains no `[places.*]` table. The Linear issue stays open.
+
+## 2026-10-02 — Esc back to the picker keeps the next key
+
+`Screen.open` and the one-line prompt used `tty.setraw`, which flushes unread
+input. Esc out of edit / add / remove / new, then Esc again to close, lost the
+second Esc and the list stayed up. Raw mode now waits for output and keeps
+that key (`TCSADRAIN`).
+
 ## 2026-10-01 — LAB-256: picker save / edit / add / pin-hide
 
 `n` offers save-as (empty skip; Esc skips save, still launches). `e` edits title,

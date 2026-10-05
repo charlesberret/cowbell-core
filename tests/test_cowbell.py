@@ -1165,6 +1165,16 @@ class ResumeOutside(unittest.TestCase):
         # only claude claims a cowbell-chosen session id; the others are honestly absent
         self.assertEqual([h["id"] for h in cat["harness"] if h.get("session_id_flag")], ["claude"])
 
+    def test_seed_documents_unix_user_and_ships_no_place(self):
+        import tomllib
+        seed = Path(__file__).resolve().parent.parent / "harnesses.toml"
+        text = seed.read_text()
+        cat = tomllib.loads(text)
+        self.assertIn("unix_user", text)
+        self.assertIn("require_uid", text)
+        self.assertIn("sudo -u", text)
+        self.assertNotIn("places", cat)
+
     def test_cmd_enter_with_target_resumes_directly(self):
         claude = dict(CAT["harness"][0], session_id_flag="--session-id", name_flag="--name")
         cat = {**CAT, "harness": [claude] + [h for h in CAT["harness"] if h["id"] != "claude"]}
