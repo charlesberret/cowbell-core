@@ -4,6 +4,22 @@ Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 
 Milestone: Reach (Later)
 Locked: none
 
+## 2026-10-05 — LAB-257: 0.3.1 packaged, not uploaded
+
+PyPI already has `cowbell` 0.3.0 (owner `charlesberret`, uploaded 2026-09-15).
+This tree is still 0.3.1. The 0.3.0 sdist shipped `tests/`; hatch `only-include`
+no longer lists that directory. README still does not print `pip install cowbell`
+(2026-09-13 tax). GitHub `cowbell-core` and `herdr-cowbell` stay private, so
+`pyproject.toml` has no project.urls.
+
+Upload is the patron's, from this tree, after `uv build`:
+
+```
+uv publish --token …
+```
+
+Do not yank 0.3.0. Brew is later.
+
 ## 2026-10-05 — seed documents unix_user, ships no place
 
 LAB-357's tests and the README example are already on main (`d046b48`). The

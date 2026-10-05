@@ -14,9 +14,11 @@ authors = [{ name = "Charles Berret" }]
 dependencies = []
 classifiers = [
   "Environment :: Console :: Curses",
+  "License :: OSI Approved :: MIT License",
   "Operating System :: MacOS",
   "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
 ]
 
 [project.scripts]
@@ -32,4 +34,4 @@ only-include = ["cowbell.py"]
 "harnesses.toml" = "share/cowbell/harnesses.toml"
 
 [tool.hatch.build.targets.sdist]
-only-include = ["cowbell.py", "harnesses.toml", "README.md", "LICENSE", "tests"]
+only-include = ["cowbell.py", "harnesses.toml", "README.md", "LICENSE"]
