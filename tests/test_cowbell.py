@@ -22,6 +22,8 @@ CAT = {
     "lanes": {"claude": {"green": ["--permission-mode", "plan"], "yellow": ["--permission-mode", "acceptEdits"]},
               "grok": {"green": ["--permission-mode", "plan"], "yellow": ["--permission-mode", "acceptEdits"],
                        "red": ["--always-approve"]},
+              "codex": {"green": ["--sandbox", "read-only"], "yellow": ["--sandbox", "workspace-write"],
+                        "red": ["--dangerously-bypass-approvals-and-sandbox"]},
               "pi": {"green": ["--tools", "read"]}},
     "harness": [
         {"id": "claude", "kind": "claude", "family": "claude", "egress": "vendor", "trust_tool": "claude",
@@ -126,6 +128,13 @@ class Argv(unittest.TestCase):
 
     def test_unknown_lane_adds_nothing(self):
         self.assertEqual(hm.build_argv(CAT, hm.harness_by_id(CAT, "claude"), lane="red"), [])
+
+    def test_codex_lanes(self):
+        h = hm.harness_by_id(CAT, "codex")
+        self.assertEqual(hm.build_argv(CAT, h, lane="green"), ["--sandbox", "read-only"])
+        self.assertEqual(hm.build_argv(CAT, h, lane="yellow"), ["--sandbox", "workspace-write"])
+        self.assertEqual(hm.build_argv(CAT, h, lane="red"),
+                         ["--dangerously-bypass-approvals-and-sandbox"])
 
 
 class Registry(unittest.TestCase):
@@ -1435,6 +1444,15 @@ class Seed(unittest.TestCase):
         self.assertEqual(grok.get("claim_flag"), "--agent")
         self.assertEqual(cat["lanes"]["grok"]["green"], ["--permission-mode", "plan"])
         self.assertEqual(cat["lanes"]["grok"]["yellow"], ["--permission-mode", "acceptEdits"])
+
+    def test_codex_lanes(self):
+        import tomllib
+        seed = Path(__file__).resolve().parent.parent / "harnesses.toml"
+        cat = tomllib.loads(seed.read_text())
+        self.assertEqual(cat["lanes"]["codex"]["green"], ["--sandbox", "read-only"])
+        self.assertEqual(cat["lanes"]["codex"]["yellow"], ["--sandbox", "workspace-write"])
+        self.assertEqual(cat["lanes"]["codex"]["red"],
+                         ["--dangerously-bypass-approvals-and-sandbox"])
 
     def test_seed_is_standard_agents_only(self):
         import tomllib

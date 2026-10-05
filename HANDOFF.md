@@ -1,7 +1,7 @@
 # HANDOFF — cowbell
 
 Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 (protocol: document "Cowbell — agent handoff")
-Milestone: Harness D (Next)
+Milestone: Reach (Later)
 Locked: none
 
 ## 2026-10-05 — seed documents unix_user, ships no place
@@ -9,6 +9,15 @@ Locked: none
 LAB-357's tests and the README example are already on main (`d046b48`). The
 seed now says what `unix_user`, `require_uid`, and `nono_profile` do, and
 still contains no `[places.*]` table. The Linear issue stays open.
+
+## 2026-10-05 — LAB-260: Codex lane flags match Codex 0.160.1
+
+`npx @openai/codex@0.160.1` accepts the seed's three lanes (`--sandbox read-only`,
+`--sandbox workspace-write`, `--dangerously-bypass-approvals-and-sandbox`).
+Bogus `--sandbox` values exit 2. `codex` is not on PATH on this machine; the
+check used npx. `--yolo` is a docs alias for the red flag; the seed keeps the
+long form. Green/yellow do not pin `--ask-for-approval` (user config still
+applies). Tests: `Seed.test_codex_lanes`, `Argv.test_codex_lanes`.
 
 ## 2026-10-02 — Esc back to the picker keeps the next key
 
