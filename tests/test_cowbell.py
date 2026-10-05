@@ -2421,8 +2421,8 @@ class Coherence(unittest.TestCase):
         self.assertEqual(hm.coherent_pane_label("butler", "grok"), "butler · grok")
 
     def test_idle_shell_is_a_prompt_with_no_agent(self):
-        self.assertTrue(hm.pane_is_idle_shell({"terminal_title_stripped": "charles@avicenna: ~/x"}))
-        self.assertFalse(hm.pane_is_idle_shell({"agent": "grok", "terminal_title_stripped": "charles@avicenna: ~/x"}))
+        self.assertTrue(hm.pane_is_idle_shell({"terminal_title_stripped": "user@host: ~/x"}))
+        self.assertFalse(hm.pane_is_idle_shell({"agent": "grok", "terminal_title_stripped": "user@host: ~/x"}))
         self.assertFalse(hm.pane_is_idle_shell({"terminal_title_stripped": "✳ butler"}))
 
     def test_dry_run_does_not_consume_the_next_argument(self):
