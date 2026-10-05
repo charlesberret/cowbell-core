@@ -241,11 +241,11 @@ class PickerList(unittest.TestCase):
                      {"name": "no-session", "harness": "grok", "status": "cold", "pane_id": None, "kind": "grok",
                       "last_seen": "2026-09-12"}],
             "startable": [
-                {"harness": "claude", "title": "Claude Code", "installed": True, "trust": {"verdict": "ok"}},
-                {"harness": "grok", "title": "Grok CLI", "installed": True, "trust": {"verdict": "overprivilege"}},
-                {"harness": "omp", "title": "omp", "installed": False, "trust": {"verdict": "ok"}},
-                {"harness": "local-ornith", "title": "ornith", "installed": True, "trust": {"verdict": "blocked"}},
-                {"harness": "pi", "title": "pi (bare)", "installed": True, "trust": {"verdict": "unknown"}},
+                {"harness": "claude", "kind": "claude", "title": "Claude Code", "installed": True, "trust": {"verdict": "ok"}},
+                {"harness": "grok", "kind": "grok", "title": "Grok CLI", "installed": True, "trust": {"verdict": "overprivilege"}},
+                {"harness": "omp", "kind": "omp", "title": "omp", "installed": False, "trust": {"verdict": "ok"}},
+                {"harness": "local-ornith", "kind": "local-ornith", "title": "ornith", "installed": True, "trust": {"verdict": "blocked"}},
+                {"harness": "pi", "kind": "pi", "title": "pi (bare)", "installed": True, "trust": {"verdict": "unknown"}},
             ],
             "absent": [],
         }
@@ -264,6 +264,38 @@ class PickerList(unittest.TestCase):
         self.assertTrue(any(c.get("idx") == 1 and c["action"] == "enter" for c in choices))
         for gone in ("LIVE", "RAISE", "subject", "omp", "local-ornith", "⊘", "?", "w1:p1", "cold", "no-session"):
             self.assertNotIn(gone, text)
+
+    def test_picker_rows_use_the_lobe_mark(self):
+        reg = self.reg()
+        choices = hm.picker_choices(reg, [], here_ws="w1", ws_labels={"w2": "sys:clubhouse"})
+
+        def plain(c):
+            return hm.ANSI_RE.sub("", c["line"])
+
+        live = next(c for c in choices if c["target"].get("name") == "majordomo")
+        resume = next(c for c in choices if c["action"] == "enter")
+        start = next(c for c in choices if c.get("action") == "raise" and c["target"]["harness"] == "claude")
+        for row, kind in ((live, "claude"), (resume, "pi"), (start, "claude")):
+            g = hm.LOBE_GLYPH[kind]
+            self.assertEqual(ord(g) >> 16, 15)
+            self.assertIn(g, plain(row))
+        self.assertNotIn("claude", plain(live))
+        self.assertNotIn("oll-mid", plain(resume))
+        self.assertNotIn("pi", plain(resume))
+        self.assertLess(plain(start).index(hm.LOBE_GLYPH["claude"]), plain(start).index("claude"))
+        census = hm.render_registry({
+            "root": ROOT, "subject": "internal",
+            "live": [{"name": "majordomo", "harness": "claude", "kind": "claude", "status": "idle",
+                      "pane_id": "w1:p1", "on_roster": True, "cwd": ROOT, "session_id": ""}],
+            "cold": [{"name": "kimi-notes", "harness": "oll-mid", "kind": "pi", "status": "cold",
+                      "pane_id": None, "cwd": ROOT, "session_id": "k1"}],
+            "absent": [{"harness": "local-ornith", "egress": "local", "installed": True,
+                        "trust": {"verdict": "blocked"}}],
+        })
+        self.assertIn(hm.LOBE_GLYPH["claude"], census)
+        self.assertIn(hm.LOBE_GLYPH["pi"], census)
+        self.assertNotIn("oll-mid", census)
+        self.assertIn("⌂", census)
 
     def test_active_sits_in_a_box(self):
         reg = self.reg()
