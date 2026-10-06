@@ -4,6 +4,20 @@ Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 
 Milestone: Reach (Later)
 Locked: none
 
+## 2026-10-06 — LAB-259: memex resume vs cowbell Resume
+
+Draft pick: **nothing**. The patron still picks the verb. No command was added.
+
+Observed here with memex 0.27.1 (`nicosuave.memex`, linux-x86_64 release tarball). This machine had no `memex`, `herdr`, or `claude` on PATH, and no `~/.claude`.
+
+Cowbell Resume, with the seed's `session_history = "off"`, is roster rows that carry a session id. On a fixture directory, `cowbell status --json` listed `butler` (`session_id` `roster-sid`) and omitted a roster row whose session id was empty. A Claude jsonl at `~/.claude/projects/<cwd-flattened>/sess-parser.jsonl` stayed out of Resume. Setting `session_history = "on"` added that file as `parser-work` / `sess-parser` (id, times, title). The picker does not search transcript text.
+
+The same jsonl, after `memex index --only-source claude`: `memex search "parser"` returned the user line `fix the parser`. `memex sessions --cwd <dir>` listed `sess-parser`. With `claude_resume_cmd = "claude --resume {session_id}"` in the data-dir `config.toml`, the row's `resume_cmd` was `claude --resume sess-parser`. `memex herdr resume sess-parser` ran `sh -lc "claude --resume sess-parser"` and printed `resumed sess-parser (claude)`. It did not exec `herdr` (no server here, so no new tab). An empty index: `memex herdr resume-last --cwd <dir> --strict-cwd` printed `Error: no resumable session found`.
+
+The plugin at tag v0.27.1 (`id = "nicosuave.memex"`) already resumes into a herdr tab: palette, recent-here, and resume-last. Resume-last calls `memex herdr resume-last --strict-cwd` with the focused pane's directory. Documented engine resume templates include Claude `--resume`, Codex `resume`, Cursor `cursor-agent --resume`, Pi `pi --session`, Grok `grok --resume`.
+
+Cowbell's seeded resume argv is the harness flag on a roster id (Claude `--resume`, Codex `resume`, Pi `--continue`). Default Resume does not read `~/.claude/projects`. A cowbell "open in memex" verb would be a second door onto that plugin.
+
 ## 2026-10-05 — LAB-257: 0.3.1 packaged, not uploaded
 
 PyPI already has `cowbell` 0.3.0 (owner `charlesberret`, uploaded 2026-09-15).
