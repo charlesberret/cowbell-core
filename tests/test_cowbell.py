@@ -285,6 +285,7 @@ class PickerList(unittest.TestCase):
         self.assertGreater(plain(live).index(hm.LOBE_GLYPH["claude"]), plain(live).index("majordomo"))
         self.assertGreater(plain(resume).index(hm.LOBE_GLYPH["pi"]), plain(resume).index("kimi-notes"))
         self.assertGreater(plain(start).index(hm.LOBE_GLYPH["claude"]), plain(start).index("claude"))
+        self.assertTrue(plain(live).split(hm.LOBE_GLYPH["claude"], 1)[1].startswith("  "))
         self.assertTrue(plain(resume).split(hm.LOBE_GLYPH["pi"], 1)[1].startswith("  "))
         self.assertTrue(plain(start).split(hm.LOBE_GLYPH["claude"], 1)[1].startswith("  "))
         census = hm.render_registry({
