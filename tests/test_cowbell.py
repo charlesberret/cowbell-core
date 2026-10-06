@@ -1824,6 +1824,60 @@ class SessionHistory(unittest.TestCase):
         only_grok = {"defaults": {"session_history": "on"}, "harness": [{"id": "grok"}]}
         self.assertEqual({r["harness"] for r in self.rows(only_grok)}, {"grok"})
 
+    def test_place_history_uses_launch_users_home(self):
+        guest_home = self.home / "guest"
+        store = hm.grok_store(self.root, guest_home) / "guest-session"
+        store.mkdir(parents=True)
+        (store / "chat_history.jsonl").write_text(
+            json.dumps({"type": "user", "content": "guest work"}) + "\n")
+        cat = {**self.cat, "places": {"lobby": {"cwd": self.root, "unix_user": "guest"}}}
+        pw = mock.Mock(pw_dir=str(guest_home), pw_uid=4242)
+        with mock.patch("pwd.getpwnam", return_value=pw) as getpwnam, \
+             mock.patch.object(hm.os, "geteuid", return_value=4242):
+            rows = hm.launch_history(cat, self.root)
+        getpwnam.assert_called_once_with("guest")
+        self.assertEqual({r["session_id"] for r in rows}, {"guest-session"})
+
+    def test_other_launch_uid_discovers_through_agent_run(self):
+        cat = {**self.cat, "places": {"lobby": {"cwd": self.root, "unix_user": "guest"}}}
+        row = {"session_id": "guest-session", "harness": "grok", "title": "guest work"}
+        done = mock.Mock(returncode=0, stdout=json.dumps([row]), stderr="")
+        pw = mock.Mock(pw_dir="/Users/guest", pw_uid=4242)
+        with mock.patch("pwd.getpwnam", return_value=pw), \
+             mock.patch.object(hm.os, "geteuid", return_value=501), \
+             mock.patch.object(hm.shutil, "which", return_value="/usr/local/bin/agent-run"), \
+             mock.patch.object(hm.subprocess, "run", return_value=done) as run, \
+             mock.patch.object(hm, "discover_sessions", side_effect=AssertionError("parent read")):
+            rows = hm.launch_history(cat, self.root)
+        self.assertEqual(rows, [row])
+        args, kwargs = run.call_args
+        self.assertEqual(args[0][:4], ["/usr/local/bin/agent-run", "guest", "--", sys.executable])
+        self.assertEqual(args[0][-1], "_history")
+        payload = json.loads(kwargs["input"])
+        self.assertEqual(payload["home"], "/Users/guest")
+        self.assertEqual(payload["root"], os.path.realpath(self.root))
+        self.assertNotIn("guest work", kwargs["input"])
+
+    def test_unknown_launch_user_refuses_history_discovery(self):
+        cat = {**self.cat, "places": {"lobby": {"cwd": self.root, "unix_user": "missing"}}}
+        with mock.patch("pwd.getpwnam", side_effect=KeyError), self.assertRaises(SystemExit) as error:
+            hm.launch_history(cat, self.root)
+        self.assertIn("unix_user 'missing' is not on this host", str(error.exception))
+
+    def test_internal_history_command_emits_metadata_rows(self):
+        import subprocess
+        payload = {"root": self.root, "home": str(self.home), "cat": self.cat}
+        proc = subprocess.run(
+            [sys.executable, str(Path(hm.__file__).resolve()), "_history"],
+            input=json.dumps(payload), capture_output=True, text=True,
+            env={**os.environ, "COWBELL_STATE_DIR": str(self.home / "state")},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        rows = json.loads(proc.stdout)
+        row = next(r for r in rows if r["session_id"] == "sess-a")
+        self.assertEqual(row["title"], "parser-work")
+        self.assertFalse({"message", "content"} & set(row))
+
     def test_duplicate_titles_stay_distinct_names(self):
         cdir = self.home / ".claude" / "projects" / "-Users-x-code-acme"
         (cdir / "sess-c.jsonl").write_text(

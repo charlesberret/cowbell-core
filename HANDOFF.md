@@ -4,6 +4,18 @@ Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 
 Milestone: Reach (Later)
 Locked: none
 
+## 2026-10-06 — Resume follows the launch uid
+
+For a place with `unix_user`, session-history discovery now runs through
+`agent-run` (or non-interactive sudo fallback) as that user. The caller receives
+only derived Resume metadata, not transcript bodies. This prevents a lobby
+launch as `guest` from offering Charles-owned sessions it cannot open, and lets
+it discover guest-owned sessions under `/Users/guest`.
+
+LAB-525 live check: a guest Grok session under
+`/Users/Shared/agent-lobby` was the sole Resume row; source-tree Charles
+sessions were absent. Tests: 203 passed, 20 subtests passed.
+
 ## 2026-10-06 — picker `e` sets this sitting, then starts
 
 `e` on a New Session row was catalog edit, and its first prompt was an empty

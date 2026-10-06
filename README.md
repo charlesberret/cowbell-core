@@ -71,7 +71,10 @@ Two hooks let cowbell use tools it does not own, both set in `[defaults]`:
   themselves (`~/.claude/projects`, `~/.grok/sessions`), so a directory shows
   every session it has seen, not just the ones cowbell started. Only ids, times
   and titles are read; transcript bodies never are. `"all"` additionally lists
-  agents that a sitting dispatched rather than a person chose. Default `"off"`.
+  agents that a sitting dispatched rather than a person chose. For a place with
+  `unix_user`, discovery runs as that launch user and reads that user's stores,
+  so Resume never offers a session the launched process cannot open. Default
+  `"off"`.
 
 ## Catalog, places, state
 
@@ -131,6 +134,8 @@ in `allow_harness`. `cowbell new --place lab` starts the bash wrapper.
 When `unix_user` is set and the process is not already that user, cowbell
 prefixes `agent-run <user> --` if `agent-run` is on PATH. That helper is not
 part of cowbell. If it is absent, cowbell uses `sudo -u <user> --` instead.
+Session-history discovery uses the same identity boundary and returns only
+derived Resume metadata to the caller.
 You can also leave `unix_user` unset and drop privileges yourself
 (`sudo -u lab -- cowbell new --place lab`). `require_uid = true` with no
 `unix_user` refuses to start. `nono_profile`, when set, wraps the command as
