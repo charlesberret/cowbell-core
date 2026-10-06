@@ -282,7 +282,9 @@ class PickerList(unittest.TestCase):
         self.assertNotIn("claude", plain(live))
         self.assertNotIn("oll-mid", plain(resume))
         self.assertNotIn("pi", plain(resume))
-        self.assertLess(plain(start).index(hm.LOBE_GLYPH["claude"]), plain(start).index("claude"))
+        self.assertGreater(plain(live).index(hm.LOBE_GLYPH["claude"]), plain(live).index("majordomo"))
+        self.assertGreater(plain(resume).index(hm.LOBE_GLYPH["pi"]), plain(resume).index("kimi-notes"))
+        self.assertGreater(plain(start).index(hm.LOBE_GLYPH["claude"]), plain(start).index("claude"))
         census = hm.render_registry({
             "root": ROOT, "subject": "internal",
             "live": [{"name": "majordomo", "harness": "claude", "kind": "claude", "status": "idle",
