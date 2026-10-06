@@ -13,6 +13,10 @@
                                 --split: a pane split instead of a new tab. `cowbell new -h` prints new's usage
   cowbell enter <name>          focus if live, else resume
   cowbell adopt [name] [--pane ID]  put a live sitting cowbell did not start on the roster
+                                a herdr pane whose cwd is a place is adopted on
+                                status (sitting = tab label) unless [defaults]
+                                auto_adopt = false. That path does not rename the
+                                pane and does not call report-metadata.
   cowbell list [--all]          roster rows (default: this directory)
   cowbell catalog               every harness: kind, egress, installed, trust badge
   cowbell reconcile [--dry-run] rewrite a claimed pane border from the agent Herdr detects
@@ -972,6 +976,7 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
             "place": (place_for(cat, a.get("cwd") or "") or {}).get("name") or "",
             "session_id": (a.get("agent_session") or {}).get("value") or (r or {}).get("session_id", ""),
             "on_roster": r is not None,
+            "source": (r or {}).get("source") or "",
             # turn clock, only where a sidebar reporter publishes one ($since while working, $total when done)
             "since": ((a.get("tokens") or {}).get("since") or (a.get("tokens") or {}).get("total") or "").strip(),
             "pid": a.get("pid"), "tty": a.get("tty", ""),
@@ -2033,6 +2038,8 @@ def identity_events(seen: dict, live_rows: list[dict]) -> list[dict]:
         pane_id = str(r.get("pane_id") or "")
         if not r.get("on_roster") or pane_id.startswith("pid:") or not pane_id:
             continue  # sittings cowbell does not know stay unbadged until adopt
+        if r.get("source") == "auto":
+            continue  # quiet adopt: herdr already shows this pane; no metadata snap
         key = (r.get("name"), r.get("kind"), r.get("status"))
         if seen.get(pane_id) == key:
             continue
@@ -2153,8 +2160,10 @@ def cmd_registry(ctx: Ctx, cat: dict, root: str | None = None, as_json: bool = F
     rows = load_roster()
     ctx.live.refresh_sessions(rows)
     agents, panes = ctx.live.agents(), ctx.live.panes()
+    labels = tab_labels(ctx.live.snapshot())
+    auto_adopt(ctx, cat, rows, agents, labels, root)
     reg = build_registry(cat, root, agents, panes, rows, subject=trust_subject(root),
-                         tab_label=tab_labels(ctx.live.snapshot()), history=discover_sessions(root, cat))
+                         tab_label=labels, history=discover_sessions(root, cat))
     if place:
         reg["place_note"] = place["name"] + (" · from ~" if remapped and root == place["cwd"] else "")
     if as_json:
@@ -2325,6 +2334,70 @@ def live_agent_to_adopt(ctx: Ctx, pane_id: str | None = None, hint: str | None =
     raise SystemExit("\n".join(lines))
 
 
+def auto_adopt_enabled(cat: dict) -> bool:
+    """Quiet rostering of herdr-detected panes. The constitution can turn it off."""
+    v = (cat.get("defaults") or {}).get("auto_adopt", True)
+    if isinstance(v, str):
+        return v.strip().lower() not in ("", "0", "false", "off", "no")
+    return bool(v)
+
+
+def write_adopted(cat: dict, a: dict, rows: list[dict], *, name: str | None = None,
+                  labels: dict | None = None, source: str = "adopt", cwd_fallback: str = "") -> dict:
+    """One roster row for a live sitting. Replaces any row already bound to this pane."""
+    kind = a.get("agent") or a.get("kind") or ""
+    sitting = sitting_of(a, labels)
+    title = a.get("terminal_title_stripped") or ""
+    noisy = (not title or title.startswith("-") or " - grok " in title.lower()
+             or "waiting" in title.lower() or "running:" in title.lower())
+    # `cowbell adopt wK:pK` used the pane as identity, not as the roster sitting.
+    roster_as = None if name and name == a.get("pane_id") else name
+    base = slug(roster_as or sitting or (title if not noisy else kind))
+    nm = unique_name(base, {r["name"] for r in rows if r.get("pane_id") != a.get("pane_id")})
+    h = harness_by_id(cat, kind)
+    cwd = a.get("cwd") or cwd_fallback
+    place = place_for(cat, cwd) if cwd else None
+    row = {
+        "name": nm, "cwd": cwd, "harness": h["id"] if h else kind, "kind": kind,
+        "model": "", "lane": "", "session_id": (a.get("agent_session") or {}).get("value") or "",
+        "pane_id": a.get("pane_id"), "tab_id": a.get("tab_id"), "workspace_id": a.get("workspace_id"),
+        "label": title or nm, "created": now(), "source": source,
+        "place": (place or {}).get("name") or "",
+    }
+    rows[:] = [r for r in rows if r.get("pane_id") != a.get("pane_id")]
+    rows.append(row)
+    return row
+
+
+def auto_adopt(ctx: Ctx, cat: dict, rows: list[dict], agents: list[dict],
+               labels: dict | None, root: str) -> list[dict]:
+    """Roster herdr panes whose cwd is a place. Quiet: no rename, no report-metadata.
+
+    Herdr already detected the agent. Cowbell only records the sitting (the tab
+    label) so `status` lists it. A process-scan row is not herdr's report.
+    Panes outside `root` wait until status is asked there.
+    """
+    if not auto_adopt_enabled(cat) or not getattr(ctx.live, "herdr", False):
+        return []
+    rostered = {str(r.get("pane_id")) for r in rows if r.get("pane_id")}
+    adopted = []
+    for a in agents or []:
+        pid = str(a.get("pane_id") or "")
+        if not pid or pid.startswith("pid:") or pid in rostered:
+            continue
+        if not (a.get("agent") or a.get("kind")):
+            continue
+        cwd = a.get("cwd") or ""
+        if not cwd or not place_for(cat, cwd) or not at_or_beneath(cwd, root):
+            continue
+        row = write_adopted(cat, a, rows, labels=labels, source="auto")
+        rostered.add(pid)
+        adopted.append(row)
+    if adopted:
+        save_roster(rows)
+    return adopted
+
+
 def cmd_adopt(ctx: Ctx, cat: dict, name: str | None = None, pane_id: str | None = None) -> dict:
     """Bind a live sitting cowbell did not start onto the roster. Returns the new row."""
     a = live_agent_to_adopt(ctx, pane_id, hint=name)
@@ -2339,33 +2412,15 @@ def cmd_adopt(ctx: Ctx, cat: dict, name: str | None = None, pane_id: str | None 
                 kind = a.get("agent") or kind
         except HerdrError:
             pass
+    a = {**a, "agent": kind}
     snap = ctx.live.snapshot()
-    sitting = sitting_of(a, tab_labels(snap))
-    title = a.get("terminal_title_stripped") or ""
-    noisy = (not title or title.startswith("-") or " - grok " in title.lower()
-             or "waiting" in title.lower() or "running:" in title.lower())
-    # `cowbell adopt wK:pK` used the pane as identity, not as the roster sitting.
-    roster_as = None if name and name == a.get("pane_id") else name
-    base = slug(roster_as or sitting or (title if not noisy else kind))
     rows = load_roster()
-    nm = unique_name(base, {r["name"] for r in rows if r.get("pane_id") != a.get("pane_id")})
-    rows = [r for r in rows if r.get("pane_id") != a.get("pane_id")]
-    h = harness_by_id(cat, kind)
-    cwd = a.get("cwd") or ctx.cwd
-    place = place_for(cat, cwd)
-    row = {
-        "name": nm, "cwd": cwd, "harness": h["id"] if h else kind, "kind": kind,
-        "model": "", "lane": "", "session_id": (a.get("agent_session") or {}).get("value") or "",
-        "pane_id": a.get("pane_id"), "tab_id": a.get("tab_id"), "workspace_id": a.get("workspace_id"),
-        "label": title or nm, "created": now(), "source": "adopt",
-        "place": (place or {}).get("name") or "",
-    }
-    rows.append(row)
+    row = write_adopted(cat, a, rows, name=name, labels=tab_labels(snap), cwd_fallback=ctx.cwd)
     save_roster(rows)
     apane = str(a.get("pane_id") or "")
     if apane and not apane.startswith("pid:"):
-        report_identity(apane, nm, kind)   # one publish per adopt (LAB-297)
-    print(f"adopted {nm}  {kind}  {tilde(cwd)}")
+        report_identity(apane, row["name"], row["kind"])   # one publish per manual adopt (LAB-297)
+    print(f"adopted {row['name']}  {row['kind']}  {tilde(row['cwd'])}")
     return row
 
 
@@ -3442,6 +3497,8 @@ def picker(ctx: Ctx, cat: dict) -> int:
             live.refresh_sessions(rows)
             snap = live.snapshot()
             agents, panes = live.agents(), live.panes()
+            labels = tab_labels(snap)
+            auto_adopt(ctx, cat, rows, agents, labels, root)
             if root not in git_tops:
                 git_tops[root] = git_root(root)
             top = git_tops[root]
@@ -3449,7 +3506,7 @@ def picker(ctx: Ctx, cat: dict) -> int:
             if top and os.path.realpath(top) != os.path.realpath(root):
                 wider = sum(1 for a in agents if a.get("cwd") and at_or_beneath(a["cwd"], top))
             reg = build_registry(cat, root, agents, panes, rows, matcher=matcher_for(root),
-                                 tab_label=tab_labels(snap), history=discover_sessions(root, cat))
+                                 tab_label=labels, history=discover_sessions(root, cat))
             if place:
                 reg["place_note"] = place["name"] + (" · from ~" if remapped and root == place["cwd"] else "")
             remember_live(reg, rows)

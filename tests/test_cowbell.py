@@ -50,6 +50,15 @@ CAT = {
 ROOT = "/Users/x/code/projects/acme"
 
 
+def patron_catalog() -> bool:
+    """The house constitution, not a seed that catalog_path copied into the config dir."""
+    p = Path.home() / ".config" / "cowbell" / "harnesses.toml"
+    try:
+        return p.is_file() and "# cowbell — the constitution of the herd." in p.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+
 def agent(pane, kind, cwd, status="idle", title="", sid="s1"):
     return {"pane_id": pane, "agent": kind, "cwd": cwd, "agent_status": status, "tab_id": "w1:t1",
             "workspace_id": "w1", "terminal_title_stripped": title, "agent_session": {"value": sid}}
@@ -1109,6 +1118,11 @@ class SidebarTokens(unittest.TestCase):
         self.assertEqual(hm.identity_events(seen, [row2]), [])
         unknown = {"pane_id": "w1:p2", "name": "stray", "kind": "grok", "status": "idle", "on_roster": False}
         self.assertEqual(hm.identity_events(seen, [unknown]), [])     # not known: stays unbadged
+        quiet = {"pane_id": "w1:p3", "name": "coord-grok", "kind": "grok", "status": "working",
+                 "on_roster": True, "source": "auto"}
+        self.assertEqual(hm.identity_events(seen, [quiet]), [])       # quiet adopt: herdr keeps the plate
+        self.assertEqual(hm.identity_events(seen, [{**quiet, "status": "idle"}]), [])
+        self.assertNotIn("w1:p3", seen)
         proc = {"pane_id": "pid:9", "name": "term", "kind": "grok", "status": "idle", "on_roster": True}
         self.assertEqual(hm.identity_events(seen, [proc]), [])        # a process is not a pane
         self.assertEqual(hm.identity_events(seen, []), [])            # gone: forgotten, no event
@@ -1498,6 +1512,7 @@ class Seed(unittest.TestCase):
         cat = tomllib.loads(seed.read_text())
         self.assertFalse([h["id"] for h in cat["harness"] if "command" in h])   # no house wrappers
         self.assertFalse(cat["defaults"]["ask_name"])
+        self.assertIs(cat["defaults"]["auto_adopt"], True)
 
 
 class EmptyLive(hm.LiveSource):
@@ -1714,6 +1729,144 @@ class Adopt(unittest.TestCase):
         self.assertEqual(hm.adopt_pane_for_picker(None, [live[0]], "wK:p9"), "wK:pK")
         self.assertEqual(hm.adopt_picker_flash(2), "several running — cowbell adopt <name>")
         self.assertEqual(hm.adopt_picker_flash(0), "no running sitting here to adopt")
+
+
+class PlaceHerd(hm.LiveSource):
+    """Herdr's report, already in hand. Does not call the herdr binary."""
+
+    herdr = True
+
+    def __init__(self, agents, tabs):
+        self._agents = agents
+        self._tabs = tabs
+
+    def agents(self):
+        return list(self._agents)
+
+    def panes(self):
+        return [{"pane_id": a["pane_id"]} for a in self._agents]
+
+    def snapshot(self):
+        return {"tabs": self._tabs, "agents": list(self._agents)}
+
+    def refresh_sessions(self, rows):
+        return None
+
+
+class AutoAdopt(unittest.TestCase):
+    """LAB-300: a herdr pane at a place joins the roster without a manual adopt.
+
+    Quiet: no pane rename, no report-metadata, including across repeated status.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.place = os.path.realpath(os.path.join(self.tmp.name, "lab"))
+        self.other = os.path.realpath(os.path.join(self.tmp.name, "other"))
+        os.makedirs(self.place)
+        os.makedirs(self.other)
+        self.state = Path(self.tmp.name) / "state"
+        self.state.mkdir()
+        os.environ["COWBELL_STATE_DIR"] = str(self.state)
+        self.addCleanup(lambda: os.environ.pop("COWBELL_STATE_DIR", None))
+        (self.state / "roster.json").write_text(json.dumps({"schema": 1, "harnesses": []}))
+        self.cat = {**CAT, "places": {"lab": {"cwd": self.place}}}
+        self.grok = agent("wK:p1", "grok", self.place, "idle",
+                          "- Inspect grok flags - Grok 4.6 - herdr-cowbell - grok", sid="")
+        self.grok["tab_id"] = "wK:t1"
+        self.grok["name"] = "grok"
+        self.tabs = [{"tab_id": "wK:t1", "label": "coord-grok"}]
+        self.calls = []
+        self._herdr, self._report = hm.herdr, hm.report_identity
+        hm.herdr = lambda *a, **k: self.calls.append(("herdr", a)) or {}
+        hm.report_identity = lambda *a, **k: self.calls.append(("report", a)) or True
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        hm.herdr, hm.report_identity = self._herdr, self._report
+
+    def _status(self, live, cwd, cat=None):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            reg = hm.cmd_registry(hm.Ctx(cwd=cwd, mode="tab", live=live, launch=hm.HereLaunch()),
+                                  cat or self.cat)
+        return reg, buf.getvalue()
+
+    def test_herdr_grok_at_a_place_is_on_the_roster_without_manual_adopt(self):
+        live = PlaceHerd([self.grok], self.tabs)
+        reg, text = self._status(live, self.place)
+        self.assertNotIn("(not on roster)", text)
+        self.assertIn("coord-grok", text)
+        self.assertTrue(reg["live"][0]["on_roster"])
+        self.assertEqual(reg["live"][0]["name"], "coord-grok")
+        self.assertEqual(reg["live"][0]["harness"], "grok")
+        self.assertEqual(reg["live"][0]["source"], "auto")
+        self.assertEqual(reg["live"][0]["place"], "lab")
+        roster = hm.load_roster()
+        self.assertEqual(len(roster), 1)
+        self.assertEqual(roster[0]["name"], "coord-grok")
+        self.assertEqual(roster[0]["source"], "auto")
+        self.assertEqual(roster[0]["pane_id"], "wK:p1")
+        self.assertEqual(roster[0]["session_id"], "")
+        # again, and again: still one row, and still no metadata publish
+        self._status(live, self.place)
+        self._status(live, self.place)
+        self.assertEqual(len(hm.load_roster()), 1)
+        self.assertEqual(self.calls, [])
+        seen = {}
+        self.assertEqual(hm.identity_events(seen, reg["live"]), [])
+        changed = {**reg["live"][0], "status": "working"}
+        self.assertEqual(hm.identity_events(seen, [changed]), [])
+        self.assertEqual(seen, {})
+
+    def test_constitution_can_disable_it(self):
+        for flag in (False, "off", "no"):
+            with self.subTest(flag=flag):
+                (self.state / "roster.json").write_text(json.dumps({"schema": 1, "harnesses": []}))
+                cat = {**self.cat, "defaults": {**CAT["defaults"], "auto_adopt": flag}}
+                reg, text = self._status(PlaceHerd([self.grok], self.tabs), self.place, cat)
+                self.assertIn("(not on roster)", text)
+                self.assertFalse(reg["live"][0]["on_roster"])
+                self.assertEqual(hm.load_roster(), [])
+                self.assertEqual(self.calls, [])
+
+    def test_a_pane_outside_a_place_stays_an_observer(self):
+        stray = {**self.grok, "cwd": self.other}
+        reg, text = self._status(PlaceHerd([stray], self.tabs), self.other)
+        self.assertIn("(not on roster)", text)
+        self.assertEqual(hm.load_roster(), [])
+        self.assertEqual(self.calls, [])
+
+    def test_a_process_scan_row_is_not_herdrs_report(self):
+        proc = {**self.grok, "pane_id": "pid:511", "pid": 511, "tty": "ttys001"}
+        reg, text = self._status(PlaceHerd([proc], self.tabs), self.place)
+        self.assertIn("(not on roster)", text)
+        self.assertEqual(hm.load_roster(), [])
+        self.assertEqual(self.calls, [])
+
+    def test_without_herdr_a_place_cwd_is_not_auto_adopted(self):
+        live = hm.LiveSource()
+        live.agents = lambda: [self.grok]
+        live.panes = lambda: [{"pane_id": "wK:p1"}]
+        live.snapshot = lambda: {"tabs": self.tabs}
+        reg, text = self._status(live, self.place)
+        self.assertIn("(not on roster)", text)
+        self.assertEqual(hm.load_roster(), [])
+
+    def test_status_elsewhere_does_not_vacuum_another_place(self):
+        self._status(PlaceHerd([self.grok], self.tabs), self.other)
+        self.assertEqual(hm.load_roster(), [])
+        reg, text = self._status(PlaceHerd([self.grok], self.tabs), self.place)
+        self.assertIn("coord-grok", text)
+        self.assertEqual(len(hm.load_roster()), 1)
+        self.assertTrue(reg["live"][0]["on_roster"])
+
+    def test_missing_key_defaults_on_and_off_strings_disable(self):
+        self.assertTrue(hm.auto_adopt_enabled({}))
+        self.assertTrue(hm.auto_adopt_enabled({"defaults": {}}))
+        self.assertFalse(hm.auto_adopt_enabled({"defaults": {"auto_adopt": False}}))
+        self.assertFalse(hm.auto_adopt_enabled({"defaults": {"auto_adopt": "off"}}))
 
 
 class ExtensionPoints(unittest.TestCase):
@@ -2071,10 +2224,7 @@ class CatalogWriter(unittest.TestCase):
         self.assertIn("already exists", str(e.exception))
         self.assertEqual(p.read_bytes(), prior)
 
-    @unittest.skipUnless(
-        (Path.home() / ".config" / "cowbell" / "harnesses.toml").is_file(),
-        "no patron config-dir catalog on this host",
-    )
+    @unittest.skipUnless(patron_catalog(), "no patron config-dir catalog on this host")
     def test_round_trip_on_patron_catalog_copy(self):
         p = self._copy(self.HOUSE)
         before = p.read_text(encoding="utf-8")
@@ -2350,10 +2500,7 @@ class PickerEdit(unittest.TestCase):
             self.assertTrue(hm.raise_quick(ctx, cat, "claude", self.root))
         self.assertEqual(fake.got[:4], ("claude-sonnet-5", "green", "Read", "Bash"))
 
-    @unittest.skipUnless(
-        (Path.home() / ".config" / "cowbell" / "harnesses.toml").is_file(),
-        "no patron config-dir catalog on this host",
-    )
+    @unittest.skipUnless(patron_catalog(), "no patron config-dir catalog on this host")
     def test_patron_catalog_save_edit_remove_keeps_comments(self):
         shutil.copy2(self.HOUSE, self.catalog)
         before = self._text()

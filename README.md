@@ -69,6 +69,11 @@ Two hooks let cowbell use tools it does not own, both set in `[defaults]`:
   every session it has seen, not just the ones cowbell started. Only ids, times
   and titles are read; transcript bodies never are. `"all"` additionally lists
   agents that a sitting dispatched rather than a person chose. Default `"off"`.
+- `auto_adopt` — when herdr reports an agent pane whose directory is a place
+  and the pane is not on the roster, `cowbell status` adopts it. The sitting
+  is the tab label. The pane is not renamed, and cowbell does not call
+  `report-metadata` for that adopt. Set `false` to leave those panes as
+  observers until you adopt them yourself. Default `true`.
 
 ## Catalog, places, state
 

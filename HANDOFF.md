@@ -4,6 +4,16 @@ Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 
 Milestone: Reach (Later)
 Locked: none
 
+## 2026-10-06 — LAB-300: quiet auto-adopt of herdr panes at a place
+
+`cowbell status` and the picker refresh adopt a herdr-detected agent whose cwd
+is a place and which is not already on the roster. The sitting is the tab
+label. The pane is not renamed, and that path does not call `report-metadata`
+(not on the adopt, and not on the picker's refresh). `[defaults] auto_adopt = false`
+leaves the pane as an observer until `a`. A process-scan row is not herdr's
+report and is left alone. The plugin still vendors the previous core until
+`scripts/vendor-core` is run there.
+
 ## 2026-10-05 — LAB-257: 0.3.1 packaged, not uploaded
 
 PyPI already has `cowbell` 0.3.0 (owner `charlesberret`, uploaded 2026-09-15).
