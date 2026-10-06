@@ -4,6 +4,14 @@ Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 
 Milestone: Reach (Later)
 Locked: none
 
+## 2026-10-06 — picker `e` sets this sitting, then starts
+
+`e` on a New Session row was catalog edit, and its first prompt was an empty
+description box (`edit_harness`). It now picks model / permissions / tools
+from the harness defaults and launches (`edit_sitting`). Esc back to the
+list. Catalog bytes unchanged. `n` is still agent → name → settings →
+optional save-as. `line_input` shows the default in the buffer.
+
 ## 2026-10-05 — LAB-257: 0.3.1 packaged, not uploaded
 
 PyPI already has `cowbell` 0.3.0 (owner `charlesberret`, uploaded 2026-09-15).

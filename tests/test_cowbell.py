@@ -2354,6 +2354,43 @@ class PickerEdit(unittest.TestCase):
             self.assertTrue(hm.raise_quick(ctx, cat, "claude", self.root))
         self.assertEqual(fake.got[:4], ("claude-sonnet-5", "green", "Read", "Bash"))
 
+    def test_edit_sitting_launches_chosen_model_and_lane(self):
+        class FakeLaunch:
+            def start(self, cat, h, name, root, ctx, *args, **kw):
+                self.got = (name,) + args
+                return {"pane_id": "p1"}
+
+        fake = FakeLaunch()
+        ctx = hm.Ctx(cwd=self.root, mode="tab", live=hm.LiveSource(), launch=fake)
+        cat = hm.load_catalog()
+        before = self.catalog.read_bytes()
+        with mock.patch("cowbell.trust_match", return_value={"verdict": "ok"}), \
+             mock.patch("cowbell.installed", return_value=True), \
+             mock.patch("cowbell.prompt_flag", return_value=None), \
+             mock.patch("cowbell.choose", side_effect=[1, 0]), \
+             mock.patch("cowbell.ask", return_value=""):
+            self.assertTrue(hm.edit_sitting(ctx, cat, "claude", self.root))
+        self.assertEqual(fake.got[0], "claude")
+        self.assertEqual(fake.got[1:5], ("claude-opus-5", "green", "", ""))
+        self.assertEqual(self.catalog.read_bytes(), before)
+
+    def test_edit_sitting_esc_does_not_launch(self):
+        class FakeLaunch:
+            def start(self, *a, **kw):
+                self.called = True
+                return {"pane_id": "p1"}
+
+        fake = FakeLaunch()
+        ctx = hm.Ctx(cwd=self.root, mode="tab", live=hm.LiveSource(), launch=fake)
+        cat = hm.load_catalog()
+        before = self.catalog.read_bytes()
+        with mock.patch("cowbell.trust_match", return_value={"verdict": "ok"}), \
+             mock.patch("cowbell.installed", return_value=True), \
+             mock.patch("cowbell.choose", return_value=None):
+            self.assertFalse(hm.edit_sitting(ctx, cat, "claude", self.root))
+        self.assertFalse(hasattr(fake, "called"))
+        self.assertEqual(self.catalog.read_bytes(), before)
+
     @unittest.skipUnless(
         (Path.home() / ".config" / "cowbell" / "harnesses.toml").is_file(),
         "no patron config-dir catalog on this host",

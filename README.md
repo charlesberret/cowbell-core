@@ -52,7 +52,10 @@ command read the same catalog and roster, so a session started in one resumes in
   listed.
 - **Enter on New Session** opens the agent at once with an automatic name (`claude`,
   `claude-2`) and the default permissions; `[defaults] ask_name = true` asks for the
-  name first. `n` asks for agent, name, model, and permissions.
+  name first. **`e` on a New Session row** lets you pick model, permissions, and
+  tools (current defaults highlighted) and then starts; Esc returns to the list
+  and does not rewrite the catalog. `n` asks for agent, name, model, and
+  permissions, then optional save-as.
 - **Trust** appears only if a checker is configured and on PATH, and only as an
   exception: a dim `! more reach than needed` on a row the checker calls over-privileged.
   That is advisory and never stops a launch; blocked agents are left off.

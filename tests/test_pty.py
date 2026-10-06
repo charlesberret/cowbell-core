@@ -129,10 +129,18 @@ class Menu(unittest.TestCase):
 @unittest.skipUnless(hasattr(os, "fork") and sys.platform != "win32", "needs a unix pty")
 class Prompt(unittest.TestCase):
     def test_typing_with_backspace(self):
-        self.assertEqual(run_ask(["bob", "\x7f", "x", "\r"])[0], ["ok", "box"])
+        self.assertEqual(run_ask(["\x15", "bob", "\x7f", "x", "\r"])[0], ["ok", "box"])
 
     def test_empty_takes_default(self):
         self.assertEqual(run_ask(["\r"])[0], ["ok", "d"])
+
+    def test_default_is_in_the_buffer(self):
+        res, screen = run_ask(["\r"])
+        self.assertEqual(res, ["ok", "d"])
+        self.assertIn(b"name [d]: d", screen)
+
+    def test_typing_appends_to_the_default(self):
+        self.assertEqual(run_ask(["x", "\r"])[0], ["ok", "dx"])
 
     def test_esc_cancels(self):
         self.assertEqual(run_ask(["ab", ESC])[0], ["cancelled"])
