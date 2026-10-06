@@ -44,6 +44,13 @@ schema = 1           # file format; a newer cowbell may raise it, an older one w
 #                  agents a sitting dispatched (role prompts). Default "off".
 session_history = "off"        # off · on · all
 
+# auto_adopt       when herdr reports an agent pane whose directory is a place
+#                  and that pane is not on the roster, status adopts it. The
+#                  sitting is the tab label. Quiet: the pane is not renamed,
+#                  and cowbell does not call report-metadata for it. false
+#                  leaves the pane as an observer until you adopt it yourself.
+auto_adopt = true
+
 trust_command = "harness-trust"
 seat_file = "SEAT.md"
 
