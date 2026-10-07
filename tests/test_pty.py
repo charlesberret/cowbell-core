@@ -65,7 +65,9 @@ def in_pty(child, steps, rows=24, cols=80, settle=0.35, gap=0.08):
         except OSError:
             break
         pump(gap)
-    for _ in range(40):
+    # A loaded runner can take a few seconds to reap the child. A deadlock
+    # still returns HUNG; passing cases return as soon as the child exits.
+    for _ in range(200):
         if os.waitpid(pid, os.WNOHANG)[0]:
             break
         pump(0.05)
