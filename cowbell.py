@@ -951,7 +951,7 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
     rows_here = roster_here(roster, root)
     by_pane: dict[str, dict] = {str(r["pane_id"]): r for r in rows_here if r.get("pane_id")}
     # identify an exe by catalog: a kind only one harness in this catalog has is that harness
-    # id; a kind several share (pi wrappers) stays the exe name. LAB-294.
+    # id; a kind several share (pi wrappers) stays the exe name.
     kind_id: dict[str, str] = {}
     for h in cat.get("harness", []):
         prev = kind_id.setdefault(h["kind"], h["id"])
@@ -1059,7 +1059,7 @@ def registry_json(reg: dict, place: dict | None = None) -> dict:
         "root": root,
         "place": place_name,
         "running": [sitting_row(r) for r in reg.get("live") or []],
-        # Resume only what can resume: a row without a session id would just start fresh (LAB-298).
+        # Resume only what can resume: a row without a session id would just start fresh.
         "resume": [sitting_row(r) for r in reg.get("cold") or [] if r.get("session_id")],
         "new": [new_row(a) for a in reg.get("absent") or []],
     }
@@ -1081,7 +1081,7 @@ def render_registry(reg: dict, git_top: str | None = None, wider: int | None = N
             out.append(f"  {key(idx)}  {paint(name, INK, bold=True)} {g} "
                        f"{status_cell(r['status'], 9)} {paint(rest, FAINT)}")
     if reg["cold"]:
-        # Resume only what can resume: a row without a session id would just start fresh (LAB-298).
+        # Resume only what can resume: a row without a session id would just start fresh.
         cold = [r for r in reg["cold"] if r.get("session_id")]
         if cold:
             out.append("")
@@ -1949,7 +1949,7 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
         "workspace_id": pane.get("workspace_id"), "created": now(), "argv": argv,
     })
     save_roster(rows)
-    report_identity(pid, name, h["kind"], model)   # one publish per raise (LAB-297)
+    report_identity(pid, name, h["kind"], model)   # one publish per raise
     # Tab stays the sitting. The pane border caches the harness just launched;
     # `cowbell reconcile` rewrites it from the agent Herdr detects.
     mark_harness(pid, name, h["id"])
@@ -1965,7 +1965,7 @@ def focus_agent(pane_id: str) -> None:
     herdr("agent", "focus", pane_id)
 
 
-# herdr sidebar tokens (event-driven; never a loop) — LAB-297.
+# herdr sidebar tokens (event-driven; never a loop).
 # Identity tokens for sittings cowbell knows, published once per event — a raise,
 # an adopt, or a state change seen during a picker refresh — with --source cowbell.
 # No [[startup]], no interval thread; bt-reporter (the clocks) stays a separate,
@@ -2364,7 +2364,7 @@ def cmd_adopt(ctx: Ctx, cat: dict, name: str | None = None, pane_id: str | None 
     save_roster(rows)
     apane = str(a.get("pane_id") or "")
     if apane and not apane.startswith("pid:"):
-        report_identity(apane, nm, kind)   # one publish per adopt (LAB-297)
+        report_identity(apane, nm, kind)   # one publish per adopt
     print(f"adopted {nm}  {kind}  {tilde(cwd)}")
     return row
 
@@ -2476,7 +2476,7 @@ def write_atomic(path: Path, text: str) -> None:
         raise
 
 
-# --- catalog writer (LAB-254) ------------------------------------------------
+# --- catalog writer ----------------------------------------------------------
 # Splice [[harness]] blocks as text so comments and neighbouring tables stay.
 # Block = [[harness]] through the next [[…]] / […] / EOF. tomllib only reads.
 
@@ -3453,7 +3453,7 @@ def picker(ctx: Ctx, cat: dict) -> int:
             if place:
                 reg["place_note"] = place["name"] + (" · from ~" if remapped and root == place["cwd"] else "")
             remember_live(reg, rows)
-            # LAB-297: publish sidebar identity once per event (a state change seen
+            # publish sidebar identity once per event (a state change seen
             # here, or a name/harness change after an adopt) — never per refresh.
             for r in identity_events(ident_seen, reg["live"]):
                 report_identity(r["pane_id"], r["name"], r.get("kind") or "", r.get("model") or "")
