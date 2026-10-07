@@ -1415,6 +1415,9 @@ class NewUsage(unittest.TestCase):
         self.assertIn("cowbell new", text)
         self.assertIn("--harness", text)
         self.assertIn("--split", text)
+        self.assertIn("-y, --yes", text)
+        self.assertIn("Accepted and unused", text)
+        self.assertNotIn("Assume yes to prompts", text)
 
     def test_unknown_flag_exits_2_with_usage(self):
         err = io.StringIO()

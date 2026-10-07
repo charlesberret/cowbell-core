@@ -3711,7 +3711,7 @@ def new_usage(file=None) -> None:
     print("  --split         Split a pane instead of opening a new tab", file=file)
     print("  --no-seat       Do not attach a seat file", file=file)
     print("  --no-focus      Do not focus the new pane", file=file)
-    print("  -y, --yes       Assume yes to prompts", file=file)
+    print("  -y, --yes       Accepted and unused; this path has no prompt", file=file)
     print("  -h, --help      Print this usage and exit", file=file)
     print("Tokens after -- are passed to the harness. Any other flag exits 2.", file=file)
 

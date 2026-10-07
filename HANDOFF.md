@@ -4,6 +4,12 @@ Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 
 Milestone: Reach (Later)
 Locked: none
 
+## 2026-10-07 — `new --yes` usage matches the launch path
+
+`-y` / `--yes` is still accepted (an unknown flag exits 2). `gate()`
+never reads it, and `cowbell new` does not prompt, so usage now says
+the flag is unused rather than "Assume yes to prompts".
+
 ## 2026-10-07 — reconcile without herdr names the skip
 
 `cowbell reconcile --dry-run` with no herdr binary used to print
