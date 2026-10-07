@@ -4,6 +4,13 @@ Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 
 Milestone: Reach (Later)
 Locked: none
 
+## 2026-10-07 — LAB-357 seed has a commented example place
+
+The seed still parses with no `[places.*]` table. It now includes a
+commented `[places.lab]` / `unix_user = "lab"` block matching the README
+stranger example, so a copy of the seed is enough without opening the README.
+UnixConfine tests and the README example were already on main.
+
 ## 2026-10-06 — Resume follows the launch uid
 
 For a place with `unix_user`, session-history discovery now runs through

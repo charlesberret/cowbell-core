@@ -1225,6 +1225,8 @@ class ResumeOutside(unittest.TestCase):
         self.assertIn("unix_user", text)
         self.assertIn("require_uid", text)
         self.assertIn("sudo -u", text)
+        self.assertIn("# [places.lab]", text)
+        self.assertIn('unix_user = "lab"', text)
         self.assertNotIn("places", cat)
 
     def test_cmd_enter_with_target_resumes_directly(self):
