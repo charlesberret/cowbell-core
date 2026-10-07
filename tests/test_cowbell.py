@@ -2548,6 +2548,32 @@ class Coherence(unittest.TestCase):
         self.assertIn(("pane", "rename", "w1C:p1", "probe · grok"), calls)
         self.assertFalse(any(c[1] == "rename" and c[2] == "pid:9" for c in calls if len(c) > 2))
 
+    def test_no_herdr_binary_does_not_print_the_agree_line(self):
+        saved = hm.has_herdr
+        hm.has_herdr = lambda: False
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                rows = hm.apply_coherence(dry_run=True)
+        finally:
+            hm.has_herdr = saved
+        self.assertEqual(rows, [])
+        self.assertIn("herdr is not installed; nothing to reconcile", out.getvalue())
+        self.assertNotIn("panes agree", out.getvalue())
+
+    def test_empty_rows_with_herdr_print_agree(self):
+        saved = (hm.has_herdr, hm.coherence_rows)
+        hm.has_herdr = lambda: True
+        hm.coherence_rows = lambda: []
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                rows = hm.apply_coherence(dry_run=True)
+        finally:
+            hm.has_herdr, hm.coherence_rows = saved
+        self.assertEqual(rows, [])
+        self.assertIn("panes agree with the harness Herdr detects", out.getvalue())
+
     def test_reconcile_command_is_not_a_harness(self):
         called = {}
         saved = (hm.apply_coherence, hm.server_up, hm.load_catalog)

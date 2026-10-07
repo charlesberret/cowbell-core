@@ -2172,6 +2172,9 @@ def coherence_rows() -> list[dict]:
 
 def apply_coherence(dry_run: bool = False) -> list[dict]:
     """Print `pane_id old → new` and rename, unless dry_run. Exit path stays with the caller."""
+    if not has_herdr():
+        print("herdr is not installed; nothing to reconcile")
+        return []
     rows = coherence_rows()
     if not rows:
         print("panes agree with the harness Herdr detects")
@@ -3776,6 +3779,7 @@ def main(argv: list[str]) -> int:
         print("cowbell reconcile [--dry-run]")
         print("  Rewrite pane borders that claim a harness so they match the agent Herdr detects.")
         print("  The tab label stays the sitting. A border with no harness claim is left alone.")
+        print("  With no herdr binary: 'herdr is not installed; nothing to reconcile'.")
         return 0
     ctx = choose_host(server_up())
     cat = load_catalog()

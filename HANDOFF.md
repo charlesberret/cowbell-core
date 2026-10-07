@@ -4,6 +4,13 @@ Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 
 Milestone: Reach (Later)
 Locked: none
 
+## 2026-10-07 — reconcile without herdr names the skip
+
+`cowbell reconcile --dry-run` with no herdr binary used to print
+`panes agree with the harness Herdr detects` (empty snapshot). It now
+prints `herdr is not installed; nothing to reconcile`. The agree line
+remains when herdr is present and every claimed border already matches.
+
 ## 2026-10-07 — LAB-357 seed has a commented example place
 
 The seed still parses with no `[places.*]` table. It now includes a
