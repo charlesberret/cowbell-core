@@ -1,0 +1,3 @@
+A harness starts a sitting on a lane.
+authors = [{ name = "Charles Berret" }]
+Copyright (c) 2026 Charles Berret

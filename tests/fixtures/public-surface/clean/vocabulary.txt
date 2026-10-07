@@ -1,0 +1,3 @@
+A harness starts a sitting on a lane.
+Example path: ~/code/projects/acme
+Near misses: /Users /home/ LAB sk-short ghp_short 10.100.0 192.169.0.1 kettle isruna handoff xDSK-4

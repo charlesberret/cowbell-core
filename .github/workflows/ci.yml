@@ -1,0 +1,81 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }} / py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      # PTY tests (tests/test_pty.py) run on both operating systems.
+      # A case that can only run on macOS belongs behind skipUnless in the
+      # test, with the reason written there.
+      - name: unit tests
+        run: python -m unittest discover -s tests -v
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: ruff
+        run: |
+          python -m pip install ruff==0.16.10
+          ruff check .
+          ruff format --check .
+
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: build wheel
+        run: |
+          python -m pip install build pipx
+          python -m build
+      - name: installed console script prints 0.3.1 and --help exits 0
+        run: |
+          set -eu
+          set -- dist/*.whl
+          test "$#" -eq 1
+          test -f "$1"
+          # The CLI line is "cowbell 0.3.1".
+          out=$(python -m pipx run --spec "$1" cowbell --version)
+          printf '%s\n' "$out"
+          test "$out" = "cowbell 0.3.1"
+          python -m pipx run --spec "$1" cowbell --help >/dev/null
+
+  public-surface:
+    name: public-surface
+    runs-on: ubuntu-latest
+    # QA-C2: flip the next line to false once the scan is clean. Until that
+    # merge, hits are reported and this job does not fail the workflow.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: scan
+        run: sh scripts/public-surface-scan.sh
