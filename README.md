@@ -14,7 +14,7 @@ installed and allowed here, most used here first.
 
   ┌─ Active ──────────────────────────────────────────────────────────────┐
   │    nomogenesis-claude     claude      idle                            │
-  │    philologist            grok        working  14s   in sys:clubhouse │
+  │    philologist            grok        working  14s   in sys:workshop  │
   └───────────────────────────────────────────────────────────────────────┘
 
   Resume
@@ -166,9 +166,6 @@ pseudo-terminal. The code keeps two seams: `ctx.live` (what is running) and
 ## Provenance
 
 This tree was split out of the herdr plugin `herdr-cowbell` on 2026-09-15, with its
-full history and tags. It carries tag `v0.3.0` (`84d223b`) and the commits after it:
-`941ed40` (plan moves to Linear), `5ce4be2` (`--version`, LAB-247), `f67a8b3` (XDG
-config and state, LAB-248), `f095314` (places, LAB-262), `70fc3e2` (host seams,
-LAB-249). The split commit removed what belongs to the herdr plugin: the manifest, the
-popup entry (`open`), the `prefix+c` keybinding installer, `adopt`, `stop` and
-`import-seats`.
+full history and tags. It carries tag `v0.3.0` (`84d223b`). The split removed what
+belongs to the herdr plugin: the manifest, the popup entry (`open`), the `prefix+c`
+keybinding installer, `adopt`, `stop` and `import-seats`.
