@@ -4,6 +4,16 @@ Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 
 Milestone: Reach (Later)
 Locked: none
 
+## 2026-10-08 — LAB-627 herdr-cowbell stranger face
+
+`.claude/` in `herdr-cowbell` was house Claude Code permissions
+(`settings.local.json`). Patron: ignore the directory; it was never a
+contributor example. Repo `.gitignore` now has `.claude/`. README lede
+installs without teaching harness / lane / constitution and has no
+`pip install cowbell`. `CHANGELOG.md` and `SECURITY.md` added. Picker
+strings grep is empty. Vendor untouched. Local unittest 25 ok. GitHub
+CI is LAB-626 (QA-H1), still In Progress. Not pushed.
+
 ## 2026-10-07 — `new --yes` usage matches the launch path
 
 `-y` / `--yes` is still accepted (an unknown flag exits 2). `gate()`
