@@ -2073,6 +2073,25 @@ def clear_identity(pane_id: str) -> bool:
     return True
 
 
+def stamp_live_identities(snap: dict | None = None) -> int:
+    """Publish `$glyph` for every live herdr agent pane. Kind is the detector
+    `.agent` field (plus Claude `quota_model` when present). No TTL."""
+    snap = snapshot() if snap is None else snap
+    labels = tab_labels(snap)
+    n = 0
+    for a in snap.get("agents") or []:
+        pane_id = str(a.get("pane_id") or "")
+        kind = str(a.get("agent") or "").strip()
+        if not pane_id or pane_id.startswith("pid:") or not kind:
+            continue
+        name = slug(labels.get(a.get("tab_id"), "") or "") or pane_id
+        tokens = a.get("tokens") or {}
+        model = tokens.get("quota_model") or "" if isinstance(tokens, dict) else ""
+        if report_identity(pane_id, name, kind, model):
+            n += 1
+    return n
+
+
 def identity_events(seen: dict, live_rows: list[dict]) -> list[dict]:
     """Rostered herdr rows whose (sitting, harness, state) changed since the last
     refresh — each is one publish. Updates `seen` in place; no event, no publish."""
@@ -3801,6 +3820,15 @@ def main(argv: list[str]) -> int:
         return 0
     if cmd == "reconcile":
         apply_coherence(dry_run=bool(opts.get("dry-run")))
+        return 0
+    if cmd == "identity":
+        action = pos[0] if pos else ""
+        if action != "stamp":
+            print("cowbell identity stamp", file=sys.stderr)
+            print("  Publish $glyph for every live herdr agent pane (detector kind).", file=sys.stderr)
+            return 2
+        n = stamp_live_identities()
+        print(f"stamped {n} pane{'s' if n != 1 else ''}")
         return 0
     if harness_by_id(cat, cmd):
         cmd_dispatch(ctx, cat, cmd, bool(opts.get("yes"))); return 0

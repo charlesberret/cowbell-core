@@ -1104,6 +1104,27 @@ class SidebarTokens(unittest.TestCase):
         self.assertIn("line1", args)
         self.assertFalse(hm.clear_identity("pid:9"))
 
+    def test_stamp_live_identities_uses_detector_kind(self):
+        published = []
+        orig = hm.report_identity
+        hm.report_identity = lambda pane, name, kind, model="": published.append((pane, name, kind, model)) or True
+        try:
+            snap = {
+                "tabs": [{"tab_id": "t1", "label": "majordomo"}],
+                "agents": [
+                    {"pane_id": "w1:p1", "tab_id": "t1", "agent": "grok", "tokens": {}},
+                    {"pane_id": "w1:p2", "tab_id": "t1", "agent": "claude",
+                     "tokens": {"quota_model": "Opus 5.5"}},
+                    {"pane_id": "w1:p3", "tab_id": "t1", "agent": ""},
+                    {"pane_id": "pid:9", "tab_id": "t1", "agent": "grok"},
+                ],
+            }
+            self.assertEqual(hm.stamp_live_identities(snap), 2)
+        finally:
+            hm.report_identity = orig
+        self.assertEqual(published[0], ("w1:p1", "majordomo", "grok", ""))
+        self.assertEqual(published[1], ("w1:p2", "majordomo", "claude", "Opus 5.5"))
+
     def test_identity_events_publish_once_per_change(self):
         seen = {}
         row = {"pane_id": "w1:p1", "name": "butler", "kind": "grok", "status": "working", "on_roster": True}
