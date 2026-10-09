@@ -1125,6 +1125,48 @@ class SidebarTokens(unittest.TestCase):
         self.assertEqual(published[0], ("w1:p1", "majordomo", "grok", ""))
         self.assertEqual(published[1], ("w1:p2", "majordomo", "claude", "Opus 5.5"))
 
+    def test_sync_identity_overwrites_on_detected_kind(self):
+        calls = []
+        orig = hm.herdr
+        hm.herdr = lambda *a, **k: calls.append(a) or {}
+        try:
+            event = {"event": "pane.agent_detected", "data": {"pane_id": "w1:p1", "agent": "claude"}}
+            ctx = {"tab_label": "majordomo-grok"}
+            self.assertEqual(hm.sync_identity_from_plugin_event(event, ctx), "stamped")
+        finally:
+            hm.herdr = orig
+        args = calls[0]
+        self.assertEqual(args[:2], ("pane", "report-metadata"))
+        self.assertIn("w1:p1", args)
+        g = hm.LOBE_GLYPH["claude"]
+        self.assertEqual(args[args.index("--display-agent") + 1], g)
+        tokens = [args[i + 1] for i, a in enumerate(args) if a == "--token"]
+        self.assertIn(f"glyph={g}", tokens)
+        self.assertIn(f"line1={g} majordomo-grok", tokens)
+
+    def test_sync_identity_clears_on_exit_or_release(self):
+        calls = []
+        orig = hm.herdr
+        hm.herdr = lambda *a, **k: calls.append(a) or {}
+        try:
+            self.assertEqual(hm.sync_identity_from_plugin_event(
+                {"event": "pane.exited", "data": {"pane_id": "w1:p1"}}, {}), "cleared")
+            self.assertEqual(hm.sync_identity_from_plugin_event(
+                {"event": "pane.agent_detected",
+                 "data": {"pane_id": "w1:p1", "agent": "grok", "released": True}}, {}), "cleared")
+            self.assertEqual(hm.sync_identity_from_plugin_event(
+                {"event": "pane.agent_detected", "data": {"pane_id": "w1:p1"}}, {}), "cleared")
+            self.assertEqual(hm.sync_identity_from_plugin_event({}, {}), "skipped")
+            self.assertEqual(hm.sync_identity_from_plugin_event(
+                {"event": "pane.agent_detected", "data": {"pane_id": "pid:9", "agent": "grok"}}, {}),
+                "skipped")
+        finally:
+            hm.herdr = orig
+        self.assertEqual(len(calls), 3)
+        for args in calls:
+            self.assertIn("--clear-display-agent", args)
+            self.assertIn("glyph", args)
+
     def test_identity_events_publish_once_per_change(self):
         seen = {}
         row = {"pane_id": "w1:p1", "name": "butler", "kind": "grok", "status": "working", "on_roster": True}

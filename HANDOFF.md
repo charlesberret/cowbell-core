@@ -4,6 +4,14 @@ Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 
 Milestone: Reach (Later)
 Locked: none
 
+## 2026-10-09 — occupancy restamp for `$glyph`
+
+The agent-list mark is cowbell overlay `$glyph`, not customizzle. It stuck
+when a tab exited one harness and started another because stamp ran on
+raise/adopt/picker/startup only, with no TTL. `cowbell identity sync` now
+clears on `pane.exited` / detector `released`, and overwrites from detector
+kind on `pane.agent_detected`. herdr-cowbell hooks those events. No clock.
+
 ## 2026-10-08 — LAB-627 herdr-cowbell stranger face
 
 `.claude/` in `herdr-cowbell` was house Claude Code permissions
