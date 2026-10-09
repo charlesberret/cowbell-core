@@ -3240,15 +3240,28 @@ def _lane_rows(cat: dict, h: dict) -> list[str]:
             for ln in LANES]
 
 
-def _ask_tools(h: dict) -> tuple[str, str]:
+def _ask_tools(h: dict, *, even_empty: bool = False) -> tuple[str, str]:
+    """Prompt for tools. Launch path (`e` / `n`) skips empty boxes; catalog edit does not."""
     allow, deny = harness_tools(h)
     if is_wrapper(h):
+        return "", ""
+    if not even_empty and not allow and not deny:
         return "", ""
     if h.get("tools_allow_flag"):
         allow = ask("  tools allow (empty skip): ", allow)
     if h.get("tools_deny_flag"):
         deny = ask("  tools deny (empty skip): ", deny)
     return allow, deny
+
+
+def model_menu_items(h: dict) -> list[str]:
+    """Model choices for this sitting. Empty means the harness has no model_flag."""
+    if not h.get("model_flag"):
+        return []
+    models = list(h.get("models") or [])
+    if models:
+        return models + ["(type another)"]
+    return ["(agent default)", "(type another)"]
 
 
 def edit_harness(cat: dict, hid: str) -> bool:
@@ -3275,7 +3288,7 @@ def edit_harness(cat: dict, hid: str) -> bool:
         if j is None:
             return False
         lane = LANES[j]
-    allow, deny = _ask_tools(h)
+    allow, deny = _ask_tools(h, even_empty=True)
     harness_set_field(hid, "title", title)
     harness_set_field(hid, "models", models)
     if lane:
@@ -3377,11 +3390,15 @@ def raise_with_options(ctx: Ctx, cat: dict, h: dict, root: str, v: dict, name: s
     head = f"{paint(name, INK, bold=True)}  {paint(h['id'], MUTED)}"
     model = ""
     models = list(h.get("models") or [])
-    if models:
-        j = choose("model", models + ["(type another)"], intro=head)
+    items = model_menu_items(h)
+    if items:
+        j = choose("model", items, intro=head)
         if j is None:
             return False
-        model = models[j] if j < len(models) else ask("  model id: ")
+        if models:
+            model = models[j] if j < len(models) else ask("  model id: ")
+        else:
+            model = "" if j == 0 else ask("  model id: ")
     lane = ""
     if not is_wrapper(h):
         default_lane = harness_lane(h, cat) or "yellow"
@@ -3410,9 +3427,9 @@ def raise_with_options(ctx: Ctx, cat: dict, h: dict, root: str, v: dict, name: s
 
 
 def edit_sitting(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
-    """New Session `e`: set this sitting's model / permissions / tools from the harness defaults, then start.
+    """New Session `e`: set this sitting's name / model / permissions, then start.
 
-    Does not rewrite the catalog. Esc returns to the picker.
+    Does not rewrite the catalog. Esc returns to the picker. Empty tools boxes stay closed.
     """
     h = harness_by_id(cat, hid)
     if not h:
@@ -3426,9 +3443,8 @@ def edit_sitting(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
     name = unique_name(slug(h["id"]), taken)
     intro = f"{paint('new tab in' if ctx.mode != 'here' else 'in this terminal ·', FAINT)} {paint(tilde(root), TEAL)}"
     print(f"  {paint(h['id'], INK, bold=True)}  {intro}")
-    has_settings = bool(h.get("models")) or not is_wrapper(h)
-    if not has_settings:
-        name = unique_name(slug(ask(f"  name [{name}]: ", name)), taken)
+    raw = ask(f"  name [{name}]: ", name)
+    name = unique_name(slug(raw) if (raw or "").strip() else name, taken)
     return raise_with_options(ctx, cat, h, root, v, name, save_as=False)
 
 

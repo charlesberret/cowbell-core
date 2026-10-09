@@ -1571,6 +1571,9 @@ class Seed(unittest.TestCase):
         cat = tomllib.loads(seed.read_text())
         self.assertFalse([h["id"] for h in cat["harness"] if "command" in h])   # no house wrappers
         self.assertFalse(cat["defaults"]["ask_name"])
+        grok = next(h for h in cat["harness"] if h["id"] == "grok")
+        self.assertEqual(grok["models"][0], "grok-4.6")
+        self.assertIn("grok-4.7", grok["models"])
 
 
 class EmptyLive(hm.LiveSource):
@@ -2477,6 +2480,26 @@ class PickerEdit(unittest.TestCase):
             self.assertTrue(hm.raise_quick(ctx, cat, "claude", self.root))
         self.assertEqual(fake.got[:4], ("claude-sonnet-5", "green", "Read", "Bash"))
 
+    def test_model_menu_items_empty_list_still_offers_a_choice(self):
+        claude = hm.harness_by_id(hm.load_catalog(), "claude")
+        grok = dict(hm.harness_by_id(hm.load_catalog(), "grok"), models=[])
+        wrapper = {"id": "echo", "command": "/bin/echo"}
+        self.assertEqual(hm.model_menu_items(claude)[-1], "(type another)")
+        self.assertTrue(claude["models"][0] in hm.model_menu_items(claude))
+        self.assertEqual(hm.model_menu_items(grok), ["(agent default)", "(type another)"])
+        self.assertEqual(hm.model_menu_items(wrapper), [])
+
+    def test_ask_tools_skips_empty_boxes(self):
+        empty = {"tools_allow_flag": "--allowedTools", "tools_deny_flag": "--disallowed-tools"}
+        filled = dict(empty, tools_allow="Read", tools_deny="Bash")
+        with mock.patch("cowbell.ask") as ask:
+            self.assertEqual(hm._ask_tools(empty), ("", ""))
+            ask.assert_not_called()
+        with mock.patch("cowbell.ask", side_effect=["Read", "Bash"]):
+            self.assertEqual(hm._ask_tools(empty, even_empty=True), ("Read", "Bash"))
+        with mock.patch("cowbell.ask", side_effect=["Read,Grep", ""]):
+            self.assertEqual(hm._ask_tools(filled), ("Read,Grep", ""))
+
     def test_edit_sitting_launches_chosen_model_and_lane(self):
         class FakeLaunch:
             def start(self, cat, h, name, root, ctx, *args, **kw):
@@ -2497,6 +2520,29 @@ class PickerEdit(unittest.TestCase):
         self.assertEqual(fake.got[1:5], ("claude-opus-5", "green", "", ""))
         self.assertEqual(self.catalog.read_bytes(), before)
 
+    def test_edit_sitting_asks_name_and_model_when_catalog_list_empty(self):
+        class FakeLaunch:
+            def start(self, cat, h, name, root, ctx, *args, **kw):
+                self.got = (name,) + args
+                return {"pane_id": "p1"}
+
+        fake = FakeLaunch()
+        ctx = hm.Ctx(cwd=self.root, mode="tab", live=hm.LiveSource(), launch=fake)
+        grok = dict(hm.harness_by_id(hm.load_catalog(), "grok"), models=[])
+        cat = {"defaults": {"lane": "yellow"}, "lanes": hm.load_catalog().get("lanes") or {},
+               "harness": [grok]}
+        before = self.catalog.read_bytes()
+        with mock.patch("cowbell.trust_match", return_value={"verdict": "ok"}), \
+             mock.patch("cowbell.installed", return_value=True), \
+             mock.patch("cowbell.prompt_flag", return_value=None), \
+             mock.patch("cowbell.load_roster", return_value=[]), \
+             mock.patch("cowbell.choose", side_effect=[1, 1]), \
+             mock.patch("cowbell.ask", side_effect=["probe", "grok-4.7"]):
+            self.assertTrue(hm.edit_sitting(ctx, cat, "grok", self.root))
+        self.assertEqual(fake.got[0], "probe")
+        self.assertEqual(fake.got[1:5], ("grok-4.7", "yellow", "", ""))
+        self.assertEqual(self.catalog.read_bytes(), before)
+
     def test_edit_sitting_esc_does_not_launch(self):
         class FakeLaunch:
             def start(self, *a, **kw):
@@ -2509,6 +2555,7 @@ class PickerEdit(unittest.TestCase):
         before = self.catalog.read_bytes()
         with mock.patch("cowbell.trust_match", return_value={"verdict": "ok"}), \
              mock.patch("cowbell.installed", return_value=True), \
+             mock.patch("cowbell.ask", return_value=""), \
              mock.patch("cowbell.choose", return_value=None):
             self.assertFalse(hm.edit_sitting(ctx, cat, "claude", self.root))
         self.assertFalse(hasattr(fake, "called"))

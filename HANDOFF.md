@@ -4,6 +4,14 @@ Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 
 Milestone: Reach (Later)
 Locked: none
 
+## 2026-10-09 — LAB-656 picker `e` is this sitting's options
+
+`e` still does not rewrite the catalog. It now always asks for a sitting
+name (default in the buffer). A harness with `model_flag` always offers a
+model choice, even when `models` is empty (`(agent default)` / `(type another)`).
+Empty tools allow/deny boxes stay closed on `e` and `n`; catalog `edit_harness`
+still prompts them. Seed grok ships grok-4.6 first, then grok-4.7 / build-fast / 4.5.
+
 ## 2026-10-09 — occupancy restamp for `$glyph`
 
 The agent-list mark is cowbell overlay `$glyph`, not customizzle. It stuck
