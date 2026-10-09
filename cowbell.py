@@ -214,7 +214,76 @@ def catalog_path() -> Path:
         seed = seed_path()
         if seed:
             shutil.copy2(seed, p)
+        return p
+    fill_missing_seed_kinds(p)
     return p
+
+
+# Seed ids spliced once into an existing house catalog when `which` finds them.
+# Not a PATH dump of AGENT_EXES; gemini/opencode omitted from a house copy stay omitted.
+SEED_FILL_IDS = ("droid", "devin")
+
+
+def seed_fill_marker_path() -> Path:
+    return state_dir() / "seed-fill.json"
+
+
+def _seed_fill_considered() -> set[str]:
+    p = seed_fill_marker_path()
+    if not p.is_file():
+        return set()
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    ids = data.get("ids") if isinstance(data, dict) else None
+    return set(ids) if isinstance(ids, list) else set()
+
+
+def _seed_fill_record(ids: set[str]) -> None:
+    payload = json.dumps({"schema": 1, "ids": sorted(ids)}, indent=0) + "\n"
+    write_atomic(seed_fill_marker_path(), payload)
+
+
+def fill_missing_seed_kinds(path: Path) -> None:
+    """Once: splice SEED_FILL_IDS from the seed if installed(). Not on every picker tick after the marker is complete."""
+    if not path.is_file() or tomllib is None:
+        return
+    considered = _seed_fill_considered()
+    pending = [hid for hid in SEED_FILL_IDS if hid not in considered]
+    if not pending:
+        return
+    seed = seed_path()
+    if not seed or not seed.is_file():
+        return
+    try:
+        with open(seed, "rb") as fh:
+            seed_cat = tomllib.load(fh)
+        with open(path, "rb") as fh:
+            house = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError):
+        return
+    by_id = {h["id"]: h for h in (seed_cat.get("harness") or []) if h.get("id")}
+    have = {h.get("id") for h in (house.get("harness") or [])}
+    now = set(considered)
+    for hid in pending:
+        rec = by_id.get(hid)
+        if rec is None:
+            continue
+        if hid in have:
+            now.add(hid)
+            continue
+        if installed(rec):
+            harness_insert({
+                "id": rec["id"],
+                "kind": rec.get("kind") or rec["id"],
+                "title": rec.get("title") or rec["id"],
+                "models": rec.get("models") or [],
+                "resume": rec.get("resume") or [],
+            }, path=path)
+        now.add(hid)
+    if now != considered:
+        _seed_fill_record(now)
 
 
 # --- context -------------------------------------------------------------------

@@ -158,10 +158,16 @@ class PickerHere(unittest.TestCase):
             stub.write_text(f"#!/bin/sh\necho \"$@\" >> {log}\nexit 1\n")
             stub.chmod(0o755)
             (base / "cfg").mkdir()
-            (base / "cfg" / "harnesses.toml").write_text(
-                'schema = 1\n[[harness]]\nid = "fake"\nkind = "pi"\ncommand = "/bin/echo"\ntitle = "stand-in"\n')
+            catalog = (
+                'schema = 1\n[[harness]]\nid = "fake"\nkind = "pi"\ncommand = "/bin/echo"\n'
+                'title = "stand-in"\n')
+            (base / "cfg" / "harnesses.toml").write_text(catalog)
+            seed = base / "plugin"
+            seed.mkdir()
+            (seed / "harnesses.toml").write_text(catalog)
             env = {"HERDR_BIN_PATH": str(stub), "HERDR_SOCKET_PATH": str(base / "no.sock"), "COWBELL_MODE": "here",
-                   "COWBELL_CONFIG_DIR": str(base / "cfg"), "COWBELL_STATE_DIR": str(base / "state")}
+                   "COWBELL_CONFIG_DIR": str(base / "cfg"), "COWBELL_STATE_DIR": str(base / "state"),
+                   "HERDR_PLUGIN_ROOT": str(seed)}
 
             def child():
                 os.environ.update(env)
@@ -183,11 +189,16 @@ class PickerHere(unittest.TestCase):
         stub.write_text(f"#!/bin/sh\necho \"$@\" >> {log}\nexit 1\n")
         stub.chmod(0o755)
         (base / "cfg").mkdir()
-        (base / "cfg" / "harnesses.toml").write_text(
+        catalog = (
             'schema = 1\n[[harness]]\nid = "fake"\nkind = "pi"\ncommand = "/bin/echo"\n'
             'title = "stand-in"\n# keep-me\n')
+        (base / "cfg" / "harnesses.toml").write_text(catalog)
+        seed = base / "plugin"
+        seed.mkdir()
+        (seed / "harnesses.toml").write_text(catalog)
         env = {"HERDR_BIN_PATH": str(stub), "HERDR_SOCKET_PATH": str(base / "no.sock"), "COWBELL_MODE": "here",
-               "COWBELL_CONFIG_DIR": str(base / "cfg"), "COWBELL_STATE_DIR": str(base / "state")}
+               "COWBELL_CONFIG_DIR": str(base / "cfg"), "COWBELL_STATE_DIR": str(base / "state"),
+               "HERDR_PLUGIN_ROOT": str(seed)}
 
         def child():
             os.environ.update(env)

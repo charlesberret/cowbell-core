@@ -82,7 +82,9 @@ Two hooks let cowbell use tools it does not own, both set in `[defaults]`:
 
 The catalog is `~/.config/cowbell/harnesses.toml` (`COWBELL_CONFIG_DIR`, or
 `$XDG_CONFIG_HOME/cowbell`), seeded from [`harnesses.toml`](harnesses.toml) on first
-run: the standard agents, shown only when installed. Add your own launchers, models and
+run: the standard agents, shown only when installed. An existing copy that is
+missing `droid` or `devin` is filled once from the seed when that binary is on
+PATH; a later delete stays deleted. Add your own launchers, models and
 permission presets there. The roster is `~/.local/state/cowbell/roster.json`
 (`COWBELL_STATE_DIR`, or `$XDG_STATE_HOME/cowbell`). Both carry `schema = 1`; a cowbell
 that finds a newer schema reads the file but will not overwrite it. Versions up to 0.3

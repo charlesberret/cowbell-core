@@ -572,6 +572,14 @@ class Paths(unittest.TestCase):
         finally:
             os.environ.pop("XDG_CONFIG_HOME"); os.environ.pop("XDG_STATE_HOME")
 
+    def test_seed_names_droid_and_devin(self):
+        import tomllib
+        seed = Path(__file__).resolve().parent.parent / "harnesses.toml"
+        cat = tomllib.loads(seed.read_text())
+        ids = [h["id"] for h in cat["harness"]]
+        self.assertIn("droid", ids)
+        self.assertIn("devin", ids)
+
     def test_roster_without_schema_is_accepted_and_rewritten(self):
         _, rows = self.legacy()
         hm.save_roster(hm.load_roster())
@@ -595,6 +603,108 @@ class Paths(unittest.TestCase):
         self.assertEqual(cat["harness"][0]["id"], "claude")
         with self.assertRaises(hm.SchemaError):
             hm.check_writable(cat["schema"], "harnesses.toml")
+
+
+class SeedFill(unittest.TestCase):
+    """Existing house catalogs get droid/devin once from the seed when which finds them."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.cfg, self.state = base / "cfg" / "cowbell", base / "state" / "cowbell"
+        self.cfg.mkdir(parents=True)
+        self.state.mkdir(parents=True)
+        self.seed_root = base / "seed"
+        self.seed_root.mkdir()
+        (self.seed_root / "harnesses.toml").write_text(
+            'schema = 1\n'
+            '[[harness]]\nid = "claude"\nkind = "claude"\ntitle = "Claude Code"\n'
+            '[[harness]]\nid = "droid"\nkind = "droid"\ntitle = "Droid"\nmodels = []\nresume = []\n'
+            '[[harness]]\nid = "devin"\nkind = "devin"\ntitle = "Devin"\nmodels = []\nresume = []\n'
+            '[[harness]]\nid = "gemini"\nkind = "gemini"\ntitle = "Gemini CLI"\n'
+        )
+        self.catalog = self.cfg / "harnesses.toml"
+        self.catalog.write_text(
+            '# house catalog\nschema = 1\n[[harness]]\nid = "claude"\nkind = "claude"\ntitle = "Claude"\n'
+        )
+        self.env = {
+            "COWBELL_CONFIG_DIR": str(self.cfg),
+            "COWBELL_STATE_DIR": str(self.state),
+            "HERDR_PLUGIN_ROOT": str(self.seed_root),
+            "HERDR_PLUGIN_CONFIG_DIR": str(base / "old-cfg"),
+            "HERDR_PLUGIN_STATE_DIR": str(base / "old-state"),
+        }
+        self.saved = {k: os.environ.get(k) for k in self.env}
+        os.environ.update(self.env)
+        self._which = hm.shutil.which
+
+    def tearDown(self):
+        hm.shutil.which = self._which
+        for k, v in self.saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        self.tmp.cleanup()
+
+    def _on_path(self, *names):
+        found = set(names)
+        hm.shutil.which = lambda name: f"/bin/{name}" if name in found else None
+
+    def test_fresh_copy_contains_droid_and_devin(self):
+        self.catalog.unlink()
+        text = hm.catalog_path().read_text()
+        self.assertIn('id = "droid"', text)
+        self.assertIn('id = "devin"', text)
+        self.assertEqual(text, (self.seed_root / "harnesses.toml").read_text())
+
+    def test_existing_catalog_splices_installed_fill_ids(self):
+        self._on_path("droid", "devin", "gemini")
+        before = self.catalog.read_text()
+        self.assertIn("# house catalog", before)
+        hm.catalog_path()
+        after = self.catalog.read_text()
+        self.assertIn("# house catalog", after)
+        self.assertIn('id = "droid"', after)
+        self.assertIn('id = "devin"', after)
+        self.assertNotIn('id = "gemini"', after)
+        self.assertIn('id = "claude"', after)
+
+    def test_which_false_does_not_splice_but_marks_considered(self):
+        self._on_path()
+        hm.catalog_path()
+        text = self.catalog.read_text()
+        self.assertNotIn('id = "droid"', text)
+        marker = json.loads((self.state / "seed-fill.json").read_text())
+        self.assertIn("droid", marker["ids"])
+        self.assertIn("devin", marker["ids"])
+
+    def test_second_catalog_path_does_not_rewrite(self):
+        self._on_path("droid", "devin")
+        hm.catalog_path()
+        first = self.catalog.read_bytes()
+        backups = list(self.cfg.glob("harnesses.toml.bak-*"))
+        hm.catalog_path()
+        self.assertEqual(self.catalog.read_bytes(), first)
+        self.assertEqual(list(self.cfg.glob("harnesses.toml.bak-*")), backups)
+
+    def test_id_already_present_is_not_duplicated(self):
+        self.catalog.write_text(
+            'schema = 1\n[[harness]]\nid = "claude"\n[[harness]]\nid = "droid"\nkind = "droid"\n'
+        )
+        self._on_path("droid", "devin")
+        hm.catalog_path()
+        text = self.catalog.read_text()
+        self.assertEqual(text.count('id = "droid"'), 1)
+        self.assertIn('id = "devin"', text)
+
+    def test_delete_after_fill_does_not_come_back(self):
+        self._on_path("droid", "devin")
+        hm.catalog_path()
+        hm.harness_delete("droid")
+        hm.catalog_path()
+        self.assertNotIn('id = "droid"', self.catalog.read_text())
+        self.assertIn('id = "devin"', self.catalog.read_text())
 
 
 class CtxCwd(unittest.TestCase):
