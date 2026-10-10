@@ -53,11 +53,19 @@ def in_pty(child, steps, rows=24, cols=80, settle=0.35, gap=0.08):
         nonlocal screen
         end = time.time() + t
         while time.time() < end:
-            if select.select([fd], [], [], 0.02)[0]:
-                try:
-                    screen += os.read(fd, 65536)
-                except OSError:
-                    return
+            timeout = min(0.02, max(0.0, end - time.time()))
+            if not select.select([fd], [], [], timeout)[0]:
+                continue
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                # EIO while the slave is not open yet. Keep waiting out t;
+                # returning here made the reap loop a tight spin and a slow
+                # child was reported HUNG after a few milliseconds.
+                time.sleep(0.02)
+                continue
+            if chunk:
+                screen += chunk
     pump(settle)
     for st in steps:
         try:
@@ -65,7 +73,9 @@ def in_pty(child, steps, rows=24, cols=80, settle=0.35, gap=0.08):
         except OSError:
             break
         pump(gap)
-    for _ in range(40):
+    # A loaded runner can take a few seconds to reap the child. A deadlock
+    # still returns HUNG; passing cases return as soon as the child exits.
+    for _ in range(200):
         if os.waitpid(pid, os.WNOHANG)[0]:
             break
         pump(0.05)
