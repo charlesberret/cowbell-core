@@ -4,6 +4,14 @@ Board: Lab / Cowbell — https://linear.app/isruna/project/cowbell-77c7779d8e93 
 Milestone: Reach (Later)
 Locked: none
 
+## 2026-10-10 — LAB-257: cowbell 0.3.1 is on PyPI
+
+Uploaded from this tree (`d3728e1`). https://pypi.org/project/cowbell/0.3.1/
+Owner `charlesberret`. 0.3.0 left in place. sdist has no `tests/`. README still
+does not print `pip install cowbell` / `uv tool install cowbell` (2026-09-13 tax).
+Card stays open until the tax is re-ruled and a clean `uv tool install cowbell`
+is the documented first run.
+
 ## 2026-10-09 — LAB-656 picker `e` is this sitting's options
 
 `e` still does not rewrite the catalog. It now always asks for a sitting
