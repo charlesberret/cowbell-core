@@ -108,7 +108,9 @@ Anything started at or below `cwd` opens in that workspace. New lists only the
 allowed agents. Resume omits roster rows whose harness is not allowed (so a
 cold `oll-memo` in that cwd is not a guest). `cowbell new --place lobby`
 with no `--harness` uses `default_harness`. Claude/Grok in that directory are
-house labor — they are not the guest wall.
+house labor — they are not the guest wall. `[places.*]` are walls, not a
+roster of project workspaces — when a pane already has this directory on a
+grouped `proj:` line, the sitting opens there.
 
 ### A place that drops to another unix account
 

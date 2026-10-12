@@ -1928,9 +1928,17 @@ def project_workspace(root: str, ctx: Ctx) -> str | None:
     labelled = workspace_by_label(f"proj:{base}") if base else None
     if labelled:
         return labelled
+    panes = live_panes()
+    labels = {w.get("workspace_id"): w.get("label") or "" for w in workspaces()}
+    grouped = [p for p in panes
+               if p.get("cwd") and at_or_beneath(p["cwd"], root)
+               and labels.get(p.get("workspace_id") or "", "").startswith("proj:")]
+    if grouped:
+        grouped.sort(key=lambda p: 0 if os.path.realpath(p["cwd"]) == os.path.realpath(root) else 1)
+        return grouped[0]["workspace_id"]
     if ctx.workspace_id:
         return ctx.workspace_id
-    for p in live_panes():
+    for p in panes:
         if p.get("cwd") and at_or_beneath(p["cwd"], root) and p.get("workspace_id"):
             return p["workspace_id"]
     return None

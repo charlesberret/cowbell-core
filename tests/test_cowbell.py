@@ -838,7 +838,8 @@ class Places(unittest.TestCase):
         cat, inner = self._nested_cat()
         # codex is allowed at the parent (add it), refused at the inner cwd:
         cat["places"]["lobby"]["allow_harness"] = ["lobby", "claude", "grok", "codex"]
-        with self.assertRaises(SystemExit) as e:
+        with mock.patch.object(hm, "installed", return_value=False), \
+                self.assertRaises(SystemExit) as e:
             hm.cmd_new(hm.Ctx(cwd=inner), cat, "codex", place="lobby")
         self.assertNotIn("may not start", str(e.exception))   # the parent's rules apply instead
         self.assertIn("not installed", str(e.exception))      # codex is allowed there, just not installed
@@ -946,6 +947,41 @@ class Places(unittest.TestCase):
         self.assertEqual(pane["workspace_id"], "w1B")
         self.assertFalse(any(c[:2] == ("workspace", "create") for c in calls))
         self.assertFalse(any(c[:2] == ("pane", "split") for c in calls))
+
+    def test_grouped_proj_line_is_used_when_its_pane_has_this_root(self):
+        root = os.path.join(self.home, "cowbell")   # basename is not the workspace label
+        os.makedirs(root)
+
+        def fake_herdr_with(panes):
+            def fake_herdr(*args, expect_json=True):
+                if args[:2] == ("workspace", "list"):
+                    return {"workspaces": [{"workspace_id": "wJunk", "label": "junk"},
+                                           {"workspace_id": "wS", "label": "proj:small-proj"},
+                                           {"workspace_id": "wT", "label": "proj:other-proj"}]}
+                if args[:2] == ("pane", "list"):
+                    return {"panes": panes}
+                return {}
+            return fake_herdr
+
+        ctx = hm.Ctx(workspace_id="wJunk", cwd=root)
+        saved = hm.herdr
+        try:
+            hm.herdr = fake_herdr_with([{"pane_id": "wS:p1", "workspace_id": "wS",
+                                         "tab_id": "wS:t1", "cwd": root}])
+            self.assertEqual(hm.project_workspace(root, ctx), "wS")
+            hm.herdr = fake_herdr_with([])
+            self.assertEqual(hm.project_workspace(root, ctx), "wJunk")
+            hm.herdr = fake_herdr_with([
+                {"pane_id": "wS:p1", "workspace_id": "wS", "tab_id": "wS:t1",
+                 "cwd": os.path.join(root, "sub")},
+                {"pane_id": "wT:p1", "workspace_id": "wT", "tab_id": "wT:t1",
+                 "cwd": root},
+                {"pane_id": "wJunk:p1", "workspace_id": "wJunk", "tab_id": "wJunk:t1",
+                 "cwd": root},
+            ])
+            self.assertEqual(hm.project_workspace(root, ctx), "wT")
+        finally:
+            hm.herdr = saved
 
 
 class Hosts(unittest.TestCase):
