@@ -3342,7 +3342,7 @@ def model_menu_items(h: dict) -> list[str]:
 
 
 def edit_harness(cat: dict, hid: str) -> bool:
-    """Rewrite catalog fields for a harness. Esc writes nothing. Picker `e` is edit_sitting, not this."""
+    """Rewrite catalog fields for a harness. Picker `e`. Esc writes nothing."""
     h = harness_by_id(cat, hid)
     if not h:
         print(f"  unknown harness {hid}"); return False
@@ -3790,7 +3790,8 @@ def picker(ctx: Ctx, cat: dict) -> int:
                     add_harness(root, full_cat)
                     done = False
                 elif raw == "e":
-                    done = edit_sitting(ctx, cat, hit["target"]["harness"], root)
+                    edit_harness(full_cat, hit["target"]["harness"])
+                    done = False
                 elif raw == "-":
                     remove_harness(hit["target"]["harness"])
                     done = False

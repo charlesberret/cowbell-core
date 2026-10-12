@@ -52,12 +52,10 @@ command read the same catalog and roster, so a session started in one resumes in
   listed.
 - **Enter on New Session** opens the agent at once with an automatic name (`claude`,
   `claude-2`) and the default permissions; `[defaults] ask_name = true` asks for the
-  name first. **`e` on a New Session row** asks for a sitting name (default in the
-  buffer), then model and permissions, and starts. A harness with a model flag
-  always offers a model choice, even when the catalog list is empty. Tools
-  prompts appear only when the harness already has allow/deny values. Esc
-  returns to the list and does not rewrite the catalog. `n` asks for agent,
-  name, model, and permissions, then optional save-as.
+  name first. **`e` on a New Session row** edits that harness in the catalog:
+  description, models, default model, permissions, and tools. Esc writes nothing
+  and returns to the list. `+` adds a harness (a herdr kind or a launcher script).
+  `n` asks for agent, name, model, and permissions, then optional save-as, and starts.
 - **Trust** appears only if a checker is configured and on PATH, and only as an
   exception: a dim `! more reach than needed` on a row the checker calls over-privileged.
   That is advisory and never stops a launch; blocked agents are left off.
