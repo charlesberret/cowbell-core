@@ -2554,15 +2554,24 @@ class PickerEdit(unittest.TestCase):
             self.assertEqual(hm.offer_save_as(src, "x", "yellow", "", ""), "")
         self.assertEqual(self.catalog.read_bytes(), before)
 
-    def test_edit_writes_after_all_prompts(self):
-        with mock.patch("cowbell.ask", side_effect=["Claude Code (256)", "alpha, beta", "Read", "Bash"]), \
-             mock.patch("cowbell.choose", side_effect=[0, 0]):
+    def test_edit_rows_list_every_catalog_field(self):
+        cat = hm.load_catalog()
+        keys = [k for k, _ in hm.harness_edit_rows(cat, hm.harness_by_id(cat, "claude"))]
+        self.assertEqual(keys, ["description", "models", "default", "permissions", "allow", "deny"])
+        wrapped = {"id": "w", "command": "/bin/echo", "title": "t", "models": []}
+        self.assertEqual([k for k, _ in hm.harness_edit_rows({"defaults": {}}, wrapped)],
+                         ["description", "models"])
+
+    def test_edit_menu_writes_the_field_you_pick(self):
+        # claude rows: description, models, default, permissions, allow, deny
+        with mock.patch("cowbell.ask", side_effect=["beta, alpha", "Read", "Bash"]), \
+             mock.patch("cowbell.choose", side_effect=[1, 2, 1, 3, 0, 4, 5, None]):
             self.assertTrue(hm.edit_harness(hm.load_catalog(), "claude"))
         after = self._text()
         self.assertIn("# cowbell — which agents can be started", after)
         self.assertIn("system_prompt_flag = \"--append-system-prompt-file\"   # used only when", after)
         h = hm.harness_by_id(hm.load_catalog(), "claude")
-        self.assertEqual(h["title"], "Claude Code (256)")
+        self.assertEqual(h["title"], "Claude Code")
         self.assertEqual(h["models"], ["alpha", "beta"])
         self.assertEqual(h["lane"], "green")
         self.assertEqual(h["tools_allow"], "Read")
@@ -2570,8 +2579,10 @@ class PickerEdit(unittest.TestCase):
 
     def test_edit_esc_writes_nothing(self):
         before = self.catalog.read_bytes()
-        with mock.patch("cowbell.ask", side_effect=["Edited", "m1, m2"]), \
-             mock.patch("cowbell.choose", return_value=None):
+        with mock.patch("cowbell.choose", return_value=None):
+            self.assertFalse(hm.edit_harness(hm.load_catalog(), "claude"))
+        with mock.patch("cowbell.choose", side_effect=[0, None]), \
+             mock.patch("cowbell.ask", side_effect=KeyboardInterrupt):
             self.assertFalse(hm.edit_harness(hm.load_catalog(), "claude"))
         self.assertEqual(self.catalog.read_bytes(), before)
 
@@ -2723,8 +2734,8 @@ class PickerEdit(unittest.TestCase):
         self.assertIn("# House wrappers", saved)
         self.assertIn("[places.lobby]", saved)
         self.assertIn("unix_user = \"guest\"", saved)
-        with mock.patch("cowbell.ask", side_effect=["probe edited", "m1", "", ""]), \
-             mock.patch("cowbell.choose", side_effect=[0, 1]):
+        with mock.patch("cowbell.ask", return_value="probe edited"), \
+             mock.patch("cowbell.choose", side_effect=[0, None]):
             hm.edit_harness(hm.load_catalog(), "lab-256-probe")
         edited = self._text()
         self.assertIn("# cowbell — the constitution of the herd.", edited)

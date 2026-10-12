@@ -259,6 +259,21 @@ class PickerHere(unittest.TestCase):
             self.assertEqual(pins["dirs"][root]["fake"], "hide")
             self.assertEqual((Path(env["COWBELL_CONFIG_DIR"]) / "harnesses.toml").read_text().count("keep-me"), 1)
 
+    def test_edit_opens_a_field_menu(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            child, env, _ = self._here(tmp)
+            catalog = Path(env["COWBELL_CONFIG_DIR"]) / "harnesses.toml"
+            catalog.write_text(
+                'schema = 1\n[[harness]]\nid = "fake"\nkind = "pi"\ncommand = "/bin/echo"\n'
+                'title = "stand-in"\nmodels = ["alpha-model", "beta-model"]\n# keep-me\n')
+            before = catalog.read_bytes()
+            res, screen = in_pty(child, ["e", ESC, ESC], settle=1.0, gap=0.35)
+            self.assertEqual(res, 0)
+            self.assertIn(b"description", screen)
+            self.assertIn(b"default model", screen)
+            self.assertIn(b"alpha-model", screen)
+            self.assertEqual(catalog.read_bytes(), before)
+
     def test_edit_add_remove_esc_write_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             child, env, _ = self._here(tmp)

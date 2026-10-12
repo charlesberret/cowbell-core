@@ -3318,7 +3318,7 @@ def _lane_rows(cat: dict, h: dict) -> list[str]:
 
 
 def _ask_tools(h: dict, *, even_empty: bool = False) -> tuple[str, str]:
-    """Prompt for tools. Launch path (`e` / `n`) skips empty boxes; catalog edit does not."""
+    """Prompt for tools. The launch path skips empty boxes."""
     allow, deny = harness_tools(h)
     if is_wrapper(h):
         return "", ""
@@ -3341,41 +3341,92 @@ def model_menu_items(h: dict) -> list[str]:
     return ["(agent default)", "(type another)"]
 
 
-def edit_harness(cat: dict, hid: str) -> bool:
-    """Rewrite catalog fields for a harness. Picker `e`. Esc writes nothing."""
-    h = harness_by_id(cat, hid)
-    if not h:
-        print(f"  unknown harness {hid}"); return False
-    print(f"  {paint(hid, INK, bold=True)}  edit")
-    title = ask("  description: ", h.get("title") or "")
-    models = parse_model_list(ask("  models (comma-separated): ", ", ".join(h.get("models") or [])))
+def _edit_row(label: str, value: str) -> str:
+    shown = value if value else "—"
+    return f"{paint(f'{label:<16}', SECONDARY)} {paint(shown, MUTED)}"
+
+
+def harness_edit_rows(cat: dict, h: dict) -> list[tuple[str, str]]:
+    """Catalog fields `e` can change, in menu order. (key, rendered row)."""
+    models = list(h.get("models") or [])
+    rows = [
+        ("description", _edit_row("description", h.get("title") or "")),
+        ("models", _edit_row("models", ", ".join(models))),
+    ]
     if models:
-        cur = (h.get("models") or [models[0]])[0]
-        di = models.index(cur) if cur in models else 0
-        j = choose("default model", models, default=di, intro=paint(hid, INK, bold=True))
+        rows.append(("default", _edit_row("default model", models[0])))
+    if not is_wrapper(h):
+        rows.append(("permissions", _edit_row("permissions", harness_lane(h, cat) or "yellow")))
+    if h.get("tools_allow_flag"):
+        rows.append(("allow", _edit_row("tools allow", h.get("tools_allow") or "")))
+    if h.get("tools_deny_flag"):
+        rows.append(("deny", _edit_row("tools deny", h.get("tools_deny") or "")))
+    return rows
+
+
+def _edit_harness_field(cat: dict, h: dict, key: str) -> bool:
+    """Write one catalog field. A cancelled choice writes nothing."""
+    hid = h["id"]
+    if key == "description":
+        harness_set_field(hid, "title", ask("  description: ", h.get("title") or ""))
+        return True
+    if key == "models":
+        models = parse_model_list(ask("  models (comma-separated): ", ", ".join(h.get("models") or [])))
+        cur = (h.get("models") or [None])[0]
+        if cur and cur in models:
+            models = models_with_default(models, cur)
+        harness_set_field(hid, "models", models)
+        return True
+    if key == "default":
+        models = list(h.get("models") or [])
+        if not models:
+            return False
+        j = choose("default model", models, default=0, intro=paint(hid, INK, bold=True))
         if j is None:
             return False
-        models = models_with_default(models, models[j])
-    lane = h.get("lane") or ""
-    if not is_wrapper(h):
+        harness_set_field(hid, "models", models_with_default(models, models[j]))
+        return True
+    if key == "permissions":
         default_lane = harness_lane(h, cat) or "yellow"
         j = choose("default permissions", _lane_rows(cat, h),
                    default=LANES.index(default_lane) if default_lane in LANES else 1,
                    intro=paint(hid, INK, bold=True))
         if j is None:
             return False
-        lane = LANES[j]
-    allow, deny = _ask_tools(h, even_empty=True)
-    harness_set_field(hid, "title", title)
-    harness_set_field(hid, "models", models)
-    if lane:
-        harness_set_field(hid, "lane", lane)
-    if h.get("tools_allow_flag"):
-        harness_set_field(hid, "tools_allow", allow)
-    if h.get("tools_deny_flag"):
-        harness_set_field(hid, "tools_deny", deny)
-    print(f"  saved {hid}")
-    return True
+        harness_set_field(hid, "lane", LANES[j])
+        return True
+    if key == "allow":
+        harness_set_field(hid, "tools_allow", ask("  tools allow (empty skip): ", h.get("tools_allow") or ""))
+        return True
+    if key == "deny":
+        harness_set_field(hid, "tools_deny", ask("  tools deny (empty skip): ", h.get("tools_deny") or ""))
+        return True
+    return False
+
+
+def edit_harness(cat: dict, hid: str) -> bool:
+    """Menu of catalog fields for one harness. Picker `e`.
+
+    Esc on the menu returns to the list. Esc inside a field cancels that field.
+    `cat` is unused; each pass reloads the catalog so the rows show what was just written.
+    """
+    del cat
+    wrote = False
+    while True:
+        fresh = load_catalog()
+        h = harness_by_id(fresh, hid)
+        if not h:
+            print(f"  unknown harness {hid}")
+            return wrote
+        spec = harness_edit_rows(fresh, h)
+        j = choose("edit", [row for _, row in spec], intro=f"{paint(hid, INK, bold=True)}  edit")
+        if j is None:
+            return wrote
+        try:
+            if _edit_harness_field(fresh, h, spec[j][0]):
+                wrote = True
+        except KeyboardInterrupt:
+            continue
 
 
 def add_harness(root: str, cat: dict) -> bool:
