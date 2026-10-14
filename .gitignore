@@ -2,3 +2,8 @@ __pycache__/
 *.pyc
 dist/
 .local/
+
+# Agent working files (kept on disk, never published)
+HANDOFF.md
+.inbox/
+.coordination/
