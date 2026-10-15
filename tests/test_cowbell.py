@@ -2588,12 +2588,14 @@ class PickerEdit(unittest.TestCase):
     def test_edit_rows_list_every_catalog_field(self):
         cat = hm.load_catalog()
         keys = [k for k, _ in hm.harness_edit_rows(cat, hm.harness_by_id(cat, "claude"))]
-        self.assertEqual(keys, ["description", "models", "default", "permissions", "allow", "deny"])
+        self.assertEqual(keys, ["description", "models", "default", "permissions", "allow", "deny",
+                                "provider", "cycle", "prompt"])
         wrapped = {"id": "local-ornith", "kind": "pi", "command": os.path.expanduser("~/.local/bin/local-ornith"),
                    "title": "ornith", "models": []}
         spec = hm.harness_edit_rows({"defaults": {"lane": "yellow"}, "lanes": {}}, wrapped)
         self.assertEqual([k for k, _ in spec],
-                         ["description", "command", "models", "default", "permissions", "allow", "deny"])
+                         ["description", "command", "models", "default", "permissions", "allow", "deny",
+                          "provider", "cycle", "prompt"])
         self.assertIn("~/.local/bin/local-ornith", spec[1][1])
 
     def test_edit_menu_writes_the_field_you_pick(self):
@@ -2621,6 +2623,47 @@ class PickerEdit(unittest.TestCase):
         self.assertEqual(h["models"], ["ollama-hesiod/ornith:9b"])
         self.assertEqual(h["model_flag"], ["--model"])
         self.assertIn('command = "~/.local/bin/local-ornith"', self._text())
+
+    def _edit_row_index(self, hid: str, key: str) -> int:
+        cat = hm.load_catalog()
+        spec = hm.harness_edit_rows(cat, hm.harness_by_id(cat, hid))
+        return [k for k, _ in spec].index(key)
+
+    def test_edit_provider_on_pi_records_the_pi_flag(self):
+        idx = self._edit_row_index("pi", "provider")
+        with mock.patch("cowbell.choose", side_effect=[idx, None]), \
+             mock.patch("cowbell.ask", return_value="ollama"):
+            self.assertTrue(hm.edit_harness(hm.load_catalog(), "pi"))
+        h = hm.harness_by_id(hm.load_catalog(), "pi")
+        self.assertEqual(h["provider"], "ollama")
+        self.assertEqual(h["provider_flag"], ["--provider"])
+
+    def test_edit_cycle_toggles_on_pi(self):
+        idx = self._edit_row_index("pi", "cycle")
+        with mock.patch("cowbell.choose", side_effect=[idx, None]):
+            self.assertTrue(hm.edit_harness(hm.load_catalog(), "pi"))
+        self.assertEqual(hm.harness_by_id(hm.load_catalog(), "pi")["cycle_flag"], ["--models"])
+        with mock.patch("cowbell.choose", side_effect=[idx, None]):
+            self.assertTrue(hm.edit_harness(hm.load_catalog(), "pi"))
+        self.assertEqual(hm.harness_by_id(hm.load_catalog(), "pi")["cycle_flag"], [])
+
+    def test_edit_prompt_on_pi_records_the_pi_flag(self):
+        idx = self._edit_row_index("pi", "prompt")
+        with mock.patch("cowbell.choose", side_effect=[idx, None]), \
+             mock.patch("cowbell.ask", return_value="Grade: MID"):
+            self.assertTrue(hm.edit_harness(hm.load_catalog(), "pi"))
+        h = hm.harness_by_id(hm.load_catalog(), "pi")
+        self.assertEqual(h["system_prompt"], "Grade: MID")
+        self.assertEqual(h["system_prompt_flag"], "--append-system-prompt")
+
+    def test_edit_provider_on_codex_writes_no_flag(self):
+        idx = self._edit_row_index("codex", "provider")
+        with mock.patch("cowbell.choose", side_effect=[idx, None]), \
+             mock.patch("cowbell.ask", return_value="ollama"):
+            self.assertTrue(hm.edit_harness(hm.load_catalog(), "codex"))
+        h = hm.harness_by_id(hm.load_catalog(), "codex")
+        self.assertEqual(h["provider"], "ollama")
+        self.assertNotIn("provider_flag", h)
 
     def test_edit_esc_writes_nothing(self):
         before = self.catalog.read_bytes()

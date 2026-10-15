@@ -3413,6 +3413,9 @@ def harness_edit_rows(cat: dict, h: dict) -> list[tuple[str, str]]:
         ("permissions", _edit_row("permissions", harness_lane(h, cat))),
         ("allow", _edit_row("tools allow", h.get("tools_allow") or "")),
         ("deny", _edit_row("tools deny", h.get("tools_deny") or "")),
+        ("provider", _edit_row("provider", h.get("provider") or "")),
+        ("cycle", _edit_row("model cycle", " ".join(h.get("cycle_flag") or []))),
+        ("prompt", _edit_row("system prompt", h.get("system_prompt") or "")),
     ]
     return rows
 
@@ -3496,6 +3499,25 @@ def _edit_harness_field(cat: dict, h: dict, key: str) -> bool:
         if val:
             _ensure_tool_flag(h, "deny")
         harness_set_field(hid, "tools_deny", val)
+        return True
+    if key == "provider":
+        val = (ask("  provider: ", h.get("provider") or "") or "").strip()
+        harness_set_field(hid, "provider", val)
+        if val and not h.get("provider_flag") and (h.get("kind") or "") == "pi":
+            harness_set_field(hid, "provider_flag", ["--provider"])
+        return True
+    if key == "cycle":
+        if (h.get("kind") or "") == "pi":
+            harness_set_field(hid, "cycle_flag", [] if h.get("cycle_flag") else ["--models"])
+            return True
+        raw = (ask("  cycle flag: ", " ".join(h.get("cycle_flag") or [])) or "").strip()
+        harness_set_field(hid, "cycle_flag", [raw] if raw else [])
+        return True
+    if key == "prompt":
+        val = (ask("  system prompt: ", h.get("system_prompt") or "") or "").strip()
+        harness_set_field(hid, "system_prompt", val)
+        if val and not h.get("system_prompt_flag") and (h.get("kind") or "") == "pi":
+            harness_set_field(hid, "system_prompt_flag", "--append-system-prompt")
         return True
     return False
 
