@@ -1320,6 +1320,7 @@ class SidebarTokens(unittest.TestCase):
         tokens = [args[i + 1] for i, a in enumerate(args) if a == "--token"]
         self.assertIn(f"glyph={g}", tokens)
         self.assertIn(f"line1={g} majordomo-grok", tokens)
+        self.assertIn(("pane", "rename", "w1:p1", "majordomo-grok · claude"), calls)
 
     def test_sync_identity_clears_on_exit_or_release(self):
         calls = []
@@ -2847,8 +2848,9 @@ class Coherence(unittest.TestCase):
     def test_no_claim_is_left_alone(self):
         self.assertIsNone(hm.harness_claim("butler"))
         self.assertIsNone(hm.harness_claim("butler · Hello"))
-        self.assertIsNone(hm.reconcile_label("butler", "butler", "grok"))
         self.assertIsNone(hm.reconcile_label("", "butler", "grok"))
+        self.assertIsNone(hm.reconcile_label("butler", "butler", ""))
+        self.assertEqual(hm.reconcile_label("butler", "butler", "grok"), "butler · grok")
 
     def test_matching_claim_stays(self):
         self.assertEqual(hm.harness_claim("butler · grok"), ("butler", "grok"))
@@ -2863,11 +2865,23 @@ class Coherence(unittest.TestCase):
     def test_tab_sitting_wins_over_the_name_in_the_claim(self):
         self.assertEqual(hm.reconcile_label("butler · grok", "clerk", "grok"), "clerk · grok")
 
+    def test_stale_bare_sitting_follows_the_tab(self):
+        self.assertEqual(
+            hm.reconcile_label("comfy-dev", "comfy-training", "grok"),
+            "comfy-training · grok",
+        )
+        self.assertEqual(
+            hm.reconcile_label("comfy-dev", "comfy-training", "", idle_shell=True),
+            "comfy-training",
+        )
+
     def test_idle_shell_drops_the_claim(self):
         self.assertEqual(
             hm.reconcile_label("butler · local-ornith", "butler", "", idle_shell=True),
             "butler",
         )
+        self.assertEqual(hm.reconcile_label("butler", "clerk", "", idle_shell=True), "clerk")
+        self.assertEqual(hm.reconcile_label("butler", "clerk", "grok"), "clerk · grok")
 
     def test_unseen_wrapper_keeps_its_claim(self):
         self.assertIsNone(hm.reconcile_label("butler · oll-mid", "butler", "", idle_shell=False))
@@ -2947,7 +2961,7 @@ class Coherence(unittest.TestCase):
             hm.apply_coherence, hm.server_up, hm.load_catalog = saved
         self.assertEqual(called, {"dry_run": True})
         self.assertIn("cowbell reconcile", out.getvalue())
-        self.assertIn("no harness claim", out.getvalue())
+        self.assertIn("bare border that is not the sitting is stale", out.getvalue())
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@
   cowbell adopt [name] [--pane ID]  put a live sitting cowbell did not start on the roster
   cowbell list [--all]          roster rows (default: this directory)
   cowbell catalog               every harness: kind, egress, installed, trust badge
-  cowbell reconcile [--dry-run] rewrite a claimed pane border from the agent Herdr detects
+  cowbell reconcile [--dry-run] rewrite a pane border from the sitting and the agent Herdr detects
   cowbell identity stamp        publish $glyph for every live herdr agent pane (detector kind)
   cowbell identity sync         restamp or clear one pane from a herdr occupancy event
 
@@ -50,7 +50,7 @@ try:
 except ImportError:  # pragma: no cover
     tomllib = None
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 PLUGIN_ID = "herdr-cowbell"  # only to find config and state that 0.1–0.3 kept in herdr's plugin dirs
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 LANES = ("green", "yellow", "red")
@@ -692,7 +692,8 @@ def tab_labels(snap: dict) -> dict[str, str]:
 
 
 # A pane border may cache `sitting · harness`. The tab label is the sitting.
-# Herdr's detected agent is the harness. A border with no claim is not a cache.
+# Herdr's detected agent is the harness. A bare label that is not the sitting
+# is a stale sitting, not a claim to preserve.
 HARNESS_TOKEN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
 
@@ -716,23 +717,41 @@ def coherent_pane_label(sitting: str, harness: str) -> str:
 
 
 def reconcile_label(label, sitting, detected, idle_shell=False):
-    """The border a claimed pane should wear, or None when the claim should stay.
+    """The border the pane should wear, or None when it should stay.
 
-    A detected agent replaces the claimed harness. An idle shell with no agent
-    drops the claim back to the sitting. Anything else — including a wrapper
-    Herdr cannot see — keeps the claim it has.
+    A detected agent stamps `sitting · detected`. An idle shell with no agent
+    wears the sitting alone. A bare label that is not the current sitting is
+    stale and is rewritten. A person's one-off label that already equals the
+    sitting stays until detection upgrades it to `sitting · kind`. An empty
+    border is left alone (detection restamps it via mark_harness). A wrapper
+    Herdr cannot see keeps the claim it has.
     """
+    label = label or ""
+    bare = label.strip()
     claim = harness_claim(label)
-    if not claim:
-        return None
-    name, _tool = claim
-    sitting = (sitting or name).strip() or name
+    if claim:
+        name, _tool = claim
+        sitting = (sitting or name).strip() or name
+    else:
+        sitting = (sitting or "").strip()
     detected = (detected or "").strip()
     if detected:
         want = coherent_pane_label(sitting, detected)
-        return None if want == (label or "") else want
+        if not want:
+            return None
+        if claim or bare:
+            return None if want == bare else want
+        return None
     if idle_shell:
-        return None if sitting == (label or "") else sitting
+        if not sitting:
+            return None
+        if claim or (bare and bare != sitting):
+            return None if sitting == bare else sitting
+        return None
+    if claim:
+        return None
+    if bare and sitting and bare != sitting:
+        return sitting
     return None
 
 
@@ -2239,7 +2258,11 @@ def sync_identity_from_plugin_event(event: dict | None = None, context: dict | N
     if name == "pane.exited" or released or not agent:
         return "cleared" if clear_identity(pane_id) else "skipped"
     sitting = slug(str(context.get("tab_label") or "")) or pane_id
-    return "stamped" if report_identity(pane_id, sitting, agent, "") else "skipped"
+    ok = report_identity(pane_id, sitting, agent, "")
+    if ok:
+        mark_harness(pane_id, sitting, agent)
+        return "stamped"
+    return "skipped"
 
 
 def identity_events(seen: dict, live_rows: list[dict]) -> list[dict]:
@@ -2308,10 +2331,10 @@ def mark_harness(pane_id: str, sitting: str, harness: str) -> None:
 
 
 def coherence_rows() -> list[dict]:
-    """Claimed panes whose border disagrees with the sitting and the agent Herdr detects.
+    """Panes whose border disagrees with the sitting and the agent Herdr detects.
 
     The unscoped pane list omits the border label, so each workspace is listed on its own.
-    Panes that make no harness claim are left out.
+    An empty border is left out. A stale bare sitting is rewritten.
     """
     snap = snapshot()
     labels = tab_labels(snap)
@@ -4102,8 +4125,8 @@ def main(argv: list[str]) -> int:
         return 0
     if cmd == "reconcile" and (opts.get("help") or opts.get("h")):
         print("cowbell reconcile [--dry-run]")
-        print("  Rewrite pane borders that claim a harness so they match the agent Herdr detects.")
-        print("  The tab label stays the sitting. A border with no harness claim is left alone.")
+        print("  Rewrite pane borders so they match the sitting and the agent Herdr detects.")
+        print("  The tab label stays the sitting. A bare border that is not the sitting is stale.")
         print("  With no herdr binary: 'herdr is not installed; nothing to reconcile'.")
         return 0
     ctx = choose_host(server_up())
