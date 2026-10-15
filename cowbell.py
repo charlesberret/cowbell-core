@@ -1449,8 +1449,14 @@ def build_argv(cat: dict, h: dict, model: str = "", lane: str = "", allow: str =
         if resume_id:
             argv += list(h.get("resume") or ["--continue"])
         return argv + list(extra or [])
+    provider = h.get("provider")
+    if isinstance(provider, str) and provider and isinstance(h.get("provider_flag"), list) and h["provider_flag"]:
+        argv += list(h["provider_flag"]) + [provider]
     if model and h.get("model_flag"):
         argv += list(h["model_flag"]) + [model]
+    models = h.get("models") or []
+    if isinstance(h.get("cycle_flag"), list) and h["cycle_flag"] and models:
+        argv += list(h["cycle_flag"]) + [",".join(models)]
     lane_map = cat.get("lanes", {}).get(h["kind"], {})
     if lane and lane in lane_map:
         argv += list(lane_map[lane])
@@ -1460,6 +1466,9 @@ def build_argv(cat: dict, h: dict, model: str = "", lane: str = "", allow: str =
         argv += [h["tools_deny_flag"], deny]
     if seat and prompt_flag(h):
         argv += [prompt_flag(h), str(seat)]  # claude takes -file; pi's --append-system-prompt accepts a path
+    sys_prompt = h.get("system_prompt")
+    if isinstance(sys_prompt, str) and sys_prompt and prompt_flag(h):
+        argv += [prompt_flag(h), sys_prompt]
     argv += claim_argv(h, sitting, agents_dir=agents_dir)
     if resume_id:
         spec = list(h.get("resume") or [])

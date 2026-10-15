@@ -148,6 +148,25 @@ class Argv(unittest.TestCase):
         self.assertEqual(hm.build_argv(CAT, h, lane="red"),
                          ["--dangerously-bypass-approvals-and-sandbox"])
 
+    def test_row_flags_carry_provider_cycle_and_prompt(self):
+        h = {"id": "pi-mid", "kind": "pi", "provider": "ollama", "provider_flag": ["--provider"],
+             "models": ["ollama/kimi-k2.7-code:cloud", "ollama/glm-5.2:cloud"],
+             "model_flag": ["--model"], "cycle_flag": ["--models"],
+             "tools_allow_flag": "--tools", "tools_allow": "read,grep,find,ls",
+             "system_prompt_flag": "--append-system-prompt", "system_prompt": "Grade: MID"}
+        self.assertEqual(
+            hm.build_argv(CAT, h, "ollama/kimi-k2.7-code:cloud", "", "read,grep,find,ls"),
+            ["--provider", "ollama", "--model", "ollama/kimi-k2.7-code:cloud",
+             "--models", "ollama/kimi-k2.7-code:cloud,ollama/glm-5.2:cloud",
+             "--tools", "read,grep,find,ls", "--append-system-prompt", "Grade: MID"])
+        bare = {"id": "pi-bare", "kind": "pi",
+                "models": ["ollama/kimi-k2.7-code:cloud", "ollama/glm-5.2:cloud"],
+                "model_flag": ["--model"], "tools_allow_flag": "--tools",
+                "tools_allow": "read,grep,find,ls"}
+        self.assertEqual(
+            hm.build_argv(CAT, bare, "ollama/kimi-k2.7-code:cloud", "", "read,grep,find,ls"),
+            ["--model", "ollama/kimi-k2.7-code:cloud", "--tools", "read,grep,find,ls"])
+
 
 class Registry(unittest.TestCase):
     def setUp(self):
