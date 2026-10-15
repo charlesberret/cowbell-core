@@ -126,6 +126,18 @@ class Argv(unittest.TestCase):
         self.assertEqual(hm.build_argv(CAT, h, resume_id="any"), ["--continue"])
         self.assertEqual(hm.build_argv(CAT, h, extra=["--memo"]), ["--memo"])
 
+    def test_wrapper_appends_controls_the_row_sets(self):
+        h = {"id": "local-ornith", "kind": "pi", "command": "/bin/local-ornith",
+             "models": ["ollama-hesiod/ornith:35b"], "model_flag": ["--model"],
+             "lane": "green", "tools_allow_flag": "--tools", "tools_allow": "read,bash",
+             "tools_deny_flag": "--exclude-tools", "tools_deny": "edit",
+             "resume": ["--continue"]}
+        self.assertEqual(
+            hm.build_argv(CAT, h, "ollama-hesiod/ornith:35b", "green", "read,bash", "edit", resume_id="s1"),
+            ["--model", "ollama-hesiod/ornith:35b", "--tools", "read",
+             "--tools", "read,bash", "--exclude-tools", "edit", "--continue"])
+        self.assertEqual(hm.build_argv(CAT, h, "not-in-the-list", "red", "other", "nope"), [])
+
     def test_unknown_lane_adds_nothing(self):
         self.assertEqual(hm.build_argv(CAT, hm.harness_by_id(CAT, "claude"), lane="red"), [])
 
@@ -2558,9 +2570,12 @@ class PickerEdit(unittest.TestCase):
         cat = hm.load_catalog()
         keys = [k for k, _ in hm.harness_edit_rows(cat, hm.harness_by_id(cat, "claude"))]
         self.assertEqual(keys, ["description", "models", "default", "permissions", "allow", "deny"])
-        wrapped = {"id": "w", "command": "/bin/echo", "title": "t", "models": []}
-        self.assertEqual([k for k, _ in hm.harness_edit_rows({"defaults": {}}, wrapped)],
-                         ["description", "models"])
+        wrapped = {"id": "local-ornith", "kind": "pi", "command": os.path.expanduser("~/.local/bin/local-ornith"),
+                   "title": "ornith", "models": []}
+        spec = hm.harness_edit_rows({"defaults": {"lane": "yellow"}, "lanes": {}}, wrapped)
+        self.assertEqual([k for k, _ in spec],
+                         ["description", "command", "models", "default", "permissions", "allow", "deny"])
+        self.assertIn("~/.local/bin/local-ornith", spec[1][1])
 
     def test_edit_menu_writes_the_field_you_pick(self):
         # claude rows: description, models, default, permissions, allow, deny
@@ -2576,6 +2591,17 @@ class PickerEdit(unittest.TestCase):
         self.assertEqual(h["lane"], "green")
         self.assertEqual(h["tools_allow"], "Read")
         self.assertEqual(h["tools_deny"], "Bash")
+
+    def test_edit_wrapper_model_records_the_pi_flag(self):
+        hm.harness_insert({"id": "local-ornith", "kind": "pi",
+                           "command": "~/.local/bin/local-ornith", "title": "ornith"})
+        with mock.patch("cowbell.choose", side_effect=[2, None]), \
+             mock.patch("cowbell.ask", return_value="ollama-hesiod/ornith:9b"):
+            self.assertTrue(hm.edit_harness(hm.load_catalog(), "local-ornith"))
+        h = hm.harness_by_id(hm.load_catalog(), "local-ornith")
+        self.assertEqual(h["models"], ["ollama-hesiod/ornith:9b"])
+        self.assertEqual(h["model_flag"], ["--model"])
+        self.assertIn('command = "~/.local/bin/local-ornith"', self._text())
 
     def test_edit_esc_writes_nothing(self):
         before = self.catalog.read_bytes()

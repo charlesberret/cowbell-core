@@ -1419,12 +1419,33 @@ def claim_argv(h: dict, sitting: str, agents_dir: Path | None = None) -> list[st
     return [flag, word]
 
 
+def _wrapper_catalog_argv(cat: dict, h: dict, model: str, lane: str, allow: str, deny: str) -> list[str]:
+    """Args a wrapper opted into. A launch-time model or lane the row did not set stays out.
+
+    The script still bakes its own flags. These are appended, and the agent takes the last one.
+    """
+    argv: list[str] = []
+    catalog_models = list(h.get("models") or [])
+    if model and h.get("model_flag") and (not catalog_models or model in catalog_models):
+        argv += list(h["model_flag"]) + [model]
+    if lane and lane == (h.get("lane") or ""):
+        lane_map = cat.get("lanes", {}).get(h.get("kind") or "", {})
+        if lane in lane_map:
+            argv += list(lane_map[lane])
+    if allow and h.get("tools_allow_flag") and allow == (h.get("tools_allow") or ""):
+        argv += [h["tools_allow_flag"], allow]
+    if deny and h.get("tools_deny_flag") and deny == (h.get("tools_deny") or ""):
+        argv += [h["tools_deny_flag"], deny]
+    return argv
+
+
 def build_argv(cat: dict, h: dict, model: str = "", lane: str = "", allow: str = "", deny: str = "",
                seat: Path | None = None, resume_id: str = "", sitting: str = "",
                extra: list[str] | None = None, agents_dir: Path | None = None) -> list[str]:
     """Agent-side argv (after `--` for native kinds; after the wrapper for house wrappers)."""
     argv: list[str] = []
     if is_wrapper(h):
+        argv += _wrapper_catalog_argv(cat, h, model, lane, allow, deny)
         if resume_id:
             argv += list(h.get("resume") or ["--continue"])
         return argv + list(extra or [])
@@ -3255,9 +3276,12 @@ def parse_model_list(raw: str) -> list[str]:
 
 
 def harness_lane(h: dict, cat: dict) -> str:
+    """A wrapper uses its script's own permissions unless this row sets `lane`."""
+    if h.get("lane"):
+        return h["lane"]
     if is_wrapper(h):
         return ""
-    return (h.get("lane") or cat.get("defaults", {}).get("lane", "yellow") or "")
+    return cat.get("defaults", {}).get("lane", "yellow") or ""
 
 
 def harness_tools(h: dict) -> tuple[str, str]:
@@ -3346,22 +3370,60 @@ def _edit_row(label: str, value: str) -> str:
     return f"{paint(f'{label:<16}', SECONDARY)} {paint(shown, MUTED)}"
 
 
+def display_command(path: str) -> str:
+    """Show a launcher path with a tilde. The catalog keeps that form."""
+    path = path or ""
+    home = os.path.expanduser("~")
+    if home and (path == home or path.startswith(home + os.sep)):
+        return "~" + path[len(home):]
+    return path
+
+
+# A kind's flags, used when a row has not named them yet. Verified against the CLIs.
+_KIND_MODEL_FLAG = {"pi": ["--model"], "claude": ["--model"], "codex": ["--model"], "grok": ["-m"]}
+_KIND_TOOL_FLAGS = {
+    "pi": ("--tools", "--exclude-tools"),
+    "claude": ("--allowedTools", "--disallowedTools"),
+    "grok": ("--allowedTools", "--disallowed-tools"),
+}
+
+
 def harness_edit_rows(cat: dict, h: dict) -> list[tuple[str, str]]:
-    """Catalog fields `e` can change, in menu order. (key, rendered row)."""
+    """Catalog fields `e` can change, in menu order. (key, rendered row).
+
+    Every harness gets the same controls. A launcher script also lists its command.
+    Empty models, permissions, and tools stay on the menu so they can be set.
+    """
     models = list(h.get("models") or [])
-    rows = [
-        ("description", _edit_row("description", h.get("title") or "")),
+    rows = [("description", _edit_row("description", h.get("title") or ""))]
+    if is_wrapper(h):
+        rows.append(("command", _edit_row("command", display_command(h.get("command") or ""))))
+    rows += [
         ("models", _edit_row("models", ", ".join(models))),
+        ("default", _edit_row("default model", models[0] if models else "")),
+        ("permissions", _edit_row("permissions", harness_lane(h, cat))),
+        ("allow", _edit_row("tools allow", h.get("tools_allow") or "")),
+        ("deny", _edit_row("tools deny", h.get("tools_deny") or "")),
     ]
-    if models:
-        rows.append(("default", _edit_row("default model", models[0])))
-    if not is_wrapper(h):
-        rows.append(("permissions", _edit_row("permissions", harness_lane(h, cat) or "yellow")))
-    if h.get("tools_allow_flag"):
-        rows.append(("allow", _edit_row("tools allow", h.get("tools_allow") or "")))
-    if h.get("tools_deny_flag"):
-        rows.append(("deny", _edit_row("tools deny", h.get("tools_deny") or "")))
     return rows
+
+
+def _ensure_model_flag(h: dict) -> None:
+    if h.get("model_flag"):
+        return
+    flag = _KIND_MODEL_FLAG.get(h.get("kind") or "")
+    if flag:
+        harness_set_field(h["id"], "model_flag", flag)
+
+
+def _ensure_tool_flag(h: dict, which: str) -> None:
+    key = "tools_allow_flag" if which == "allow" else "tools_deny_flag"
+    if h.get(key):
+        return
+    pair = _KIND_TOOL_FLAGS.get(h.get("kind") or "")
+    if not pair:
+        return
+    harness_set_field(h["id"], key, pair[0] if which == "allow" else pair[1])
 
 
 def _edit_harness_field(cat: dict, h: dict, key: str) -> bool:
@@ -3370,17 +3432,30 @@ def _edit_harness_field(cat: dict, h: dict, key: str) -> bool:
     if key == "description":
         harness_set_field(hid, "title", ask("  description: ", h.get("title") or ""))
         return True
+    if key == "command":
+        raw = ask("  command: ", display_command(h.get("command") or ""))
+        if not (raw or "").strip():
+            return False
+        harness_set_field(hid, "command", display_command(os.path.expanduser(raw.strip())))
+        return True
     if key == "models":
         models = parse_model_list(ask("  models (comma-separated): ", ", ".join(h.get("models") or [])))
         cur = (h.get("models") or [None])[0]
         if cur and cur in models:
             models = models_with_default(models, cur)
+        if models:
+            _ensure_model_flag(h)
         harness_set_field(hid, "models", models)
         return True
     if key == "default":
         models = list(h.get("models") or [])
         if not models:
-            return False
+            name = (ask("  default model: ", "") or "").strip()
+            if not name:
+                return False
+            _ensure_model_flag(h)
+            harness_set_field(hid, "models", [name])
+            return True
         j = choose("default model", models, default=0, intro=paint(hid, INK, bold=True))
         if j is None:
             return False
@@ -3396,10 +3471,22 @@ def _edit_harness_field(cat: dict, h: dict, key: str) -> bool:
         harness_set_field(hid, "lane", LANES[j])
         return True
     if key == "allow":
-        harness_set_field(hid, "tools_allow", ask("  tools allow (empty skip): ", h.get("tools_allow") or ""))
+        cur = h.get("tools_allow") or ""
+        val = ask("  tools allow (empty skip): ", cur)
+        if val == cur:
+            return False
+        if val:
+            _ensure_tool_flag(h, "allow")
+        harness_set_field(hid, "tools_allow", val)
         return True
     if key == "deny":
-        harness_set_field(hid, "tools_deny", ask("  tools deny (empty skip): ", h.get("tools_deny") or ""))
+        cur = h.get("tools_deny") or ""
+        val = ask("  tools deny (empty skip): ", cur)
+        if val == cur:
+            return False
+        if val:
+            _ensure_tool_flag(h, "deny")
+        harness_set_field(hid, "tools_deny", val)
         return True
     return False
 
