@@ -2399,9 +2399,9 @@ class CatalogWriter(unittest.TestCase):
         self.assertIn("# --- aider on OpenRouter", after)
         self.assertEqual(self._outside(before, "local-ornith"), self._outside(after, "local-ornith"))
         got = self._load(p)
-        self.assertEqual(got["harness"][4]["id"], "local-ornith")
-        self.assertEqual(got["harness"][4]["title"], "ornith 9b — edited")
-        parsed["harness"][4]["title"] = "ornith 9b — edited"
+        idx = next(i for i, h in enumerate(got["harness"]) if h["id"] == "local-ornith")
+        self.assertEqual(got["harness"][idx]["title"], "ornith 9b — edited")
+        parsed["harness"][idx]["title"] = "ornith 9b — edited"
         self.assertEqual(got, parsed)
         self.assertEqual(self._baks(p)[0].read_text(encoding="utf-8"), before)
         hm.harness_insert({"id": "lab-probe", "kind": "bash", "title": "probe",
