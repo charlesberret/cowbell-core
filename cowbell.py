@@ -1708,6 +1708,7 @@ def spawn_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", l
                seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True) -> dict:
     """Start the agent in a new session at root and return. Assemblies raise N times this way."""
     cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra)
+    cmd = unix_confine(cat, root, cmd)
     exe = _here_exe(h, cmd)
     proc = subprocess.Popen(
         [exe, *cmd[1:]], cwd=root, start_new_session=True,
