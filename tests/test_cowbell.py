@@ -2451,6 +2451,27 @@ class CatalogWriter(unittest.TestCase):
         self.assertIn("[places.lobby]", p.read_text(encoding="utf-8"))
         self.assertIn("ornith 9b — edited", p.read_text(encoding="utf-8"))
 
+    def test_default_catalog_write_snapshots_into_state(self):
+        """LAB-1468: a write to the config-dir catalog also lands under the state dir."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "cfg").mkdir()
+            catalog = base / "cfg" / "harnesses.toml"
+            catalog.write_text('schema = 1\n[[harness]]\nid = "fake"\nkind = "pi"\ncommand = "/bin/echo"\n'
+                               '[[harness]]\nid = "droid"\nkind = "droid"\ncommand = "/bin/true"\n'
+                               '[[harness]]\nid = "devin"\nkind = "devin"\ncommand = "/bin/true"\n')
+            env = {"COWBELL_CONFIG_DIR": str(base / "cfg"), "COWBELL_STATE_DIR": str(base / "state")}
+            saved = {k: os.environ.get(k) for k in env}
+            os.environ.update(env)
+            try:
+                hm.harness_insert({"id": "probe", "kind": "bash", "command": "/bin/true"})
+            finally:
+                for k, v in saved.items():
+                    os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+            snaps = list((base / "state" / "catalog").glob("harnesses.toml.*"))
+            self.assertEqual(len(snaps), 1)
+            self.assertIn('id = "probe"', snaps[0].read_text())
+
 
 class Pins(unittest.TestCase):
     """LAB-255: pin/hide per directory in state, overlay rank_harnesses, leave the catalog alone."""

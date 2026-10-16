@@ -2883,6 +2883,22 @@ def _backup_timestamped(path: Path) -> Path:
     return backup
 
 
+def _snapshot_catalog(path: Path) -> None:
+    """A second home for the written catalog: ~/.config is not synced (LAB-1468)."""
+    try:
+        d = state_dir() / "catalog"
+        d.mkdir(parents=True, exist_ok=True)
+        stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        out = d / f"{path.name}.{stamp}"
+        n = 2
+        while out.exists():
+            out = d / f"{path.name}.{stamp}.{n}"
+            n += 1
+        shutil.copy2(path, out)
+    except OSError:
+        pass
+
+
 def _commit_catalog(path: Path, new_text: str) -> None:
     path = Path(path)
     if not path.is_file():
@@ -2893,6 +2909,9 @@ def _commit_catalog(path: Path, new_text: str) -> None:
         return
     _backup_timestamped(path)
     write_atomic(path, new_text)
+    # NB: catalog_path() fills missing seed rows (it writes), so compare against config_dir instead.
+    if os.path.realpath(path) == os.path.realpath(config_dir() / "harnesses.toml"):
+        _snapshot_catalog(path)
 
 
 def _catalog_text(path: Path | None) -> tuple[Path, str]:
