@@ -839,8 +839,15 @@ def session_title(v, limit: int = 60) -> str:
 
 
 def claude_store(root: str, home: Path | None = None) -> Path:
-    """Claude Code keys a project dir by the cwd with / and . flattened to -."""
-    base = (home or Path.home()) / ".claude" / "projects"
+    """Claude Code keys a project dir by the cwd with / and . flattened to -.
+
+    An explicit `home` (a launch-uid scan) wins; else $CLAUDE_CONFIG_DIR; else ~/.claude (LAB-1216)."""
+    if home is not None:
+        base = Path(home) / ".claude" / "projects"
+    elif os.environ.get("CLAUDE_CONFIG_DIR"):
+        base = Path(os.environ["CLAUDE_CONFIG_DIR"]).expanduser() / "projects"
+    else:
+        base = Path.home() / ".claude" / "projects"
     return base / re.sub(r"[/.]", "-", os.path.realpath(root))
 
 

@@ -2111,6 +2111,32 @@ class SessionHistory(unittest.TestCase):
         only_grok = {"defaults": {"session_history": "on"}, "harness": [{"id": "grok"}]}
         self.assertEqual({r["harness"] for r in self.rows(only_grok)}, {"grok"})
 
+    def test_claude_config_dir_points_at_a_second_store(self):
+        """LAB-1216: $CLAUDE_CONFIG_DIR/projects is the store when set; home wins when given."""
+        other = self.home / ".claude-personal"
+        cdir = other / "projects" / "-Users-x-code-acme"
+        cdir.mkdir(parents=True)
+        (cdir / "sess-alt.jsonl").write_text(
+            json.dumps({"type": "user", "timestamp": "2026-09-01T10:00:00Z",
+                        "message": {"role": "user", "content": "alt store"}}) + "\n")
+        saved = os.environ.get("CLAUDE_CONFIG_DIR")
+        os.environ["CLAUDE_CONFIG_DIR"] = str(other)
+        try:
+            got = {r["session_id"] for r in hm.discover_sessions(self.root, self.cat)}
+        finally:
+            os.environ.pop("CLAUDE_CONFIG_DIR", None) if saved is None else os.environ.__setitem__("CLAUDE_CONFIG_DIR", saved)
+        self.assertIn("sess-alt", got)
+        self.assertNotIn("sess-a", got)                     # the env replaces the default store
+        # an explicit home (a launch-uid scan) ignores the env
+        os.environ["CLAUDE_CONFIG_DIR"] = str(other)
+        try:
+            store = hm.claude_store(self.root, home=self.home)
+        finally:
+            os.environ.pop("CLAUDE_CONFIG_DIR", None) if saved is None else os.environ.__setitem__("CLAUDE_CONFIG_DIR", saved)
+        self.assertEqual(store, self.home / ".claude" / "projects" / "-Users-x-code-acme")
+        self.assertEqual(hm.claude_store(self.root),
+                         Path.home() / ".claude" / "projects" / "-Users-x-code-acme")
+
     def test_place_history_uses_launch_users_home(self):
         guest_home = self.home / "guest"
         store = hm.grok_store(self.root, guest_home) / "guest-session"
