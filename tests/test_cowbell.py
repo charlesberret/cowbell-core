@@ -1653,6 +1653,16 @@ class Version(unittest.TestCase):
         finally:
             hm.server_up = orig
 
+    def test_changelog_tracks_version(self):
+        """LAB-1243: the newest CHANGELOG heading keeps pace with __version__."""
+        changelog = Path(__file__).resolve().parent.parent / "CHANGELOG.md"
+        headings = [ln.strip() for ln in changelog.read_text().splitlines() if ln.startswith("## ")]
+        self.assertTrue(headings, "CHANGELOG.md has no release sections")
+        m = re.match(r"## Unreleased(?:\s+\((\d+\.\d+\.\d+)\))?$", headings[0])
+        if m and m.group(1):
+            self.assertEqual(m.group(1), hm.__version__)
+        elif not m:
+            self.assertRegex(headings[0], rf"^## {re.escape(hm.__version__)}\b")
 
 
 class Flags(unittest.TestCase):
