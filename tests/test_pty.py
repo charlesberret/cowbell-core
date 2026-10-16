@@ -65,8 +65,8 @@ def in_pty(child, steps, rows=24, cols=80, settle=0.35, gap=0.08):
         except OSError:
             break
         pump(gap)
-    for _ in range(40):
-        if os.waitpid(pid, os.WNOHANG)[0]:
+    for _ in range(160):  # LAB-1315: the picker ticks every 2s and a refresh runs ps+lsof;
+        if os.waitpid(pid, os.WNOHANG)[0]:  # under load that exceeds a 2s post-keys deadline
             break
         pump(0.05)
     else:
@@ -174,6 +174,7 @@ class PickerHere(unittest.TestCase):
                 for k in ("COWBELL_PLAIN", "HERDR_PLUGIN_CONTEXT_JSON", "COWBELL_CTX", "NO_COLOR"):
                     os.environ.pop(k, None)
                 os.chdir(tmp)
+                hm.REFRESH_S = 3600  # no census tick mid-test (LAB-1315: ps+lsof under load outlives the deadline)
                 return hm.main(["picker"])
 
             res, screen = in_pty(child, [DOWN, ESC], settle=1.0, gap=0.3)
@@ -205,6 +206,7 @@ class PickerHere(unittest.TestCase):
             for k in ("COWBELL_PLAIN", "HERDR_PLUGIN_CONTEXT_JSON", "COWBELL_CTX", "NO_COLOR"):
                 os.environ.pop(k, None)
             os.chdir(tmp)
+            hm.REFRESH_S = 3600  # no census tick mid-test (LAB-1315)
             return hm.main(["picker"])
 
         return child, env, log
@@ -242,7 +244,7 @@ class PickerHere(unittest.TestCase):
     def test_pin_and_hide_keys_stay_in_picker(self):
         with tempfile.TemporaryDirectory() as tmp:
             child, env, log = self._here(tmp)
-            res, screen = in_pty(child, ["p", ESC], settle=1.0, gap=0.3)
+            res, screen = in_pty(child, ["p", ESC, ESC], settle=1.0, gap=0.3)
             self.assertEqual(res, 0)
             pins = json.loads((Path(env["COWBELL_STATE_DIR"]) / "pins.json").read_text())
             root = os.path.realpath(tmp)
@@ -252,7 +254,7 @@ class PickerHere(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             child, env, log = self._here(tmp)
-            res, _ = in_pty(child, ["h", ESC], settle=1.0, gap=0.3)
+            res, _ = in_pty(child, ["h", ESC, ESC], settle=1.0, gap=0.3)
             self.assertEqual(res, 0)
             pins = json.loads((Path(env["COWBELL_STATE_DIR"]) / "pins.json").read_text())
             root = os.path.realpath(tmp)
@@ -267,7 +269,7 @@ class PickerHere(unittest.TestCase):
                 'schema = 1\n[[harness]]\nid = "fake"\nkind = "pi"\ncommand = "/bin/echo"\n'
                 'title = "stand-in"\nmodels = ["alpha-model", "beta-model"]\n# keep-me\n')
             before = catalog.read_bytes()
-            res, screen = in_pty(child, ["e", ESC, ESC], settle=1.0, gap=0.35)
+            res, screen = in_pty(child, ["e", ESC, ESC, ESC], settle=1.0, gap=0.35)
             self.assertEqual(res, 0)
             self.assertIn(b"description", screen)
             self.assertIn(b"default model", screen)
@@ -279,7 +281,9 @@ class PickerHere(unittest.TestCase):
             child, env, _ = self._here(tmp)
             catalog = Path(env["COWBELL_CONFIG_DIR"]) / "harnesses.toml"
             before = catalog.read_bytes()
-            for steps in (["e", ESC, ESC], ["+", ESC, ESC], ["-", ESC, ESC], ["n", ESC, ESC]):
+            # a spare ESC survives the menu's batch-drop: queued keys read in one chunk are
+            # consumed by the inner menu and the second cancel never reaches the picker (LAB-1315)
+            for steps in (["e", ESC, ESC, ESC], ["+", ESC, ESC, ESC], ["-", ESC, ESC, ESC], ["n", ESC, ESC, ESC]):
                 with self.subTest(steps=steps[0]):
                     catalog.write_bytes(before)
                     res, _ = in_pty(child, steps, settle=1.0, gap=0.35)

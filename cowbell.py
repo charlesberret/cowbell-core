@@ -3148,6 +3148,9 @@ def hint_bar(hints: list[tuple[str, str, str]]) -> tuple[str, list[tuple[int, in
     return "  " + "   ".join(parts), spans
 
 
+_MENU_PENDING: list = []  # events after a terminating key, saved for the next menu() call
+
+
 def menu(body: list[str], rows: list[int], hints, selected: int = 0,
          hotkeys: str = "", flash: str = "", line_keys: dict[int, str] | None = None,
          numbered: list[int] | None = None, scr: Screen | None = None, tick: float | None = None) -> tuple:
@@ -3187,10 +3190,17 @@ def menu(body: list[str], rows: list[int], hints, selected: int = 0,
             shown += [""] * (view - len(shown))
             bar_y = view + 2  # 1-based screen row of the hint bar
             scr.draw(shown + foot)
-            evs = scr.events(tick)
+            # fast-typed keys arrive batched; leftovers carry to the next menu() call
+            evs = _MENU_PENDING if _MENU_PENDING else scr.events(tick)
+            _MENU_PENDING.clear()
             if tick is not None and not evs:
                 return ("tick", selected)
-            for ev in evs:
+
+            def done(res):
+                _MENU_PENDING.extend(evs[i + 1:])
+                return res
+
+            for i, ev in enumerate(evs):
                 if ev[0] == "mouse":
                     _, code, x, y, down = ev
                     line = top + y - 1
@@ -3201,24 +3211,24 @@ def menu(body: list[str], rows: list[int], hints, selected: int = 0,
                             hit = next((e for x0, x1, e in spans if x0 <= x < x1), None)
                             if hit:
                                 if hit == "esc":
-                                    return ("cancel",)
+                                    return done(("cancel",))
                                 if hit == "enter":
                                     if rows:
-                                        return ("pick", selected)
+                                        return done(("pick", selected))
                                     continue
-                                return ("key", hit, selected)
+                                return done(("key", hit, selected))
                         elif line in (line_keys or {}) and y <= view:
-                            return ("key", line_keys[line], selected)
+                            return done(("key", line_keys[line], selected))
                         elif line in by_line and y <= view:
                             selected = by_line[line]
                     continue
                 kind, val = ev
                 if kind == "key":
                     if val == "esc":
-                        return ("cancel",)
+                        return done(("cancel",))
                     if val == "enter":
                         if rows:
-                            return ("pick", selected)
+                            return done(("pick", selected))
                         continue
                     step = {"up": -1, "down": 1, "backtab": -1, "tab": 1, "pgup": -view, "pgdn": view}.get(val)
                     if step:
@@ -3239,13 +3249,13 @@ def menu(body: list[str], rows: list[int], hints, selected: int = 0,
                     if n:
                         selected = numbered[n - 1]
                         if n * 10 > len(numbered):
-                            return ("pick", selected)
+                            return done(("pick", selected))
                 elif val in ("j", "k"):
                     selected = max(0, min(len(rows) - 1, selected + (1 if val == "j" else -1)))
                 elif val == "q":
-                    return ("cancel",)
+                    return done(("cancel",))
                 elif val.lower() in hotkeys:
-                    return ("key", val.lower(), selected)
+                    return done(("key", val.lower(), selected))
     finally:
         if own:
             scr.close()
