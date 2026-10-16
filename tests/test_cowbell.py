@@ -55,6 +55,30 @@ def agent(pane, kind, cwd, status="idle", title="", sid="s1"):
             "workspace_id": "w1", "terminal_title_stripped": title, "agent_session": {"value": sid}}
 
 
+_SENTINEL_DIR = None
+_SENTINEL_LOG = None
+
+
+def setUpModule():
+    """LAB-1240: route every in-process herdr call through a logging stub, so a test that
+    forgets to patch the adapter cannot reach the live binary or socket. ZSuiteSeam (which
+    sorts last) fails if the stub was ever run."""
+    global _SENTINEL_DIR, _SENTINEL_LOG
+    _SENTINEL_DIR = tempfile.TemporaryDirectory()
+    base = Path(_SENTINEL_DIR.name)
+    stub = base / "herdr"
+    _SENTINEL_LOG = base / "herdr-calls.log"
+    stub.write_text(f'#!/bin/sh\necho "$@" >> "{_SENTINEL_LOG}"\nexit 1\n')
+    stub.chmod(0o755)
+    os.environ["HERDR_BIN_PATH"] = str(stub)
+    os.environ["HERDR_SOCKET_PATH"] = str(base / "no.sock")
+
+
+def tearDownModule():
+    if _SENTINEL_DIR:
+        _SENTINEL_DIR.cleanup()
+
+
 class Scope(unittest.TestCase):
     def test_at_or_beneath(self):
         self.assertTrue(hm.at_or_beneath(ROOT, ROOT))
@@ -1378,17 +1402,18 @@ class SidebarTokens(unittest.TestCase):
             hm.cmd_adopt(ctx, CAT, name="grok-seat")
             self.assertEqual(published, [("w1B:p5", "grok-seat", "grok")])
             # a raise publishes once with the sitting and harness
-            saved = (hm.start_native, hm.save_roster, hm.load_roster, hm.create_tab, hm.pick_workspace)
+            saved = (hm.start_native, hm.save_roster, hm.load_roster, hm.create_tab, hm.pick_workspace, hm.herdr)
             hm.create_tab = lambda *a, **k: {"pane_id": "w1C:p1", "tab_id": "w1C:t1", "workspace_id": "w1C"}
             hm.pick_workspace = lambda *a, **k: "w1C"
             hm.start_native = lambda *a, **k: {}
             hm.save_roster = lambda rows: None
             hm.load_roster = lambda: []
+            hm.herdr = lambda *a, **k: {}
             try:
                 hm.raise_harness(CAT, hm.harness_by_id(CAT, "grok"), "probe-seat", ROOT,
                                  hm.Ctx(workspace_id="w1C", cwd=ROOT), model="", lane="")
             finally:
-                (hm.start_native, hm.save_roster, hm.load_roster, hm.create_tab, hm.pick_workspace) = saved
+                (hm.start_native, hm.save_roster, hm.load_roster, hm.create_tab, hm.pick_workspace, hm.herdr) = saved
         finally:
             hm.report_identity = orig
             os.environ.pop("COWBELL_STATE_DIR", None)
@@ -1892,7 +1917,8 @@ class Adopt(unittest.TestCase):
                 ]}
 
         ctx = hm.Ctx(cwd=ROOT, mode="tab", pane_id="wK:p9", live=SnapLive(), launch=hm.HereLaunch())
-        row = hm.cmd_adopt(ctx, CAT)
+        with mock.patch.object(hm, "report_identity", return_value=True):
+            row = hm.cmd_adopt(ctx, CAT)
         self.assertEqual(row["pane_id"], "wK:p6")
         self.assertEqual(row["harness"], "claude")
 
@@ -1935,14 +1961,16 @@ class Adopt(unittest.TestCase):
 
     def test_adopt_positional_pane_id(self):
         ctx, grok, claude = self._two_unfocused()
-        row = hm.cmd_adopt(ctx, CAT, name="wK:pK")
+        with mock.patch.object(hm, "report_identity", return_value=True):
+            row = hm.cmd_adopt(ctx, CAT, name="wK:pK")
         self.assertEqual(row["pane_id"], "wK:pK")
         self.assertEqual(row["name"], "metawork")  # pane id is identity, not the sitting
         self.assertEqual(row["harness"], "grok")
 
     def test_adopt_positional_sitting(self):
         ctx, grok, claude = self._two_unfocused()
-        row = hm.cmd_adopt(ctx, CAT, name="coord-career")
+        with mock.patch.object(hm, "report_identity", return_value=True):
+            row = hm.cmd_adopt(ctx, CAT, name="coord-career")
         self.assertEqual(row["pane_id"], "wK:p6")
         self.assertEqual(row["name"], "coord-career")
 
@@ -2962,6 +2990,16 @@ class Coherence(unittest.TestCase):
         self.assertEqual(called, {"dry_run": True})
         self.assertIn("cowbell reconcile", out.getvalue())
         self.assertIn("bare border that is not the sitting is stale", out.getvalue())
+
+
+class ZSuiteSeam(unittest.TestCase):
+    """LAB-1240: sorts last — fails if any test in this module ran the sentinel herdr
+    binary, which means an unmocked path reached toward live herdr."""
+
+    def test_no_test_called_the_sentinel_herdr(self):
+        self.assertEqual(os.environ.get("HERDR_SOCKET_PATH"), str(Path(_SENTINEL_DIR.name) / "no.sock"))
+        if _SENTINEL_LOG.exists():
+            self.fail("tests invoked the sentinel herdr: " + _SENTINEL_LOG.read_text())
 
 
 if __name__ == "__main__":
