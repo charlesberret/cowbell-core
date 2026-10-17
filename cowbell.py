@@ -2705,6 +2705,47 @@ def cmd_catalog(cat: dict) -> None:
               f"{'yes' if installed(h) else 'no':<9} {trust_badge(h['trust_tool']):<10} {h.get('title', '')}")
 
 
+def cmd_catalog_check(cat: dict) -> int:
+    """`cowbell catalog --check` (LAB-1384): reject a malformed row by name.
+
+    Structural pass only — flag probes against real binaries are LAB-1375's job.
+    Harnesses that are not installed are reported, not failed."""
+    problems, unchecked = [], []
+    ids = set()
+    for h in cat.get("harness", []):
+        hid = h.get("id") or "(missing id)"
+        if not h.get("id"):
+            problems.append("harness row with no id")
+        elif hid in ids:
+            problems.append(f"harness {hid}: duplicate id")
+        ids.add(hid)
+        if not h.get("kind"):
+            problems.append(f"harness {hid}: missing kind")
+        if h.get("egress") and h["egress"] not in GLYPH:
+            problems.append(f"harness {hid}: unknown egress {h['egress']!r}")
+        if h.get("lane") and h["lane"] not in ("green", "yellow", "red"):
+            problems.append(f"harness {hid}: unknown lane {h['lane']!r}")
+        if "models" in h and not isinstance(h["models"], list):
+            problems.append(f"harness {hid}: models must be a list")
+        if not installed(h):
+            unchecked.append(hid)
+    for name, pl in (cat.get("places") or {}).items():
+        for hid in pl.get("allow_harness") or []:
+            if hid not in ids:
+                problems.append(f"place {name}: allow_harness names unknown harness {hid!r}")
+        dh = pl.get("default_harness")
+        if dh and dh not in ids:
+            problems.append(f"place {name}: default_harness names unknown harness {dh!r}")
+    for p in problems:
+        print(f"  FAIL {p}")
+    for hid in unchecked:
+        print(f"  skip {hid}: not installed")
+    if problems:
+        return 1
+    print(f"  ok: {len(ids)} harnesses, {len(cat.get('places') or {})} places")
+    return 0
+
+
 # --- files -------------------------------------------------------------------
 
 def write_atomic(path: Path, text: str) -> None:
@@ -4054,7 +4095,7 @@ def parse_flags(args: list[str]) -> tuple[dict, list[str]]:
         if a.startswith("--") and "=" in a:
             k, v = a[2:].split("=", 1); opts[k] = v
         elif a in ("--yes", "-y", "--all", "--no-seat", "--no-focus", "-i", "--json", "--spawn",
-                   "--pen", "--split", "--dry-run", "--help", "-h"):
+                   "--pen", "--split", "--dry-run", "--check", "--help", "-h"):
             opts[a.lstrip("-")] = True
         elif a.startswith("--") and i + 1 < len(args):
             opts[a[2:]] = args[i + 1]; i += 1
@@ -4175,6 +4216,8 @@ def main(argv: list[str]) -> int:
     if cmd == "list":
         cmd_list(ctx, bool(opts.get("all"))); return 0
     if cmd == "catalog":
+        if opts.get("check"):
+            return cmd_catalog_check(cat)
         cmd_catalog(cat); return 0
     if cmd == "enter":
         if not pos:

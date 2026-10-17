@@ -3049,6 +3049,34 @@ class Coherence(unittest.TestCase):
         self.assertIn("bare border that is not the sitting is stale", out.getvalue())
 
 
+class CatalogCheck(unittest.TestCase):
+    """LAB-1384: `catalog --check` names the bad row."""
+
+    def _check(self, cat):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = hm.cmd_catalog_check(cat)
+        return rc, buf.getvalue()
+
+    def test_clean_catalog_is_green(self):
+        cat = {"harness": [{"id": "fake", "kind": "pi", "command": "/nonexistent/x"}],
+               "places": {"lab": {"cwd": "/tmp", "allow_harness": ["fake"], "default_harness": "fake"}}}
+        rc, out = self._check(cat)
+        self.assertEqual(rc, 0)
+        self.assertIn("ok: 1 harnesses", out)
+        self.assertIn("skip fake: not installed", out)   # unchecked, not failed
+
+    def test_bad_entry_fails_by_name(self):
+        cat = {"harness": [{"id": "fake", "kind": "pi", "command": "/nonexistent/x", "egress": "sideways"},
+                           {"id": "fake", "kind": "pi", "command": "/nonexistent/y"}],
+               "places": {"lab": {"cwd": "/tmp", "allow_harness": ["ghost"]}}}
+        rc, out = self._check(cat)
+        self.assertEqual(rc, 1)
+        self.assertIn("harness fake: unknown egress", out)
+        self.assertIn("harness fake: duplicate id", out)
+        self.assertIn("place lab: allow_harness names unknown harness 'ghost'", out)
+
+
 class ZSuiteSeam(unittest.TestCase):
     """LAB-1240: sorts last — fails if any test in this module ran the sentinel herdr
     binary, which means an unmocked path reached toward live herdr."""
