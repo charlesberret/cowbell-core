@@ -1039,6 +1039,42 @@ class Places(unittest.TestCase):
             hm.herdr = saved
 
 
+class ResolvedUid(unittest.TestCase):
+    """LAB-1374: status --json new rows carry the launch uid for the cwd."""
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        self.inner = os.path.join(self.home, "proj")
+        os.makedirs(self.inner)
+        os.environ["COWBELL_STATE_DIR"] = tempfile.mkdtemp()
+
+    def tearDown(self):
+        os.environ.pop("COWBELL_STATE_DIR", None)
+
+    def _check(self, cat, want):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            reg = hm.cmd_registry(hm.Ctx(cwd=self.inner), cat, as_json=True)
+        self.assertEqual(reg["resolved_uid"], want)
+        new = json.loads(buf.getvalue())["new"]
+        self.assertTrue(all(r["uid"] == want for r in new), new)
+
+    def test_place_uid_wins(self):
+        cat = {"harness": [dict(CAT["harness"][1])],
+               "places": {"lab": {"cwd": self.inner, "unix_user": "guest"}}}
+        self._check(cat, "guest")
+
+    def test_default_uid_when_the_place_is_silent(self):
+        cat = {"defaults": {"unix_user": "dvops"}, "harness": [dict(CAT["harness"][1])],
+               "places": {"lab": {"cwd": self.inner}}}
+        self._check(cat, "dvops")
+
+    def test_no_drop_is_empty(self):
+        cat = {"harness": [dict(CAT["harness"][1])],
+               "places": {"lab": {"cwd": self.inner}}}
+        self._check(cat, "")
+
+
 class Hosts(unittest.TestCase):
     """LiveSource / HostLaunch seams (LAB-249)."""
 

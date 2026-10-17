@@ -1198,6 +1198,7 @@ def registry_json(reg: dict, place: dict | None = None) -> dict:
             "state": "new",
             "installed": bool(a.get("installed")),
             "trust": (a.get("trust") or {}).get("verdict") or "unknown",
+            "uid": a.get("uid") or reg.get("resolved_uid") or "",
         }
 
     return {
@@ -2399,12 +2400,16 @@ def cmd_registry(ctx: Ctx, cat: dict, root: str | None = None, as_json: bool = F
             raise SystemExit(f"cowbell: no place {place_name!r} in {catalog_path()} (have: {', '.join(places(cat)) or 'none'})")
         root = pl["cwd"]
     root, place, remapped = resolve_root(cat, root or ctx.cwd)
+    uid = ((place or {}).get("unix_user") or (cat.get("defaults") or {}).get("unix_user") or "").strip()
     cat = scoped_catalog(cat, place)
     rows = load_roster()
     ctx.live.refresh_sessions(rows)
     agents, panes = ctx.live.agents(), ctx.live.panes()
     reg = build_registry(cat, root, agents, panes, rows, subject=trust_subject(root),
                          tab_label=tab_labels(ctx.live.snapshot()), history=launch_history(cat, root))
+    reg["resolved_uid"] = uid  # LAB-1374: the uid a `new` row would launch as ("" = no drop)
+    for a in reg.get("absent") or []:
+        a["uid"] = uid
     if place:
         reg["place_note"] = place["name"] + (" · from ~" if remapped and root == place["cwd"] else "")
     if as_json:
