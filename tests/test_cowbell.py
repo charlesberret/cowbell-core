@@ -2819,6 +2819,9 @@ class PickerEdit(unittest.TestCase):
         self.assertTrue(claude["models"][0] in hm.model_menu_items(claude))
         self.assertEqual(hm.model_menu_items(grok), ["(agent default)", "(type another)"])
         self.assertEqual(hm.model_menu_items(wrapper), [])
+        long_list = {"model_flag": "--model", "models": [f"m{i}" for i in range(12)]}
+        self.assertEqual(hm.model_menu_items(long_list),
+                         [f"m{i}" for i in range(10)] + ["(type another)"])
 
     def test_ask_tools_skips_empty_boxes(self):
         empty = {"tools_allow_flag": "--allowedTools", "tools_deny_flag": "--disallowed-tools"}

@@ -3465,12 +3465,13 @@ def _ask_tools(h: dict, *, even_empty: bool = False) -> tuple[str, str]:
 
 
 def model_menu_items(h: dict) -> list[str]:
-    """Model choices for this sitting. Empty means the harness has no model_flag."""
+    """Model choices for this sitting. Empty means the harness has no model_flag.
+    A long list gives the first ten; "(type another)" takes the rest by hand."""
     if not h.get("model_flag"):
         return []
     models = list(h.get("models") or [])
     if models:
-        return models + ["(type another)"]
+        return models[:10] + ["(type another)"]
     return ["(agent default)", "(type another)"]
 
 
@@ -3742,7 +3743,7 @@ def raise_with_options(ctx: Ctx, cat: dict, h: dict, root: str, v: dict, name: s
         if j is None:
             return False
         if models:
-            model = models[j] if j < len(models) else ask("  model id: ")
+            model = models[j] if j < len(items) - 1 else ask("  model id: ")
         else:
             model = "" if j == 0 else ask("  model id: ")
     lane = ""
