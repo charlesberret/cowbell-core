@@ -3116,6 +3116,39 @@ class CatalogCheck(unittest.TestCase):
         self.assertIn("place lab: allow_harness names unknown harness 'ghost'", out)
 
 
+class FlagProbe(unittest.TestCase):
+    """LAB-1375: a harness's declared args are probed in its help, never launched."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        cli = Path(self.tmp.name) / "fakecli"
+        cli.write_text('#!/bin/sh\necho "usage: fake [--model M] [--resume]"\n')
+        cli.chmod(0o755)
+        self.h = {"id": "fake", "kind": "pi", "command": str(cli),
+                  "model_flag": ["--model"], "resume": ["--resume"],
+                  "tools_allow_flag": "--allowedTools"}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_catches_a_dropped_flag_by_name(self):
+        self.assertEqual(hm.flag_probe(self.h), ["--allowedTools"])
+
+    def test_green_when_every_declared_arg_is_in_the_help(self):
+        h = dict(self.h); h.pop("tools_allow_flag")
+        self.assertEqual(hm.flag_probe(h), [])
+
+    def test_unrunnable_probe_is_unchecked_not_a_failure(self):
+        h = dict(self.h, command="/nonexistent/fakecli")
+        self.assertIsNone(hm.flag_probe(h))
+
+    def test_every_seed_kind_has_a_probe(self):
+        cat = tomllib.loads((Path(hm.__file__).parent / "harnesses.toml").read_text())
+        kinds = {h["kind"] for h in cat.get("harness", [])}
+        self.assertTrue(kinds)
+        self.assertLessEqual(kinds, set(hm.KIND_PROBE))
+
+
 class ZSuiteSeam(unittest.TestCase):
     """LAB-1240: sorts last — fails if any test in this module ran the sentinel herdr
     binary, which means an unmocked path reached toward live herdr."""

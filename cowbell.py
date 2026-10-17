@@ -2710,12 +2710,46 @@ def cmd_catalog(cat: dict) -> None:
               f"{'yes' if installed(h) else 'no':<9} {trust_badge(h['trust_tool']):<10} {h.get('title', '')}")
 
 
-def cmd_catalog_check(cat: dict) -> int:
-    """`cowbell catalog --check` (LAB-1384): reject a malformed row by name.
+KIND_PROBE = {  # argv that prints usage without launching a session (LAB-1375)
+    "claude": ["--help"], "codex": ["--help"], "grok": ["--help"], "gemini": ["--help"],
+    "agy": ["--help"], "opencode": ["--help"], "pi": ["--help"], "devin": ["--help"],
+    "droid": ["--help"], "aider": ["--help"], "bash": ["--help"], "lab": ["--help"],
+}
 
-    Structural pass only — flag probes against real binaries are LAB-1375's job.
-    Harnesses that are not installed are reported, not failed."""
-    problems, unchecked = [], []
+
+def declared_flags(h: dict) -> list[str]:
+    """Every argv token the catalog declares for this harness — `*_flag` fields plus `resume`
+    (which can be a subcommand, e.g. `codex resume`; it is still probed by name)."""
+    out = []
+    for k, v in h.items():
+        if k == "resume" or k.endswith("_flag"):
+            out += [v] if isinstance(v, str) else list(v or [])
+    return [a for a in out if isinstance(a, str) and a]
+
+
+def flag_probe(h: dict, run=subprocess.run) -> list | None:
+    """Declared args the installed CLI's help does not mention. `None` = the probe could
+    not run (absent binary, timeout) — unchecked, not a failure. Never launches a session."""
+    exe = h.get("command") if is_wrapper(h) else h.get("kind")
+    if not exe:
+        return None
+    argv = [exe] + KIND_PROBE.get(h.get("kind"), ["--help"])
+    if len(argv) < 2:
+        return None
+    try:
+        proc = run(argv, capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    help_text = (proc.stdout or "") + (proc.stderr or "")
+    return [a for a in declared_flags(h) if a not in help_text]
+
+
+def cmd_catalog_check(cat: dict) -> int:
+    """`cowbell catalog --check` (LAB-1384/1375): reject a malformed row by name, and probe
+    each installed harness's help for its declared flags. A help miss is a `warn` (help
+    docs lag real argv — codex `-m` vs `--model` is the shape), not a failure.
+    Not-installed or unprobeable harnesses are reported, not failed."""
+    problems, warns, unchecked = [], [], []
     ids = set()
     for h in cat.get("harness", []):
         hid = h.get("id") or "(missing id)"
@@ -2734,6 +2768,12 @@ def cmd_catalog_check(cat: dict) -> int:
             problems.append(f"harness {hid}: models must be a list")
         if not installed(h):
             unchecked.append(hid)
+            continue
+        missing = flag_probe(h)
+        if missing is None:
+            unchecked.append(hid)  # probe could not run
+        elif missing:
+            warns.append(f"harness {hid}: {', '.join(missing)} not in {h.get('kind')} help")
     for name, pl in (cat.get("places") or {}).items():
         for hid in pl.get("allow_harness") or []:
             if hid not in ids:
@@ -2743,6 +2783,8 @@ def cmd_catalog_check(cat: dict) -> int:
             problems.append(f"place {name}: default_harness names unknown harness {dh!r}")
     for p in problems:
         print(f"  FAIL {p}")
+    for w in warns:
+        print(f"  warn {w}")
     for hid in unchecked:
         print(f"  skip {hid}: not installed")
     if problems:
