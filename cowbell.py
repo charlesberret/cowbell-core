@@ -655,6 +655,31 @@ def clear_pref(root: str, hid: str) -> None:
     _set_pref(root, hid, None)
 
 
+def rename_harness_refs(old: str, new: str) -> None:
+    """Point pins and roster rows at a renamed harness id. No-op when unchanged."""
+    if not old or not new or old == new:
+        return
+    data = load_pins()
+    dirs = data.get("dirs") or {}
+    changed = False
+    for entry in dirs.values():
+        if not isinstance(entry, dict) or old not in entry:
+            continue
+        kind = entry.pop(old)
+        entry.setdefault(new, kind)
+        changed = True
+    if changed:
+        save_pins(data)
+    rows = load_roster()
+    hit = False
+    for row in rows:
+        if row.get("harness") == old:
+            row["harness"] = new
+            hit = True
+    if hit:
+        save_roster(rows)
+
+
 def drop_harness_prefs(hid: str) -> None:
     """Strip pin/hide for a deleted harness in every directory. No-op when absent."""
     if not hid:
@@ -1268,7 +1293,8 @@ def render_registry(reg: dict, git_top: str | None = None, wider: int | None = N
     return "\n".join(out)
 
 
-FOLD = 5  # a section longer than this shows FOLD-1 rows and a "+ N more" row
+FOLD = 5  # Active and Resume: longer than this shows FOLD-1 rows and a "+ N more" row
+START_FOLD = 10  # New Session rows before "+ N more" when the window height is unknown
 # Census first (not a menu), then the two menus chroma marks as openable.
 PICKER_SECTIONS = (("running", "Active", SECONDARY), ("resume", "Resume", GOLD), ("start", "New Session", GREEN))
 
@@ -1325,8 +1351,42 @@ def fold(rows: list[dict], section: str, expanded: set[str]) -> list[dict]:
                                "line": paint(f"+ {len(rows) - (FOLD - 1)} more", FAINT)}]
 
 
+def _folded_count(n: int) -> int:
+    """Rows Active or Resume actually occupy, including a '+ N more' line."""
+    if n <= 0:
+        return 0
+    return n if n <= FOLD else FOLD
+
+
+def start_row_limit(lines: int | None = None, running: int = 0, resume: int = 0) -> int:
+    """New Session rows to show before '+ N more'.
+
+    Unknown height shows 10. A known height shows as many as fit under the
+    path, the hint bar, and the Active and Resume blocks already on screen.
+    """
+    if not lines:
+        return START_FOLD
+    used = 6  # path, hint bar, New Session heading, blanks
+    if running:
+        used += 3 + _folded_count(running)  # blank and the census box rules
+    if resume:
+        used += 2 + _folded_count(resume)
+    return max(1, lines - used)
+
+
+def _with_more(rows: list[dict], section: str, expanded: set[str], show: int) -> list[dict]:
+    """Show `show` data rows, then '+ N more' when the section is longer."""
+    if section in expanded or len(rows) <= show:
+        return rows
+    hidden = len(rows) - show
+    return rows[:show] + [{"action": "more", "section": section, "key": f"more:{section}",
+                           "hidden": hidden,
+                           "line": paint(f"+ {hidden} more", FAINT)}]
+
+
 def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | None = None,
-                   ws_labels: dict[str, str] | None = None, expanded: set[str] | None = None) -> list[dict]:
+                   ws_labels: dict[str, str] | None = None, expanded: set[str] | None = None,
+                   lines: int | None = None) -> list[dict]:
     """Popup rows: active census, resume, start new. Only Resume and New Session are a menu."""
     expanded = expanded or set()
     ws_labels = ws_labels or {}
@@ -1356,7 +1416,8 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
             if a.get("installed") and a.get("trust", {}).get("verdict") != "blocked"}
     start = []
     ranked = rank_harnesses(list(pool), roster or [], reg["root"], default=reg.get("default_harness") or "")
-    shown = ranked if "start" in expanded or len(ranked) <= FOLD else ranked[:FOLD - 1]
+    start_limit = start_row_limit(lines, running=len(live), resume=len(cold))
+    shown = ranked if "start" in expanded or len(ranked) <= start_limit else ranked[:start_limit]
     title_w = min(34, max((len(pool[h].get("title") or "") for h in shown), default=0))
     for hid in ranked:
         a = pool[hid]
@@ -1368,7 +1429,9 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
                               + paint(f"{a.get('title') or '':<{title_w}}" if warn else a.get("title") or "", MUTED) + warn})
     out = []
     for section, rows in (("running", live), ("resume", resume), ("start", start)):
-        out += [dict(c, section=section) for c in fold(rows, section, expanded)]
+        folded = (_with_more(rows, section, expanded, start_limit) if section == "start"
+                  else fold(rows, section, expanded))
+        out += [dict(c, section=section) for c in folded]
     return out
 
 
@@ -3100,6 +3163,52 @@ def _set_key_in_block(block: str, key: str, value) -> str:
     return "".join(lines)
 
 
+def place_blocks(text: str) -> list[dict]:
+    """Each `[places.*]` span: start, end (end exclusive), text."""
+    lines = text.splitlines(keepends=True)
+    spans, i, pos, n = [], 0, 0, len(lines)
+    while i < n:
+        hdr = _table_header(lines[i])
+        if hdr and hdr.startswith("[places."):
+            start = pos
+            endpos = pos + len(lines[i])
+            j = i + 1
+            while j < n:
+                if _table_header(lines[j]) is not None:
+                    break
+                endpos += len(lines[j])
+                j += 1
+            spans.append({"start": start, "end": endpos, "text": text[start:endpos]})
+            pos, i = endpos, j
+            continue
+        pos += len(lines[i])
+        i += 1
+    return spans
+
+
+def _rename_place_ids(old: str, new: str, path: Path | None = None) -> None:
+    """Rewrite allow_harness and default_harness that name `old`. Comments stay."""
+    p, text = _catalog_text(path)
+    for span in reversed(place_blocks(text)):
+        try:
+            parsed = tomllib.loads(span["text"])
+        except tomllib.TOMLDecodeError:
+            continue
+        places = parsed.get("places") or {}
+        if not places:
+            continue
+        pl = next(iter(places.values()))
+        block = span["text"]
+        allow = list(pl.get("allow_harness") or [])
+        if old in allow:
+            block = _set_key_in_block(block, "allow_harness", [new if x == old else x for x in allow])
+        if pl.get("default_harness") == old:
+            block = _set_key_in_block(block, "default_harness", new)
+        if block != span["text"]:
+            text = text[:span["start"]] + block + text[span["end"]:]
+    _commit_catalog(p, text)
+
+
 def harness_set_field(hid: str, key: str, value, path: Path | None = None) -> None:
     """Set one field inside the `[[harness]]` block for `hid`, keeping comments."""
     if not _BARE_KEY.match(key):
@@ -3556,6 +3665,44 @@ _KIND_TOOL_FLAGS = {
     "claude": ("--allowedTools", "--disallowedTools"),
     "grok": ("--allowedTools", "--disallowed-tools"),
 }
+# Selectable values for fields that used to be a blank line. "(none)" clears.
+# Model ids match the seed. Claude and pi tool names match those CLIs' own docs
+# and the seed lanes. Kinds without a list still get none and type-another.
+_NONE = "(none)"
+_TYPE = "(type another)"
+_KIND_MODELS = {
+    "claude": ["claude-sonnet-5", "claude-opus-5", "claude-fable-5-1", "claude-haiku-4-5-20251001"],
+    "grok": ["grok-4.6", "grok-4.7", "grok-4.7-build-fast", "grok-4.5"],
+}
+_PROVIDERS = ["ollama", "openai", "anthropic", "google", "xai", "openrouter"]
+_KIND_ALLOW = {
+    "claude": ["Read", "Read,Grep,Glob", "Read,Edit,Grep,Glob", "Read,Edit,Write,Bash,Grep,Glob"],
+    "pi": ["read", "read,edit,write"],
+}
+_KIND_DENY = {
+    "claude": ["Bash", "WebFetch,WebSearch", "Bash,WebFetch,WebSearch"],
+    "pi": ["bash"],
+}
+
+
+def _preset_choice(title: str, presets: list[str], current: str, intro: str = "") -> str | None:
+    """Pick a known value, clear it, or type one. None means the choice was cancelled."""
+    options = list(dict.fromkeys(x for x in presets if x))
+    items = options + [_NONE, _TYPE]
+    if current and current in options:
+        default = options.index(current)
+    elif not current:
+        default = len(options)
+    else:
+        default = len(items) - 1
+    j = choose(title, items, default=default, intro=intro)
+    if j is None:
+        return None
+    if items[j] == _NONE:
+        return ""
+    if items[j] == _TYPE:
+        return ask(f"  {title}: ", current)
+    return options[j]
 
 
 def harness_edit_rows(cat: dict, h: dict) -> list[tuple[str, str]]:
@@ -3565,7 +3712,10 @@ def harness_edit_rows(cat: dict, h: dict) -> list[tuple[str, str]]:
     Empty models, permissions, and tools stay on the menu so they can be set.
     """
     models = list(h.get("models") or [])
-    rows = [("description", _edit_row("description", h.get("title") or ""))]
+    rows = [
+        ("name", _edit_row("name", h.get("id") or "")),
+        ("description", _edit_row("description", h.get("title") or "")),
+    ]
     if is_wrapper(h):
         rows.append(("command", _edit_row("command", display_command(h.get("command") or ""))))
     rows += [
@@ -3599,9 +3749,24 @@ def _ensure_tool_flag(h: dict, which: str) -> None:
     harness_set_field(h["id"], key, pair[0] if which == "allow" else pair[1])
 
 
+def _rename_harness(old: str) -> str | None:
+    """Edit the harness id. Esc or an unchanged name writes nothing. Returns the new id."""
+    raw = ask("  name: ", old)
+    if not (raw or "").strip():
+        return None
+    new = slug(raw)
+    if new == old:
+        return None
+    harness_set_field(old, "id", new)
+    rename_harness_refs(old, new)
+    _rename_place_ids(old, new)
+    return new
+
+
 def _edit_harness_field(cat: dict, h: dict, key: str) -> bool:
     """Write one catalog field. A cancelled choice writes nothing."""
     hid = h["id"]
+    intro = paint(hid, INK, bold=True)
     if key == "description":
         harness_set_field(hid, "title", ask("  description: ", h.get("title") or ""))
         return True
@@ -3612,7 +3777,20 @@ def _edit_harness_field(cat: dict, h: dict, key: str) -> bool:
         harness_set_field(hid, "command", display_command(os.path.expanduser(raw.strip())))
         return True
     if key == "models":
-        models = parse_model_list(ask("  models (comma-separated): ", ", ".join(h.get("models") or [])))
+        current = ", ".join(h.get("models") or [])
+        presets = list(_KIND_MODELS.get(h.get("kind") or "", []))
+        for model in h.get("models") or []:
+            if model not in presets:
+                presets.append(model)
+        picked = _preset_choice("models", presets, current, intro=intro)
+        if picked is None or picked == current:
+            return False
+        if not picked:
+            models = []
+        elif picked in presets:
+            models = [picked]
+        else:
+            models = parse_model_list(picked)
         cur = (h.get("models") or [None])[0]
         if cur and cur in models:
             models = models_with_default(models, cur)
@@ -3622,17 +3800,23 @@ def _edit_harness_field(cat: dict, h: dict, key: str) -> bool:
         return True
     if key == "default":
         models = list(h.get("models") or [])
-        if not models:
+        presets = models or list(_KIND_MODELS.get(h.get("kind") or "", []))
+        if not presets:
             name = (ask("  default model: ", "") or "").strip()
             if not name:
                 return False
             _ensure_model_flag(h)
             harness_set_field(hid, "models", [name])
             return True
-        j = choose("default model", models, default=0, intro=paint(hid, INK, bold=True))
-        if j is None:
+        picked = _preset_choice("default model", presets, models[0] if models else "", intro=intro)
+        if picked is None or not picked:
             return False
-        harness_set_field(hid, "models", models_with_default(models, models[j]))
+        if picked not in presets:
+            models = models_with_default(models, picked) if models else [picked]
+        else:
+            models = models_with_default(models or presets, picked)
+        _ensure_model_flag(h)
+        harness_set_field(hid, "models", models)
         return True
     if key == "permissions":
         default_lane = harness_lane(h, cat) or "yellow"
@@ -3645,8 +3829,8 @@ def _edit_harness_field(cat: dict, h: dict, key: str) -> bool:
         return True
     if key == "allow":
         cur = h.get("tools_allow") or ""
-        val = ask("  tools allow (empty skip): ", cur)
-        if val == cur:
+        val = _preset_choice("tools allow", list(_KIND_ALLOW.get(h.get("kind") or "", [])), cur, intro=intro)
+        if val is None or val == cur:
             return False
         if val:
             _ensure_tool_flag(h, "allow")
@@ -3654,15 +3838,18 @@ def _edit_harness_field(cat: dict, h: dict, key: str) -> bool:
         return True
     if key == "deny":
         cur = h.get("tools_deny") or ""
-        val = ask("  tools deny (empty skip): ", cur)
-        if val == cur:
+        val = _preset_choice("tools deny", list(_KIND_DENY.get(h.get("kind") or "", [])), cur, intro=intro)
+        if val is None or val == cur:
             return False
         if val:
             _ensure_tool_flag(h, "deny")
         harness_set_field(hid, "tools_deny", val)
         return True
     if key == "provider":
-        val = (ask("  provider: ", h.get("provider") or "") or "").strip()
+        cur = h.get("provider") or ""
+        val = _preset_choice("provider", _PROVIDERS, cur, intro=intro)
+        if val is None or val == cur:
+            return False
         harness_set_field(hid, "provider", val)
         if val and not h.get("provider_flag") and (h.get("kind") or "") == "pi":
             harness_set_field(hid, "provider_flag", ["--provider"])
@@ -3671,11 +3858,17 @@ def _edit_harness_field(cat: dict, h: dict, key: str) -> bool:
         if (h.get("kind") or "") == "pi":
             harness_set_field(hid, "cycle_flag", [] if h.get("cycle_flag") else ["--models"])
             return True
-        raw = (ask("  cycle flag: ", " ".join(h.get("cycle_flag") or [])) or "").strip()
-        harness_set_field(hid, "cycle_flag", [raw] if raw else [])
+        cur = " ".join(h.get("cycle_flag") or [])
+        val = _preset_choice("model cycle", ["--models"], cur, intro=intro)
+        if val is None or val == cur:
+            return False
+        harness_set_field(hid, "cycle_flag", [val] if val else [])
         return True
     if key == "prompt":
-        val = (ask("  system prompt: ", h.get("system_prompt") or "") or "").strip()
+        cur = h.get("system_prompt") or ""
+        val = _preset_choice("system prompt", [], cur, intro=intro)
+        if val is None or val == cur:
+            return False
         harness_set_field(hid, "system_prompt", val)
         if val and not h.get("system_prompt_flag") and (h.get("kind") or "") == "pi":
             harness_set_field(hid, "system_prompt_flag", "--append-system-prompt")
@@ -3702,9 +3895,18 @@ def edit_harness(cat: dict, hid: str) -> bool:
         if j is None:
             return wrote
         try:
-            if _edit_harness_field(fresh, h, spec[j][0]):
+            key = spec[j][0]
+            if key == "name":
+                new = _rename_harness(hid)
+                if new:
+                    hid = new
+                    wrote = True
+            elif _edit_harness_field(fresh, h, key):
                 wrote = True
         except KeyboardInterrupt:
+            continue
+        except SystemExit as e:
+            print(f"  {e}")
             continue
 
 
@@ -4025,8 +4227,9 @@ def picker(ctx: Ctx, cat: dict) -> int:
             for r in identity_events(ident_seen, reg["live"]):
                 report_identity(r["pane_id"], r["name"], r.get("kind") or "", r.get("model") or "")
             ws_labels = {w.get("workspace_id"): w.get("label") or "" for w in snap.get("workspaces") or []}
-            choices = picker_choices(reg, rows, ctx.workspace_id, ws_labels, expanded)
-            width = min(shutil.get_terminal_size((84, 24)).columns, 100)
+            term = shutil.get_terminal_size((84, 24))
+            choices = picker_choices(reg, rows, ctx.workspace_id, ws_labels, expanded, lines=term.lines)
+            width = min(term.columns, 100)
             text = render_picker(reg, choices, top, wider, width=width)
             can_widen = bool(top and wider is not None and wider > len(reg["live"]))
             if tui:

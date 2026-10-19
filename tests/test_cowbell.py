@@ -408,17 +408,23 @@ class PickerList(unittest.TestCase):
     def test_fold_and_numbers_skip_more_row(self):
         reg = self.reg()
         reg["startable"] = [{"harness": f"h{i}", "title": "", "installed": True, "trust": {"verdict": "ok"}}
-                            for i in range(8)]
+                            for i in range(14)]
         choices = hm.picker_choices(reg, [])
         start = [c for c in choices if c["section"] == "start"]
-        self.assertEqual(len(start), hm.FOLD)
+        self.assertEqual(len(start), hm.START_FOLD + 1)
         self.assertEqual(start[-1]["action"], "more")
         self.assertIn("+ 4 more", start[-1]["line"])
         hm.render_picker(reg, choices)
         self.assertIsNone(start[-1]["idx"])
         self.assertEqual([c["idx"] for c in choices if c["action"] != "more"],
-                         [None, None, 1, 2, 3, 4, 5])
-        self.assertEqual(len([c for c in hm.picker_choices(reg, [], expanded={"start"}) if c["section"] == "start"]), 8)
+                         [None, None, *range(1, 12)])
+        self.assertEqual(len([c for c in hm.picker_choices(reg, [], expanded={"start"}) if c["section"] == "start"]), 14)
+        short = hm.picker_choices(reg, [], lines=12)
+        short_start = [c for c in short if c["section"] == "start"]
+        self.assertEqual(short_start[-1]["action"], "more")
+        self.assertLess(len(short_start) - 1, hm.START_FOLD)
+        tall = hm.picker_choices(reg, [], lines=80)
+        self.assertEqual(len([c for c in tall if c["section"] == "start"]), 14)
 
     def test_rank_here_beats_elsewhere_beats_catalog_order(self):
         roster = [{"harness": "grok", "cwd": "/Users/x/other", "last_seen": "2026-09-12"},
@@ -1054,7 +1060,7 @@ class ResolvedUid(unittest.TestCase):
     def _check(self, cat, want):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            reg = hm.cmd_registry(hm.Ctx(cwd=self.inner), cat, as_json=True)
+            reg = hm.cmd_registry(hm.Ctx(cwd=self.inner, live=hm.LiveSource()), cat, as_json=True)
         self.assertEqual(reg["resolved_uid"], want)
         new = json.loads(buf.getvalue())["new"]
         self.assertTrue(all(r["uid"] == want for r in new), new)
@@ -2777,20 +2783,21 @@ class PickerEdit(unittest.TestCase):
     def test_edit_rows_list_every_catalog_field(self):
         cat = hm.load_catalog()
         keys = [k for k, _ in hm.harness_edit_rows(cat, hm.harness_by_id(cat, "claude"))]
-        self.assertEqual(keys, ["description", "models", "default", "permissions", "allow", "deny",
+        self.assertEqual(keys, ["name", "description", "models", "default", "permissions", "allow", "deny",
                                 "provider", "cycle", "prompt"])
         wrapped = {"id": "local-ornith", "kind": "pi", "command": os.path.expanduser("~/.local/bin/local-ornith"),
                    "title": "ornith", "models": []}
         spec = hm.harness_edit_rows({"defaults": {"lane": "yellow"}, "lanes": {}}, wrapped)
         self.assertEqual([k for k, _ in spec],
-                         ["description", "command", "models", "default", "permissions", "allow", "deny",
+                         ["name", "description", "command", "models", "default", "permissions", "allow", "deny",
                           "provider", "cycle", "prompt"])
-        self.assertIn("~/.local/bin/local-ornith", spec[1][1])
+        self.assertIn("~/.local/bin/local-ornith", spec[2][1])
 
     def test_edit_menu_writes_the_field_you_pick(self):
-        # claude rows: description, models, default, permissions, allow, deny
-        with mock.patch("cowbell.ask", side_effect=["beta, alpha", "Read", "Bash"]), \
-             mock.patch("cowbell.choose", side_effect=[1, 2, 1, 3, 0, 4, 5, None]):
+        # name, description, models, default, permissions, allow, deny, …
+        # models: type another. allow/deny: the first preset (Read, Bash).
+        with mock.patch("cowbell.ask", side_effect=["beta, alpha"]), \
+             mock.patch("cowbell.choose", side_effect=[2, 5, 3, 1, 4, 0, 5, 0, 6, 0, None]):
             self.assertTrue(hm.edit_harness(hm.load_catalog(), "claude"))
         after = self._text()
         self.assertIn("# cowbell — which agents can be started", after)
@@ -2805,7 +2812,7 @@ class PickerEdit(unittest.TestCase):
     def test_edit_wrapper_model_records_the_pi_flag(self):
         hm.harness_insert({"id": "local-ornith", "kind": "pi",
                            "command": "~/.local/bin/local-ornith", "title": "ornith"})
-        with mock.patch("cowbell.choose", side_effect=[2, None]), \
+        with mock.patch("cowbell.choose", side_effect=[3, 1, None]), \
              mock.patch("cowbell.ask", return_value="ollama-hesiod/ornith:9b"):
             self.assertTrue(hm.edit_harness(hm.load_catalog(), "local-ornith"))
         h = hm.harness_by_id(hm.load_catalog(), "local-ornith")
@@ -2820,8 +2827,7 @@ class PickerEdit(unittest.TestCase):
 
     def test_edit_provider_on_pi_records_the_pi_flag(self):
         idx = self._edit_row_index("pi", "provider")
-        with mock.patch("cowbell.choose", side_effect=[idx, None]), \
-             mock.patch("cowbell.ask", return_value="ollama"):
+        with mock.patch("cowbell.choose", side_effect=[idx, 0, None]):
             self.assertTrue(hm.edit_harness(hm.load_catalog(), "pi"))
         h = hm.harness_by_id(hm.load_catalog(), "pi")
         self.assertEqual(h["provider"], "ollama")
@@ -2838,7 +2844,7 @@ class PickerEdit(unittest.TestCase):
 
     def test_edit_prompt_on_pi_records_the_pi_flag(self):
         idx = self._edit_row_index("pi", "prompt")
-        with mock.patch("cowbell.choose", side_effect=[idx, None]), \
+        with mock.patch("cowbell.choose", side_effect=[idx, 1, None]), \
              mock.patch("cowbell.ask", return_value="Grade: MID"):
             self.assertTrue(hm.edit_harness(hm.load_catalog(), "pi"))
         h = hm.harness_by_id(hm.load_catalog(), "pi")
@@ -2847,12 +2853,39 @@ class PickerEdit(unittest.TestCase):
 
     def test_edit_provider_on_codex_writes_no_flag(self):
         idx = self._edit_row_index("codex", "provider")
-        with mock.patch("cowbell.choose", side_effect=[idx, None]), \
-             mock.patch("cowbell.ask", return_value="ollama"):
+        with mock.patch("cowbell.choose", side_effect=[idx, 0, None]):
             self.assertTrue(hm.edit_harness(hm.load_catalog(), "codex"))
         h = hm.harness_by_id(hm.load_catalog(), "codex")
         self.assertEqual(h["provider"], "ollama")
         self.assertNotIn("provider_flag", h)
+
+    def test_edit_name_is_first_and_renames_pins_roster_and_place(self):
+        self.catalog.write_text(self.catalog.read_text() + (
+            '\n[places.lab]\nallow_harness = ["claude", "grok"]\ndefault_harness = "claude"\n'
+        ))
+        hm.pin_harness(self.root, "claude")
+        hm.save_roster([{"name": "old", "cwd": self.root, "harness": "claude", "kind": "claude"}])
+        with mock.patch("cowbell.choose", side_effect=[0, None]), \
+             mock.patch("cowbell.ask", return_value="claude-lab"):
+            self.assertTrue(hm.edit_harness(hm.load_catalog(), "claude"))
+        cat = hm.load_catalog()
+        self.assertIsNone(hm.harness_by_id(cat, "claude"))
+        self.assertEqual(hm.harness_by_id(cat, "claude-lab")["kind"], "claude")
+        self.assertIn("claude-lab", hm.dir_prefs(self.root)["pin"])
+        self.assertNotIn("claude", hm.dir_prefs(self.root)["pin"])
+        self.assertEqual(hm.load_roster()[0]["harness"], "claude-lab")
+        text = self._text()
+        self.assertIn('allow_harness = ["claude-lab", "grok"]', text)
+        self.assertIn('default_harness = "claude-lab"', text)
+        self.assertIn("# cowbell — which agents can be started", text)
+
+    def test_edit_provider_none_clears_it(self):
+        hm.harness_set_field("pi", "provider", "ollama")
+        idx = self._edit_row_index("pi", "provider")
+        none = len(hm._PROVIDERS)  # the (none) row after the presets
+        with mock.patch("cowbell.choose", side_effect=[idx, none, None]):
+            self.assertTrue(hm.edit_harness(hm.load_catalog(), "pi"))
+        self.assertEqual(hm.harness_by_id(hm.load_catalog(), "pi").get("provider") or "", "")
 
     def test_edit_esc_writes_nothing(self):
         before = self.catalog.read_bytes()
@@ -3015,7 +3048,7 @@ class PickerEdit(unittest.TestCase):
         self.assertIn("[places.lobby]", saved)
         self.assertIn("unix_user = \"guest\"", saved)
         with mock.patch("cowbell.ask", return_value="probe edited"), \
-             mock.patch("cowbell.choose", side_effect=[0, None]):
+             mock.patch("cowbell.choose", side_effect=[1, None]):
             hm.edit_harness(hm.load_catalog(), "lab-256-probe")
         edited = self._text()
         self.assertIn("# cowbell — the constitution of the herd.", edited)
