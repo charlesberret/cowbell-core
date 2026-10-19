@@ -55,6 +55,30 @@ def agent(pane, kind, cwd, status="idle", title="", sid="s1"):
             "workspace_id": "w1", "terminal_title_stripped": title, "agent_session": {"value": sid}}
 
 
+_SENTINEL_DIR = None
+_SENTINEL_LOG = None
+
+
+def setUpModule():
+    """route every in-process herdr call through a logging stub, so a test that
+    forgets to patch the adapter cannot reach the live binary or socket. ZSuiteSeam (which
+    sorts last) fails if the stub was ever run."""
+    global _SENTINEL_DIR, _SENTINEL_LOG
+    _SENTINEL_DIR = tempfile.TemporaryDirectory()
+    base = Path(_SENTINEL_DIR.name)
+    stub = base / "herdr"
+    _SENTINEL_LOG = base / "herdr-calls.log"
+    stub.write_text(f'#!/bin/sh\necho "$@" >> "{_SENTINEL_LOG}"\nexit 1\n')
+    stub.chmod(0o755)
+    os.environ["HERDR_BIN_PATH"] = str(stub)
+    os.environ["HERDR_SOCKET_PATH"] = str(base / "no.sock")
+
+
+def tearDownModule():
+    if _SENTINEL_DIR:
+        _SENTINEL_DIR.cleanup()
+
+
 class Scope(unittest.TestCase):
     def test_at_or_beneath(self):
         self.assertTrue(hm.at_or_beneath(ROOT, ROOT))
@@ -171,13 +195,13 @@ class Argv(unittest.TestCase):
 class Registry(unittest.TestCase):
     def setUp(self):
         self.agents = [
-            agent("w1:p1", "claude", ROOT, "working", "majordomo"),
+            agent("w1:p1", "claude", ROOT, "working", "planner"),
             agent("w1:p2", "grok", "/Users/x", "idle", "sysadmin"),          # above root: excluded
             agent("w1:p3", "claude", ROOT + "/ballots", "idle", "ballots"),
         ]
         self.panes = [{"pane_id": p} for p in ("w1:p1", "w1:p2", "w1:p3", "w1:p9")]
         self.roster = [
-            {"name": "majordomo", "cwd": ROOT, "harness": "claude", "kind": "claude", "pane_id": "w1:p1", "model": "claude-opus-5"},
+            {"name": "planner", "cwd": ROOT, "harness": "claude", "kind": "claude", "pane_id": "w1:p1", "model": "claude-opus-5"},
             {"name": "kimi-notes", "cwd": ROOT, "harness": "oll-mid", "kind": "pi", "pane_id": "w1:p9", "session_id": "k1"},
             {"name": "old-codex", "cwd": ROOT + "/sub", "harness": "codex", "kind": "codex", "pane_id": "gone", "session_id": "c1"},
             {"name": "elsewhere", "cwd": "/Users/x/other", "harness": "claude", "kind": "claude", "pane_id": "w1:p5"},
@@ -186,7 +210,7 @@ class Registry(unittest.TestCase):
 
     def test_partition(self):
         reg = hm.build_registry(CAT, ROOT, self.agents, self.panes, self.roster, matcher=self.matcher, subject="internal")
-        self.assertEqual([r["name"] for r in reg["live"]], ["majordomo", "ballots"])
+        self.assertEqual([r["name"] for r in reg["live"]], ["planner", "ballots"])
         self.assertEqual(reg["live"][0]["model"], "claude-opus-5")
         self.assertTrue(reg["live"][0]["on_roster"]); self.assertFalse(reg["live"][1]["on_roster"])
         cold = {r["name"]: r for r in reg["cold"]}
@@ -201,7 +225,7 @@ class Registry(unittest.TestCase):
     def test_render_mentions_sections(self):
         reg = hm.build_registry(CAT, ROOT, self.agents, self.panes, self.roster, matcher=self.matcher, subject="internal")
         text = hm.render_registry(reg, git_top="/Users/x/code/projects", wider=3)
-        for needle in ("LIVE HERE", "COLD HERE", "ABSENT HERE", "majordomo", "kimi-notes", "local-ornith ⌂⊘",
+        for needle in ("LIVE HERE", "COLD HERE", "ABSENT HERE", "planner", "kimi-notes", "local-ornith ⌂⊘",
                        "omp ↑ok", "[g] widen", "subject: internal"):
             self.assertIn(needle, text)
         self.assertNotIn("sysadmin", text)
@@ -233,7 +257,7 @@ class Registry(unittest.TestCase):
             self.assertTrue(row["cwd"])
             self.assertEqual(row["place"], "nomogenesis")
             self.assertEqual(row["host"], "herdr pane")
-        self.assertEqual([r["name"] for r in payload["running"]], ["majordomo", "ballots"])
+        self.assertEqual([r["name"] for r in payload["running"]], ["planner", "ballots"])
         resume = {r["name"]: r for r in payload["resume"]}
         self.assertEqual(resume["old-codex"]["host"], "none")
         self.assertEqual(resume["kimi-notes"]["host"], "herdr pane")
@@ -263,7 +287,7 @@ class PickerList(unittest.TestCase):
     def reg(self):
         return {
             "root": ROOT, "subject": "internal",
-            "live": [{"name": "majordomo", "harness": "claude", "kind": "claude", "status": "idle",
+            "live": [{"name": "planner", "harness": "claude", "kind": "claude", "status": "idle",
                       "pane_id": "w1:p1", "workspace_id": "w1", "on_roster": True, "since": ""},
                      {"name": "scholar", "harness": "grok", "kind": "grok", "status": "done",
                       "pane_id": "w2:p1", "workspace_id": "w2", "on_roster": True, "since": "4m"}],
@@ -283,27 +307,27 @@ class PickerList(unittest.TestCase):
 
     def test_sections_and_what_is_left_off(self):
         reg = self.reg()
-        choices = hm.picker_choices(reg, [], here_ws="w1", ws_labels={"w2": "sys:clubhouse"})
+        choices = hm.picker_choices(reg, [], here_ws="w1", ws_labels={"w2": "proj:docs"})
         self.assertEqual([c["section"] for c in choices], ["running", "running", "resume", "start", "start", "start"])
         self.assertEqual([c["target"]["harness"] for c in choices if c["action"] == "raise"], ["claude", "grok", "pi"])
         self.assertEqual([hm.picker_selectable(c) for c in choices], [False, False, True, True, True, True])
         text = hm.render_picker(reg, choices)
-        for needle in ("┌─ Active ", "  Resume\n", "  New Session\n", "majordomo", "in sys:clubhouse", "4m",
+        for needle in ("┌─ Active ", "  Resume\n", "  New Session\n", "planner", "in proj:docs", "4m",
                        "Claude Code", "! more reach than needed"):
             self.assertIn(needle, text)
-        self.assertNotIn("  1  majordomo", text)
+        self.assertNotIn("  1  planner", text)
         self.assertTrue(any(c.get("idx") == 1 and c["action"] == "enter" for c in choices))
         for gone in ("LIVE", "RAISE", "subject", "omp", "local-ornith", "⊘", "?", "w1:p1", "cold", "no-session"):
             self.assertNotIn(gone, text)
 
     def test_picker_rows_use_the_lobe_mark(self):
         reg = self.reg()
-        choices = hm.picker_choices(reg, [], here_ws="w1", ws_labels={"w2": "sys:clubhouse"})
+        choices = hm.picker_choices(reg, [], here_ws="w1", ws_labels={"w2": "proj:docs"})
 
         def plain(c):
             return hm.ANSI_RE.sub("", c["line"])
 
-        live = next(c for c in choices if c["target"].get("name") == "majordomo")
+        live = next(c for c in choices if c["target"].get("name") == "planner")
         resume = next(c for c in choices if c["action"] == "enter")
         start = next(c for c in choices if c.get("action") == "raise" and c["target"]["harness"] == "claude")
         for row, kind in ((live, "claude"), (resume, "pi"), (start, "claude")):
@@ -313,7 +337,7 @@ class PickerList(unittest.TestCase):
         self.assertNotIn("claude", plain(live))
         self.assertNotIn("oll-mid", plain(resume))
         self.assertNotIn("pi", plain(resume))
-        self.assertGreater(plain(live).index(hm.LOBE_GLYPH["claude"]), plain(live).index("majordomo"))
+        self.assertGreater(plain(live).index(hm.LOBE_GLYPH["claude"]), plain(live).index("planner"))
         self.assertGreater(plain(resume).index(hm.LOBE_GLYPH["pi"]), plain(resume).index("kimi-notes"))
         self.assertGreater(plain(start).index(hm.LOBE_GLYPH["claude"]), plain(start).index("claude"))
         self.assertTrue(plain(live).split(hm.LOBE_GLYPH["claude"], 1)[1].startswith("  "))
@@ -321,7 +345,7 @@ class PickerList(unittest.TestCase):
         self.assertTrue(plain(start).split(hm.LOBE_GLYPH["claude"], 1)[1].startswith("  "))
         census = hm.render_registry({
             "root": ROOT, "subject": "internal",
-            "live": [{"name": "majordomo", "harness": "claude", "kind": "claude", "status": "idle",
+            "live": [{"name": "planner", "harness": "claude", "kind": "claude", "status": "idle",
                       "pane_id": "w1:p1", "on_roster": True, "cwd": ROOT, "session_id": ""}],
             "cold": [{"name": "kimi-notes", "harness": "oll-mid", "kind": "pi", "status": "cold",
                       "pane_id": None, "cwd": ROOT, "session_id": "k1"}],
@@ -335,16 +359,16 @@ class PickerList(unittest.TestCase):
 
     def test_active_sits_in_a_box(self):
         reg = self.reg()
-        choices = hm.picker_choices(reg, [], here_ws="w1", ws_labels={"w2": "sys:clubhouse"})
+        choices = hm.picker_choices(reg, [], here_ws="w1", ws_labels={"w2": "proj:docs"})
         lines = hm.render_picker(reg, choices).split("\n")
         top = next(i for i, ln in enumerate(lines) if "┌─ Active" in ln)
         bot = next(i for i, ln in enumerate(lines) if ln.strip().startswith("└"))
         inner = "\n".join(lines[top:bot + 1])
-        self.assertIn("majordomo", inner)
+        self.assertIn("planner", inner)
         self.assertIn("scholar", inner)
         self.assertNotIn("Resume", inner)
         self.assertGreater(next(i for i, ln in enumerate(lines) if ln == "  Resume"), bot)
-        name = next(ln for ln in lines[top + 1:bot] if "majordomo" in ln)
+        name = next(ln for ln in lines[top + 1:bot] if "planner" in ln)
         self.assertTrue(name.lstrip().startswith("│"))
         self.assertTrue(name.rstrip().endswith("│"))
         self.assertEqual(hm.visible_len(lines[top]), hm.visible_len(name))
@@ -520,7 +544,7 @@ class Input(unittest.TestCase):
 
 
 class Paths(unittest.TestCase):
-    """XDG config/state shared by both doors; one-time copy off herdr's plugin dirs (LAB-248)."""
+    """XDG config/state shared by both doors; one-time copy off herdr's plugin dirs."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -759,7 +783,7 @@ class CtxCwd(unittest.TestCase):
 
 
 class Places(unittest.TestCase):
-    """[places]: a directory's pen, allowed harnesses and lane; ~ goes to the untitled place (LAB-262)."""
+    """[places]: a directory's pen, allowed harnesses and lane; ~ goes to the untitled place."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -825,7 +849,7 @@ class Places(unittest.TestCase):
         with self.assertRaises(SystemExit):
             hm.cmd_new(hm.Ctx(cwd=self.pad), self.cat, "grok", place="nowhere")
 
-    # --- LAB-295: nested cwds resolve to exactly one place ---
+    # --- nested cwds resolve to exactly one place ---
 
     def _nested_cat(self):
         """An inner place inside the lobby place: the inner one wins beneath its cwd."""
@@ -1015,8 +1039,44 @@ class Places(unittest.TestCase):
             hm.herdr = saved
 
 
+class ResolvedUid(unittest.TestCase):
+    """status --json new rows carry the launch uid for the cwd."""
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        self.inner = os.path.join(self.home, "proj")
+        os.makedirs(self.inner)
+        os.environ["COWBELL_STATE_DIR"] = tempfile.mkdtemp()
+
+    def tearDown(self):
+        os.environ.pop("COWBELL_STATE_DIR", None)
+
+    def _check(self, cat, want):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            reg = hm.cmd_registry(hm.Ctx(cwd=self.inner), cat, as_json=True)
+        self.assertEqual(reg["resolved_uid"], want)
+        new = json.loads(buf.getvalue())["new"]
+        self.assertTrue(all(r["uid"] == want for r in new), new)
+
+    def test_place_uid_wins(self):
+        cat = {"harness": [dict(CAT["harness"][1])],
+               "places": {"lab": {"cwd": self.inner, "unix_user": "guest"}}}
+        self._check(cat, "guest")
+
+    def test_default_uid_when_the_place_is_silent(self):
+        cat = {"defaults": {"unix_user": "dvops"}, "harness": [dict(CAT["harness"][1])],
+               "places": {"lab": {"cwd": self.inner}}}
+        self._check(cat, "dvops")
+
+    def test_no_drop_is_empty(self):
+        cat = {"harness": [dict(CAT["harness"][1])],
+               "places": {"lab": {"cwd": self.inner}}}
+        self._check(cat, "")
+
+
 class Hosts(unittest.TestCase):
-    """LiveSource / HostLaunch seams (LAB-249)."""
+    """LiveSource / HostLaunch seams."""
 
     SRC = Path(__file__).resolve().parent.parent / "cowbell.py"
 
@@ -1093,7 +1153,7 @@ class Hosts(unittest.TestCase):
 
 
 class NoHerdrCalls(unittest.TestCase):
-    """COWBELL_MODE=here, no server: a herdr binary that logs and fails is never run (LAB-249)."""
+    """COWBELL_MODE=here, no server: a herdr binary that logs and fails is never run."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1229,7 +1289,7 @@ class Standalone(unittest.TestCase):
 
 
 class SidebarTokens(unittest.TestCase):
-    """LAB-297: herdr identity tokens on raise/adopt/state-change only — never a loop."""
+    """herdr identity tokens on raise/adopt/state-change only — never a loop."""
 
     def test_glyph_table_matches_the_sidebar(self):
         self.assertEqual(hm.glyph_for("grok"), hm.LOBE_GLYPH["grok"])
@@ -1287,7 +1347,7 @@ class SidebarTokens(unittest.TestCase):
         hm.report_identity = lambda pane, name, kind, model="": published.append((pane, name, kind, model)) or True
         try:
             snap = {
-                "tabs": [{"tab_id": "t1", "label": "majordomo"}],
+                "tabs": [{"tab_id": "t1", "label": "planner"}],
                 "agents": [
                     {"pane_id": "w1:p1", "tab_id": "t1", "agent": "grok", "tokens": {}},
                     {"pane_id": "w1:p2", "tab_id": "t1", "agent": "claude",
@@ -1299,8 +1359,8 @@ class SidebarTokens(unittest.TestCase):
             self.assertEqual(hm.stamp_live_identities(snap), 2)
         finally:
             hm.report_identity = orig
-        self.assertEqual(published[0], ("w1:p1", "majordomo", "grok", ""))
-        self.assertEqual(published[1], ("w1:p2", "majordomo", "claude", "Opus 5.5"))
+        self.assertEqual(published[0], ("w1:p1", "planner", "grok", ""))
+        self.assertEqual(published[1], ("w1:p2", "planner", "claude", "Opus 5.5"))
 
     def test_sync_identity_overwrites_on_detected_kind(self):
         calls = []
@@ -1308,7 +1368,7 @@ class SidebarTokens(unittest.TestCase):
         hm.herdr = lambda *a, **k: calls.append(a) or {}
         try:
             event = {"event": "pane.agent_detected", "data": {"pane_id": "w1:p1", "agent": "claude"}}
-            ctx = {"tab_label": "majordomo-grok"}
+            ctx = {"tab_label": "planner-grok"}
             self.assertEqual(hm.sync_identity_from_plugin_event(event, ctx), "stamped")
         finally:
             hm.herdr = orig
@@ -1319,8 +1379,8 @@ class SidebarTokens(unittest.TestCase):
         self.assertEqual(args[args.index("--display-agent") + 1], g)
         tokens = [args[i + 1] for i, a in enumerate(args) if a == "--token"]
         self.assertIn(f"glyph={g}", tokens)
-        self.assertIn(f"line1={g} majordomo-grok", tokens)
-        self.assertIn(("pane", "rename", "w1:p1", "majordomo-grok · claude"), calls)
+        self.assertIn(f"line1={g} planner-grok", tokens)
+        self.assertIn(("pane", "rename", "w1:p1", "planner-grok · claude"), calls)
 
     def test_sync_identity_clears_on_exit_or_release(self):
         calls = []
@@ -1366,11 +1426,11 @@ class SidebarTokens(unittest.TestCase):
         hm.report_identity = lambda pane, name, kind, model="": published.append((pane, name, kind)) or True
         try:
             # adopt: a process-scan row has no herdr pane, so no publish even here
-            row = agent("pid:42", "grok", ROOT, "running", "majordomo")
+            row = agent("pid:42", "grok", ROOT, "running", "planner")
             row["pid"], row["tty"], row["tab_id"] = 42, "ttys002", "w1:t1"
             ctx = hm.Ctx(cwd=ROOT, mode="here", live=OneLive(row), launch=hm.HereLaunch())
             os.environ["COWBELL_STATE_DIR"] = tempfile.mkdtemp()
-            hm.cmd_adopt(ctx, CAT, name="majordomo")
+            hm.cmd_adopt(ctx, CAT, name="planner")
             self.assertEqual(published, [])
             # adopt of a herdr pane publishes once
             row = agent("w1B:p5", "grok", ROOT, "idle", "grok-seat")
@@ -1378,24 +1438,25 @@ class SidebarTokens(unittest.TestCase):
             hm.cmd_adopt(ctx, CAT, name="grok-seat")
             self.assertEqual(published, [("w1B:p5", "grok-seat", "grok")])
             # a raise publishes once with the sitting and harness
-            saved = (hm.start_native, hm.save_roster, hm.load_roster, hm.create_tab, hm.pick_workspace)
+            saved = (hm.start_native, hm.save_roster, hm.load_roster, hm.create_tab, hm.pick_workspace, hm.herdr)
             hm.create_tab = lambda *a, **k: {"pane_id": "w1C:p1", "tab_id": "w1C:t1", "workspace_id": "w1C"}
             hm.pick_workspace = lambda *a, **k: "w1C"
             hm.start_native = lambda *a, **k: {}
             hm.save_roster = lambda rows: None
             hm.load_roster = lambda: []
+            hm.herdr = lambda *a, **k: {}
             try:
                 hm.raise_harness(CAT, hm.harness_by_id(CAT, "grok"), "probe-seat", ROOT,
                                  hm.Ctx(workspace_id="w1C", cwd=ROOT), model="", lane="")
             finally:
-                (hm.start_native, hm.save_roster, hm.load_roster, hm.create_tab, hm.pick_workspace) = saved
+                (hm.start_native, hm.save_roster, hm.load_roster, hm.create_tab, hm.pick_workspace, hm.herdr) = saved
         finally:
             hm.report_identity = orig
             os.environ.pop("COWBELL_STATE_DIR", None)
         self.assertEqual(published[-1], ("w1C:p1", "probe-seat", "grok"))
 
     def test_plugin_has_no_reporter(self):
-        # LAB-297: no report-metadata clock. keys ensure may run at startup (prefix+c claim).
+        # no report-metadata clock. keys ensure may run at startup (prefix+c claim).
         plugin = Path(__file__).resolve().parent.parent.parent / "herdr-cowbell" / "herdr-plugin.toml"
         if not plugin.exists():
             self.skipTest("plugin tree not present")
@@ -1408,7 +1469,7 @@ class SidebarTokens(unittest.TestCase):
 
 
 class ResumeOutside(unittest.TestCase):
-    """LAB-298: recall in a plain terminal — the session-flag table, honestly filled."""
+    """recall in a plain terminal — the session-flag table, honestly filled."""
 
     def test_claude_resume_with_herdr_down_uses_the_session_flag(self):
         claude = dict(CAT["harness"][0], session_id_flag="--session-id", name_flag="--name")
@@ -1521,7 +1582,7 @@ class ResumeOutside(unittest.TestCase):
 
 
 class StandaloneIdentify(unittest.TestCase):
-    """LAB-294: a live CLI is identified by its cwd — harness id + place — with no herdr anywhere."""
+    """a live CLI is identified by its cwd — harness id + place — with no herdr anywhere."""
 
     PS = """\
       1     0 ??       /sbin/launchd
@@ -1608,6 +1669,34 @@ class StandaloneIdentify(unittest.TestCase):
         self.assertEqual(payload["place"], "lobby")
 
 
+class ResumeInPlace(unittest.TestCase):
+    """a still-present pane takes the resume in place — no new tab, no focus."""
+
+    def test_dead_sitting_resumes_in_its_own_pane(self):
+        calls = []
+        saved = (hm.herdr, hm.load_roster, hm.wait_shell, hm.save_roster)
+        hm.herdr = lambda *a, **k: (calls.append(a) or {})
+        hm.load_roster = lambda: [{"name": "sess", "cwd": ROOT, "harness": "claude", "kind": "claude",
+                                   "session_id": "abc", "pane_id": "w1:p9"}]
+        hm.wait_shell = lambda pid: None
+        hm.save_roster = lambda rows: None
+
+        class Live(hm.LiveSource):
+            herdr = True
+            def panes(self):
+                return [{"pane_id": "w1:p9", "tab_id": "w1:t1", "workspace_id": "w1"}]
+
+        try:
+            hm.cmd_enter(hm.Ctx(cwd=ROOT, live=Live()), CAT, "sess")
+        finally:
+            hm.herdr, hm.load_roster, hm.wait_shell, hm.save_roster = saved
+        pairs = [c[:2] for c in calls]
+        self.assertIn(("pane", "run"), pairs)
+        self.assertIn(("pane", "run", "w1:p9"), [c[:3] for c in calls])
+        self.assertNotIn(("tab", "create"), pairs)   # no new tab for a still-present pane
+        self.assertNotIn(("tab", "focus"), pairs)    # focus stays where the person is
+
+
 class Version(unittest.TestCase):
     def test_version_line_is_parseable(self):
         import io, re
@@ -1628,6 +1717,16 @@ class Version(unittest.TestCase):
         finally:
             hm.server_up = orig
 
+    def test_changelog_tracks_version(self):
+        """the newest CHANGELOG heading keeps pace with __version__."""
+        changelog = Path(__file__).resolve().parent.parent / "CHANGELOG.md"
+        headings = [ln.strip() for ln in changelog.read_text().splitlines() if ln.startswith("## ")]
+        self.assertTrue(headings, "CHANGELOG.md has no release sections")
+        m = re.match(r"## Unreleased(?:\s+\((\d+\.\d+\.\d+)\))?$", headings[0])
+        if m and m.group(1):
+            self.assertEqual(m.group(1), hm.__version__)
+        elif not m:
+            self.assertRegex(headings[0], rf"^## {re.escape(hm.__version__)}\b")
 
 
 class Flags(unittest.TestCase):
@@ -1638,7 +1737,7 @@ class Flags(unittest.TestCase):
 
 
 class NewUsage(unittest.TestCase):
-    """LAB-424: `new -h|--help` prints usage and exits 0; an unknown flag exits 2. Neither raises."""
+    """`new -h|--help` prints usage and exits 0; an unknown flag exits 2. Neither raises."""
 
     def setUp(self):
         self._server_up = hm.server_up
@@ -1681,7 +1780,7 @@ class NewUsage(unittest.TestCase):
 class Sitting(unittest.TestCase):
     def test_head(self):
         self.assertEqual(hm.sitting_head("builder-minaret"), "builder")
-        self.assertEqual(hm.sitting_head("Majordomo"), "majordomo")
+        self.assertEqual(hm.sitting_head("Planner"), "planner")
         self.assertEqual(hm.sitting_head("coord-cowbell"), "coord")
 
     def test_grok_claim_only_when_defined(self):
@@ -1767,11 +1866,11 @@ class OneLive(hm.LiveSource):
         return [self.row]
 
     def snapshot(self):
-        return {"agents": [self.row], "tabs": [{"tab_id": self.row.get("tab_id"), "label": "majordomo"}]}
+        return {"agents": [self.row], "tabs": [{"tab_id": self.row.get("tab_id"), "label": "planner"}]}
 
 
 class RaiseCLI(unittest.TestCase):
-    """LAB-296: new --place --harness --name is the assembly primitive; N raises return."""
+    """new --place --harness --name is the assembly primitive; N raises return."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1827,7 +1926,7 @@ class RaiseCLI(unittest.TestCase):
 
 
 class Adopt(unittest.TestCase):
-    """LAB-293: cowbell adopt is a core command; no herdr required for a process-scan row."""
+    """cowbell adopt is a core command; no herdr required for a process-scan row."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1837,7 +1936,7 @@ class Adopt(unittest.TestCase):
         os.environ["COWBELL_STATE_DIR"] = str(self.state)
         self.addCleanup(lambda: os.environ.pop("COWBELL_STATE_DIR", None))
         (self.state / "roster.json").write_text(json.dumps({"schema": 1, "harnesses": []}))
-        self.row = agent("pid:42", "grok", ROOT, "running", "majordomo")
+        self.row = agent("pid:42", "grok", ROOT, "running", "planner")
         self.row["pid"] = 42
         self.row["tty"] = "ttys002"
         self.row["tab_id"] = "w1:t1"
@@ -1848,20 +1947,20 @@ class Adopt(unittest.TestCase):
         self.assertEqual(rc, 0)
 
     def test_adopt_writes_roster_and_status_running(self):
-        row = hm.cmd_adopt(self.ctx, CAT, name="majordomo")
-        self.assertEqual(row["name"], "majordomo")
+        row = hm.cmd_adopt(self.ctx, CAT, name="planner")
+        self.assertEqual(row["name"], "planner")
         self.assertEqual(row["harness"], "grok")
         self.assertEqual(row["source"], "adopt")
         self.assertEqual(row["pane_id"], "pid:42")
         roster = hm.load_roster()
         self.assertEqual(len(roster), 1)
-        self.assertEqual(roster[0]["name"], "majordomo")
+        self.assertEqual(roster[0]["name"], "planner")
         reg = hm.build_registry(CAT, ROOT, [self.row], [{"pane_id": "pid:42"}], roster,
                                 matcher=lambda _t: {"verdict": "ok"})
-        self.assertEqual(reg["live"][0]["name"], "majordomo")
+        self.assertEqual(reg["live"][0]["name"], "planner")
         self.assertTrue(reg["live"][0]["on_roster"])
         payload = hm.registry_json(reg)
-        self.assertEqual(payload["running"][0]["name"], "majordomo")
+        self.assertEqual(payload["running"][0]["name"], "planner")
         self.assertEqual(payload["running"][0]["harness"], "grok")
 
     def test_adopt_pane_flag(self):
@@ -1875,7 +1974,7 @@ class Adopt(unittest.TestCase):
 
     def test_adopt_uses_snapshot_focused_pane(self):
         """agent list often has focused=False on every row; snapshot has focused_pane_id."""
-        grok = agent("wK:p1", "grok", ROOT, "working", "majordomo")
+        grok = agent("wK:p1", "grok", ROOT, "working", "planner")
         grok["focused"] = False
         grok["tab_id"] = "wK:t1"
         claude = agent("wK:p6", "claude", ROOT, "idle", "sysadmin")
@@ -1892,7 +1991,8 @@ class Adopt(unittest.TestCase):
                 ]}
 
         ctx = hm.Ctx(cwd=ROOT, mode="tab", pane_id="wK:p9", live=SnapLive(), launch=hm.HereLaunch())
-        row = hm.cmd_adopt(ctx, CAT)
+        with mock.patch.object(hm, "report_identity", return_value=True):
+            row = hm.cmd_adopt(ctx, CAT)
         self.assertEqual(row["pane_id"], "wK:p6")
         self.assertEqual(row["harness"], "claude")
 
@@ -1935,14 +2035,16 @@ class Adopt(unittest.TestCase):
 
     def test_adopt_positional_pane_id(self):
         ctx, grok, claude = self._two_unfocused()
-        row = hm.cmd_adopt(ctx, CAT, name="wK:pK")
+        with mock.patch.object(hm, "report_identity", return_value=True):
+            row = hm.cmd_adopt(ctx, CAT, name="wK:pK")
         self.assertEqual(row["pane_id"], "wK:pK")
         self.assertEqual(row["name"], "metawork")  # pane id is identity, not the sitting
         self.assertEqual(row["harness"], "grok")
 
     def test_adopt_positional_sitting(self):
         ctx, grok, claude = self._two_unfocused()
-        row = hm.cmd_adopt(ctx, CAT, name="coord-career")
+        with mock.patch.object(hm, "report_identity", return_value=True):
+            row = hm.cmd_adopt(ctx, CAT, name="coord-career")
         self.assertEqual(row["pane_id"], "wK:p6")
         self.assertEqual(row["name"], "coord-career")
 
@@ -1971,7 +2073,7 @@ class Adopt(unittest.TestCase):
 
 
 class ExtensionPoints(unittest.TestCase):
-    """The two hooks onto tools cowbell does not own (LAB-318)."""
+    """The two hooks onto tools cowbell does not own."""
 
     def setUp(self):
         self._ext = dict(hm.EXT)
@@ -2015,7 +2117,7 @@ class ExtensionPoints(unittest.TestCase):
 
 
 class SessionHistory(unittest.TestCase):
-    """Discovery from each harness's own store (LAB-355)."""
+    """Discovery from each harness's own store."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -2073,6 +2175,32 @@ class SessionHistory(unittest.TestCase):
         only_grok = {"defaults": {"session_history": "on"}, "harness": [{"id": "grok"}]}
         self.assertEqual({r["harness"] for r in self.rows(only_grok)}, {"grok"})
 
+    def test_claude_config_dir_points_at_a_second_store(self):
+        """$CLAUDE_CONFIG_DIR/projects is the store when set; home wins when given."""
+        other = self.home / ".claude-personal"
+        cdir = other / "projects" / "-Users-x-code-acme"
+        cdir.mkdir(parents=True)
+        (cdir / "sess-alt.jsonl").write_text(
+            json.dumps({"type": "user", "timestamp": "2026-09-01T10:00:00Z",
+                        "message": {"role": "user", "content": "alt store"}}) + "\n")
+        saved = os.environ.get("CLAUDE_CONFIG_DIR")
+        os.environ["CLAUDE_CONFIG_DIR"] = str(other)
+        try:
+            got = {r["session_id"] for r in hm.discover_sessions(self.root, self.cat)}
+        finally:
+            os.environ.pop("CLAUDE_CONFIG_DIR", None) if saved is None else os.environ.__setitem__("CLAUDE_CONFIG_DIR", saved)
+        self.assertIn("sess-alt", got)
+        self.assertNotIn("sess-a", got)                     # the env replaces the default store
+        # an explicit home (a launch-uid scan) ignores the env
+        os.environ["CLAUDE_CONFIG_DIR"] = str(other)
+        try:
+            store = hm.claude_store(self.root, home=self.home)
+        finally:
+            os.environ.pop("CLAUDE_CONFIG_DIR", None) if saved is None else os.environ.__setitem__("CLAUDE_CONFIG_DIR", saved)
+        self.assertEqual(store, self.home / ".claude" / "projects" / "-Users-x-code-acme")
+        self.assertEqual(hm.claude_store(self.root),
+                         Path.home() / ".claude" / "projects" / "-Users-x-code-acme")
+
     def test_place_history_uses_launch_users_home(self):
         guest_home = self.home / "guest"
         store = hm.grok_store(self.root, guest_home) / "guest-session"
@@ -2091,7 +2219,8 @@ class SessionHistory(unittest.TestCase):
         cat = {**self.cat, "places": {"lobby": {"cwd": self.root, "unix_user": "guest"}}}
         row = {"session_id": "guest-session", "harness": "grok", "title": "guest work"}
         done = mock.Mock(returncode=0, stdout=json.dumps([row]), stderr="")
-        pw = mock.Mock(pw_dir="/Users/guest", pw_uid=4242)
+        guest_home = os.path.join(self.root, "guest-home")
+        pw = mock.Mock(pw_dir=guest_home, pw_uid=4242)
         with mock.patch("pwd.getpwnam", return_value=pw), \
              mock.patch.object(hm.os, "geteuid", return_value=501), \
              mock.patch.object(hm.shutil, "which", return_value="/usr/local/bin/agent-run"), \
@@ -2103,7 +2232,7 @@ class SessionHistory(unittest.TestCase):
         self.assertEqual(args[0][:4], ["/usr/local/bin/agent-run", "guest", "--", sys.executable])
         self.assertEqual(args[0][-1], "_history")
         payload = json.loads(kwargs["input"])
-        self.assertEqual(payload["home"], "/Users/guest")
+        self.assertEqual(payload["home"], guest_home)
         self.assertEqual(payload["root"], os.path.realpath(self.root))
         self.assertNotIn("guest work", kwargs["input"])
 
@@ -2247,7 +2376,7 @@ class UnixConfine(unittest.TestCase):
 
 
 class CatalogWriter(unittest.TestCase):
-    """LAB-254: splice [[harness]] blocks, keep comments, backup first."""
+    """splice [[harness]] blocks, keep comments, backup first."""
 
     SEED = Path(__file__).resolve().parent.parent / "harnesses.toml"
     HOUSE = Path.home() / ".config" / "cowbell" / "harnesses.toml"
@@ -2381,9 +2510,9 @@ class CatalogWriter(unittest.TestCase):
 
     @unittest.skipUnless(
         (Path.home() / ".config" / "cowbell" / "harnesses.toml").is_file(),
-        "no patron config-dir catalog on this host",
+        "no user config-dir catalog on this host",
     )
-    def test_round_trip_on_patron_catalog_copy(self):
+    def test_round_trip_on_user_catalog_copy(self):
         p = self._copy(self.HOUSE)
         before = p.read_text(encoding="utf-8")
         parsed = self._load(p)
@@ -2399,9 +2528,9 @@ class CatalogWriter(unittest.TestCase):
         self.assertIn("# --- aider on OpenRouter", after)
         self.assertEqual(self._outside(before, "local-ornith"), self._outside(after, "local-ornith"))
         got = self._load(p)
-        self.assertEqual(got["harness"][4]["id"], "local-ornith")
-        self.assertEqual(got["harness"][4]["title"], "ornith 9b — edited")
-        parsed["harness"][4]["title"] = "ornith 9b — edited"
+        idx = next(i for i, h in enumerate(got["harness"]) if h["id"] == "local-ornith")
+        self.assertEqual(got["harness"][idx]["title"], "ornith 9b — edited")
+        parsed["harness"][idx]["title"] = "ornith 9b — edited"
         self.assertEqual(got, parsed)
         self.assertEqual(self._baks(p)[0].read_text(encoding="utf-8"), before)
         hm.harness_insert({"id": "lab-probe", "kind": "bash", "title": "probe",
@@ -2413,9 +2542,30 @@ class CatalogWriter(unittest.TestCase):
         self.assertIn("[places.lobby]", p.read_text(encoding="utf-8"))
         self.assertIn("ornith 9b — edited", p.read_text(encoding="utf-8"))
 
+    def test_default_catalog_write_snapshots_into_state(self):
+        """a write to the config-dir catalog also lands under the state dir."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "cfg").mkdir()
+            catalog = base / "cfg" / "harnesses.toml"
+            catalog.write_text('schema = 1\n[[harness]]\nid = "fake"\nkind = "pi"\ncommand = "/bin/echo"\n'
+                               '[[harness]]\nid = "droid"\nkind = "droid"\ncommand = "/bin/true"\n'
+                               '[[harness]]\nid = "devin"\nkind = "devin"\ncommand = "/bin/true"\n')
+            env = {"COWBELL_CONFIG_DIR": str(base / "cfg"), "COWBELL_STATE_DIR": str(base / "state")}
+            saved = {k: os.environ.get(k) for k in env}
+            os.environ.update(env)
+            try:
+                hm.harness_insert({"id": "probe", "kind": "bash", "command": "/bin/true"})
+            finally:
+                for k, v in saved.items():
+                    os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+            snaps = list((base / "state" / "catalog").glob("harnesses.toml.*"))
+            self.assertEqual(len(snaps), 1)
+            self.assertIn('id = "probe"', snaps[0].read_text())
+
 
 class Pins(unittest.TestCase):
-    """LAB-255: pin/hide per directory in state, overlay rank_harnesses, leave the catalog alone."""
+    """pin/hide per directory in state, overlay rank_harnesses, leave the catalog alone."""
 
     SEED = Path(__file__).resolve().parent.parent / "harnesses.toml"
 
@@ -2515,7 +2665,7 @@ class Pins(unittest.TestCase):
 
 
 class PickerEdit(unittest.TestCase):
-    """LAB-256: save-as / edit / add / remove / hints; Esc writes nothing; comments kept."""
+    """save-as / edit / add / remove / hints; Esc writes nothing; comments kept."""
 
     SEED = Path(__file__).resolve().parent.parent / "harnesses.toml"
     HOUSE = Path.home() / ".config" / "cowbell" / "harnesses.toml"
@@ -2734,6 +2884,9 @@ class PickerEdit(unittest.TestCase):
         self.assertTrue(claude["models"][0] in hm.model_menu_items(claude))
         self.assertEqual(hm.model_menu_items(grok), ["(agent default)", "(type another)"])
         self.assertEqual(hm.model_menu_items(wrapper), [])
+        long_list = {"model_flag": "--model", "models": [f"m{i}" for i in range(12)]}
+        self.assertEqual(hm.model_menu_items(long_list),
+                         [f"m{i}" for i in range(10)] + ["(type another)"])
 
     def test_ask_tools_skips_empty_boxes(self):
         empty = {"tools_allow_flag": "--allowedTools", "tools_deny_flag": "--disallowed-tools"}
@@ -2809,9 +2962,9 @@ class PickerEdit(unittest.TestCase):
 
     @unittest.skipUnless(
         (Path.home() / ".config" / "cowbell" / "harnesses.toml").is_file(),
-        "no patron config-dir catalog on this host",
+        "no user config-dir catalog on this host",
     )
-    def test_patron_catalog_save_edit_remove_keeps_comments(self):
+    def test_user_catalog_save_edit_remove_keeps_comments(self):
         shutil.copy2(self.HOUSE, self.catalog)
         before = self._text()
         self.assertIn("# cowbell — the constitution of the herd.", before)
@@ -2962,6 +3115,77 @@ class Coherence(unittest.TestCase):
         self.assertEqual(called, {"dry_run": True})
         self.assertIn("cowbell reconcile", out.getvalue())
         self.assertIn("bare border that is not the sitting is stale", out.getvalue())
+
+
+class CatalogCheck(unittest.TestCase):
+    """`catalog --check` names the bad row."""
+
+    def _check(self, cat):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = hm.cmd_catalog_check(cat)
+        return rc, buf.getvalue()
+
+    def test_clean_catalog_is_green(self):
+        cat = {"harness": [{"id": "fake", "kind": "pi", "command": "/nonexistent/x"}],
+               "places": {"lab": {"cwd": "/tmp", "allow_harness": ["fake"], "default_harness": "fake"}}}
+        rc, out = self._check(cat)
+        self.assertEqual(rc, 0)
+        self.assertIn("ok: 1 harnesses", out)
+        self.assertIn("skip fake: not installed", out)   # unchecked, not failed
+
+    def test_bad_entry_fails_by_name(self):
+        cat = {"harness": [{"id": "fake", "kind": "pi", "command": "/nonexistent/x", "egress": "sideways"},
+                           {"id": "fake", "kind": "pi", "command": "/nonexistent/y"}],
+               "places": {"lab": {"cwd": "/tmp", "allow_harness": ["ghost"]}}}
+        rc, out = self._check(cat)
+        self.assertEqual(rc, 1)
+        self.assertIn("harness fake: unknown egress", out)
+        self.assertIn("harness fake: duplicate id", out)
+        self.assertIn("place lab: allow_harness names unknown harness 'ghost'", out)
+
+
+class FlagProbe(unittest.TestCase):
+    """a harness's declared args are probed in its help, never launched."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        cli = Path(self.tmp.name) / "fakecli"
+        cli.write_text('#!/bin/sh\necho "usage: fake [--model M] [--resume]"\n')
+        cli.chmod(0o755)
+        self.h = {"id": "fake", "kind": "pi", "command": str(cli),
+                  "model_flag": ["--model"], "resume": ["--resume"],
+                  "tools_allow_flag": "--allowedTools"}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_catches_a_dropped_flag_by_name(self):
+        self.assertEqual(hm.flag_probe(self.h), ["--allowedTools"])
+
+    def test_green_when_every_declared_arg_is_in_the_help(self):
+        h = dict(self.h); h.pop("tools_allow_flag")
+        self.assertEqual(hm.flag_probe(h), [])
+
+    def test_unrunnable_probe_is_unchecked_not_a_failure(self):
+        h = dict(self.h, command="/nonexistent/fakecli")
+        self.assertIsNone(hm.flag_probe(h))
+
+    def test_every_seed_kind_has_a_probe(self):
+        cat = tomllib.loads((Path(hm.__file__).parent / "harnesses.toml").read_text())
+        kinds = {h["kind"] for h in cat.get("harness", [])}
+        self.assertTrue(kinds)
+        self.assertLessEqual(kinds, set(hm.KIND_PROBE))
+
+
+class ZSuiteSeam(unittest.TestCase):
+    """sorts last — fails if any test in this module ran the sentinel herdr
+    binary, which means an unmocked path reached toward live herdr."""
+
+    def test_no_test_called_the_sentinel_herdr(self):
+        self.assertEqual(os.environ.get("HERDR_SOCKET_PATH"), str(Path(_SENTINEL_DIR.name) / "no.sock"))
+        if _SENTINEL_LOG.exists():
+            self.fail("tests invoked the sentinel herdr: " + _SENTINEL_LOG.read_text())
 
 
 if __name__ == "__main__":

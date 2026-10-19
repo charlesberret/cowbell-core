@@ -8,12 +8,12 @@ cowbell picks an agent for the directory you are in. The choices are **Resume** 
   ~/code/projects/acme                         g widen to projects · 4 running
 
   ┌─ Active ──────────────────────────────────────────────────────────────┐
-  │    nomogenesis-claude     claude      idle                            │
-  │    philologist            grok        working  14s   in sys:clubhouse │
+  │    api-claude             claude      idle                            │
+  │    reviewer               grok        working  14s   in proj:docs     │
   └───────────────────────────────────────────────────────────────────────┘
 
   Resume
-    1  kimi-ballots           oll-mid     2 days ago
+    1  notes-draft            oll-mid     2 days ago
 
   New Session
     2  claude                 Claude Code
@@ -26,7 +26,7 @@ cowbell picks an agent for the directory you are in. The choices are **Resume** 
 
 It is mouse-first: click or arrow to a row, Enter or the ⏎ button to open it, Esc to close. A digit jumps to its row, and every hint in the bottom bar is clickable. The list refreshes every two seconds. Off a terminal, or with `COWBELL_PLAIN=1`, it falls back to a typed-number prompt; `NO_COLOR` turns colour off.
 
-In herdr, the plugin [`herdr-cowbell`](../herdr-cowbell) puts this same picker on `prefix+c` as a popup, and adds `adopt`, `stop` and `import-seats`. The plugin and this command read the same catalog and roster, so a session started in one resumes in the other.
+In herdr, the plugin [`herdr-cowbell`](https://github.com/charlesberret/herdr-cowbell) puts this same picker on `prefix+c` as a popup, and adds `adopt`, `stop` and `import-seats`. The plugin and this command read the same catalog and roster, so a session started in one resumes in the other.
 
 ## Where agents open
 
@@ -60,7 +60,7 @@ default_harness = "lobby"         # guest door; `new --place lobby` with no --ha
 lane = "yellow"
 ```
 
-Anything started at or below `cwd` opens in that workspace. New lists only the allowed agents. Resume omits roster rows whose harness is not allowed, so a cold `oll-memo` in that cwd is not a guest. `cowbell new --place lobby` with no `--harness` uses `default_harness`. Claude and Grok in that directory are house labor. They are not the guest wall. `[places.*]` are walls, not a roster of project workspaces. When a pane already has this directory on a grouped `proj:` line, the sitting opens there.
+Anything started at or below `cwd` opens in that workspace. New lists only the allowed agents. Resume omits roster rows whose harness is not allowed, so a cold `oll-memo` in that cwd is not a guest. `cowbell new --place lobby` with no `--harness` uses `default_harness`. Claude and Grok stay allowed there for your own work; the wall keeps guests to the lobby harness. `[places.*]` are walls, not a roster of project workspaces. When a pane already has this directory on a grouped `proj:` line, the sitting opens there.
 
 ### A place that drops to another unix account
 
@@ -98,6 +98,7 @@ cowbell new --harness grok --place lobby
 cowbell enter <name>         focus if live, else resume
 cowbell list [--all]
 cowbell catalog              every harness: kind, egress, installed, trust badge
+cowbell catalog --check      fail named malformed rows; warn on declared flags missing from a CLI's help
 cowbell reconcile [--dry-run]   pane borders that claim a harness, matched to the agent Herdr detects
 ```
 
@@ -111,6 +112,3 @@ python3 -m unittest discover -s tests -v
 
 `tests/test_pty.py` drives the menu, the prompt and the whole picker in a real pseudo-terminal. The code keeps two seams: `ctx.live`, what is running, and `ctx.launch`, where an agent opens. Every `herdr` CLI call lives in the `# --- herdr adapter` section of `cowbell.py`, and a test enforces it.
 
-## Provenance
-
-This tree was split out of the herdr plugin `herdr-cowbell` on 2026-09-15, with its full history and tags. It carries tag `v0.3.0`, `84d223b`, and the commits after it: `941ed40`, plan moves to Linear, `5ce4be2`, `--version`, LAB-247, `f67a8b3`, XDG config and state, LAB-248, `f095314`, places, LAB-262, `70fc3e2`, host seams, LAB-249. The split commit removed what belongs to the herdr plugin: the manifest, the popup entry `open`, the `prefix+c` keybinding installer, `adopt`, `stop` and `import-seats`.
