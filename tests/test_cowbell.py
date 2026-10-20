@@ -1378,13 +1378,13 @@ class SidebarTokens(unittest.TestCase):
             self.assertEqual(hm.sync_identity_from_plugin_event(event, ctx), "stamped")
         finally:
             hm.herdr = orig
-        args = calls[0]
-        self.assertEqual(args[:2], ("pane", "report-metadata"))
+        args = next(a for a in calls if a[:2] == ("pane", "report-metadata"))
         self.assertIn("w1:p1", args)
         g = hm.LOBE_GLYPH["claude"]
         self.assertEqual(args[args.index("--display-agent") + 1], g)
         tokens = [args[i + 1] for i, a in enumerate(args) if a == "--token"]
         self.assertIn(f"glyph={g}", tokens)
+        self.assertIn(f"name=planner-grok", tokens)
         self.assertIn(f"line1={g} planner-grok", tokens)
         self.assertIn(("pane", "rename", "w1:p1", "planner-grok · claude"), calls)
 
@@ -1410,6 +1410,58 @@ class SidebarTokens(unittest.TestCase):
         for args in calls:
             self.assertIn("--clear-display-agent", args)
             self.assertIn("glyph", args)
+
+    def test_session_label_is_the_sitting_not_the_work_title(self):
+        self.assertEqual(hm.session_label("majordomo", "majordomo"), "majordomo")
+        self.assertEqual(
+            hm.session_label("Mint sysadmin agent privilege UID - Grok", "majordomo"),
+            "majordomo",
+        )
+        self.assertEqual(
+            hm.session_label("- Stamp live glyphs and publish", "cowbell"),
+            "cowbell",
+        )
+        self.assertEqual(
+            hm.session_label("Suggest a Coding Improvement", "philologist"),
+            "philologist",
+        )
+        self.assertEqual(
+            hm.session_label("devin: Suggest a Coding Improvement", "philologist"),
+            "philologist",
+        )
+        self.assertEqual(hm.session_label("Claude Code", "builder-cowbell"), "builder-cowbell")
+        self.assertEqual(hm.session_label("devin: functions.read_file:0", "philologist"), "philologist")
+        self.assertEqual(hm.session_label("agy", "ruurii"), "ruurii")
+        self.assertEqual(hm.session_label("π > commissioner", "commissioner"), "commissioner")
+        self.assertEqual(hm.session_label("Claude Code", ""), "")
+        self.assertEqual(hm.session_label("- Stamp live glyphs", ""), "")
+        self.assertEqual(hm.session_label("Suggest a Coding Improvement", ""), "")
+
+    def test_status_change_restamps_a_missing_glyph_and_skips_a_match(self):
+        calls = []
+
+        def fake(*a, **k):
+            calls.append(a)
+            if a[:2] == ("api", "snapshot"):
+                return {"snapshot": {"tabs": [{"tab_id": "t1", "label": "majordomo"}], "agents": [{
+                    "pane_id": "w1:p1", "tab_id": "t1", "agent": "claude",
+                    "terminal_title_stripped": "majordomo",
+                    "tokens": {},
+                }]}}
+            return {}
+
+        orig = hm.herdr
+        hm.herdr = fake
+        try:
+            event = {"event": "pane.agent_status_changed", "data": {"pane_id": "w1:p1", "agent_status": "idle"}}
+            self.assertEqual(hm.sync_identity_from_plugin_event(event, {}), "stamped")
+        finally:
+            hm.herdr = orig
+        report = next(a for a in calls if a[:2] == ("pane", "report-metadata"))
+        tokens = [report[i + 1] for i, a in enumerate(report) if a == "--token"]
+        self.assertIn(f"glyph={hm.LOBE_GLYPH['claude']}", tokens)
+        self.assertIn("name=majordomo", tokens)
+        self.assertNotIn(("pane", "rename", "w1:p1", "majordomo · claude"), calls)
 
     def test_identity_events_publish_once_per_change(self):
         seen = {}
