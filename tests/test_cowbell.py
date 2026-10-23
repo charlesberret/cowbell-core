@@ -2374,6 +2374,44 @@ class UnixConfine(unittest.TestCase):
             os.path.expanduser("~/lab.json"), "--allow-cwd", "--", "/bin/bash",
         ])
 
+    def test_spawn_here_drops_uid(self):
+        tmp = tempfile.mkdtemp()
+        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "lab"}}}
+        h = {"id": "bash", "kind": "bash", "models": [], "resume": []}
+        captured = {}
+
+        def fake_popen(argv, **kw):
+            captured["argv"] = argv
+            captured["cwd"] = kw.get("cwd")
+            proc = mock.Mock()
+            proc.pid = 5150
+            return proc
+
+        patches = self._as_user({"agent-run": "/usr/local/bin/agent-run"})
+        saved = hm.save_roster, hm.load_roster
+        hm.save_roster = lambda rows: captured.update(rows=rows)
+        hm.load_roster = lambda: []
+        try:
+            with patches[0], patches[1], patches[2], mock.patch.object(hm.subprocess, "Popen", side_effect=fake_popen):
+                out = hm.spawn_here(cat, h, "seat", tmp, hm.Ctx(cwd=tmp))
+        finally:
+            hm.save_roster, hm.load_roster = saved
+        self.assertEqual(captured["argv"][:4], ["/usr/local/bin/agent-run", "lab", "--", "bash"])
+        self.assertEqual(captured["cwd"], tmp)
+        self.assertEqual(out["pid"], 5150)
+        self.assertEqual(captured["rows"][-1]["session_id"], "")
+
+    def test_spawn_here_require_uid_does_not_start(self):
+        tmp = tempfile.mkdtemp()
+        cat = {**CAT, "places": {"lab": {"cwd": tmp, "require_uid": True}}}
+        h = {"id": "bash", "kind": "bash", "models": [], "resume": []}
+        called = []
+        with mock.patch.object(hm.subprocess, "Popen", side_effect=lambda *a, **k: called.append(a)):
+            with self.assertRaises(SystemExit) as e:
+                hm.spawn_here(cat, h, "seat", tmp, hm.Ctx(cwd=tmp))
+        self.assertIn("unix_user", str(e.exception))
+        self.assertEqual(called, [])
+
 
 class CatalogWriter(unittest.TestCase):
     """splice [[harness]] blocks, keep comments, backup first."""
