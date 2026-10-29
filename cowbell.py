@@ -991,8 +991,13 @@ INJECTED = re.compile(r"^(caveat:|this is the git status|the rules section|codeb
                       r"|analysis:|<)", re.I)
 
 
+# Terminal controls in text read from a harness's store: OSC (title, hyperlink) to BEL or ST,
+# CSI, then any other ESC pair. A title is printed into the picker, so none may reach it.
+TERM_CTRL_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b\[[0-?]*[ -/]*[@-~]|\x1b.?", re.S)
+
+
 def session_title(v, limit: int = 60) -> str:
-    """A title from a user message, with the harness's injected blocks dropped."""
+    """A title from a user message, with the harness's injected blocks and terminal controls dropped."""
     raw = message_text(v)
     m = re.search(r"<user_query>\s*(.+?)\s*</user_query>", raw, re.S)
     if m:
@@ -1000,6 +1005,8 @@ def session_title(v, limit: int = 60) -> str:
     for tag in ("system-reminder", "user_info", "command-name", "command-message", "local-command-stdout"):
         raw = re.sub(rf"<{tag}>.*?</{tag}>", " ", raw, flags=re.S)
     raw = re.sub(r"<[^>]{1,40}>", " ", raw)
+    raw = TERM_CTRL_RE.sub("", raw)
+    raw = "".join(c if c.isprintable() else " " for c in raw)
     raw = " ".join(raw.split())
     return raw[:limit].strip()
 

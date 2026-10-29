@@ -3566,6 +3566,22 @@ class FlagProbe(unittest.TestCase):
         self.assertLessEqual(kinds, set(hm.KIND_PROBE))
 
 
+class SessionTitle(unittest.TestCase):
+    """A title read from a harness's store is printed in the picker: no terminal controls survive."""
+
+    def test_plain_title_unchanged(self):
+        self.assertEqual(hm.session_title("fix the  pager\nbug"), "fix the pager bug")
+
+    def test_csi_and_osc_are_stripped(self):
+        raw = "\x1b[31mred\x1b[0m \x1b]0;pwned\x07title \x1b]8;;https://x.test\x1b\\link\x1b]8;;\x1b\\"
+        self.assertEqual(hm.session_title(raw), "red title link")
+
+    def test_control_characters_become_spaces(self):
+        out = hm.session_title({"content": "a\x07b\x00c\x7fd\x1b"})
+        self.assertEqual(out, "a b c d")
+        self.assertTrue(all(ch.isprintable() for ch in out))
+
+
 class ZSuiteSeam(unittest.TestCase):
     """sorts last — fails if any test in this module ran the sentinel herdr
     binary, which means an unmocked path reached toward live herdr."""
