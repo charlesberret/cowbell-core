@@ -12,6 +12,7 @@
                                 --pen: a person asks for the place's own herdr pen (a new machine-list line)
                                 --split: a pane split instead of a new tab. `cowbell new -h` prints new's usage
   cowbell enter <name>          focus if live, else resume
+  cowbell rename <name-or-id> <new>  pin a session name; refresh will not replace it
   cowbell adopt [name] [--pane ID]  put a live sitting cowbell did not start on the roster
   cowbell list [--all]          roster rows (default: this directory)
   cowbell catalog               every harness: kind, egress, installed, trust badge
@@ -429,6 +430,146 @@ def unique_name(base: str, taken: set[str]) -> str:
         if cand not in taken:
             return cand
         n += 1
+
+
+# Continue-nudges and one-key replies. A harness title or a tab can still use
+# these words; only a raw user line is rejected for being one of them.
+_NUDGES = frozenset({".", "..", "...", "ok", "okay", "yes", "y", "n", "k", "continue"})
+
+
+def usable_slug(text: str) -> str:
+    """A session name taken from text that was already a name.
+
+    Unlike `slug`, this does not invent an `h-` prefix. `slug(".")` is `h-`,
+    and `h-` matches NAME_RE, but a dot is not a session. Empty when the
+    cleaned form is shorter than two characters, is not a name, or is the
+    fallback word `harness`.
+    """
+    s = re.sub(r"[^a-z0-9_-]+", "-", (text or "").strip().lower()).strip("-")[:32]
+    if (not s or len(s) < 2 or not s[0].isalpha() or s in {"harness", "h", "h-"}
+            or not NAME_RE.match(s)):
+        return ""
+    return s
+
+
+def title_is_chrome(text: str) -> bool:
+    """Harness chrome and terminal decorations are not a session name."""
+    raw = (text or "").strip()
+    if not raw:
+        return True
+    lower = raw.lower()
+    if lower in _GENERIC_TITLES or lower.startswith("running:"):
+        return True
+    return raw.startswith("-")
+
+
+def utterance_name(text: str) -> str:
+    """First user line, after injected preambles are already gone. Nudges are not a name."""
+    raw = " ".join((text or "").split())
+    if not raw or raw.casefold() in _NUDGES or title_is_chrome(raw):
+        return ""
+    return usable_slug(raw)
+
+
+def tab_name(text: str) -> str:
+    if title_is_chrome(text):
+        return ""
+    return usable_slug(text)
+
+
+def terminal_name(text: str) -> str:
+    """A terminal title can name a session only when it is one short token, not a sentence."""
+    raw = (text or "").strip()
+    if raw.lower().startswith("devin:"):
+        raw = raw.split(":", 1)[1].strip()
+    if title_is_chrome(raw):
+        return ""
+    head = raw.split(" - ")[0].strip()
+    if not head or " " in head or title_is_chrome(head):
+        return ""
+    return usable_slug(head)
+
+
+def fallback_name(kind: str, session_id: str) -> str:
+    """Never empty, never `.`, never the word `harness`.
+
+    No session id yet: the harness id (`grok`). A real id: `{kind}` plus a short tail.
+    """
+    k = usable_slug(kind) or "session"
+    tail = re.sub(r"[^a-z0-9]", "", (session_id or "").lower())[:4]
+    if not tail:
+        return k
+    name = f"{k}-{tail}"[:32].strip("-")
+    if NAME_RE.match(name) and len(name) >= 2 and name not in {"harness", "h", "h-"}:
+        return name
+    return k
+
+
+def canonical_name(pinned: str = "", harness_title: str = "", tab: str = "", stored: str = "",
+                   utterance: str = "", terminal: str = "", kind: str = "", session_id: str = "") -> tuple[str, str]:
+    """One name for a resumable session, and which source supplied it.
+
+    First hit wins. A pin (the name prompt, `cowbell rename`, adopt with a
+    name) is the only source a later refresh will not replace. A harness
+    title beats the herdr tab. The tab is where the session sits. A usable
+    name already on the roster beats a user line, so a sitting recorded
+    before any title file existed keeps its name. A non-chrome terminal
+    title is a weak hint. Otherwise `{kind}` plus a short session-id tail.
+    """
+    if pinned:
+        kept = pinned if (NAME_RE.match(pinned) and pinned not in {"harness", "h", "h-"}) else slug(pinned)
+        if kept and kept not in {"harness", "h", "h-"} and NAME_RE.match(kept):
+            return kept, "pinned"
+    if not title_is_chrome(harness_title):
+        hit = usable_slug(harness_title)
+        if hit:
+            return hit, "harness"
+    hit = tab_name(tab)
+    if hit:
+        return hit, "tab"
+    hit = usable_slug(stored)
+    if hit:
+        return hit, "roster"
+    hit = utterance_name(utterance)
+    if hit:
+        return hit, "utterance"
+    hit = terminal_name(terminal)
+    if hit:
+        return hit, "terminal"
+    return fallback_name(kind, session_id), "fallback"
+
+
+def disambiguate_names(rows: list[dict]) -> None:
+    """Two sessions can share a title. A session-id tail makes the menu name unique.
+
+    Pinned names stay. The tail is a hyphen plus letters and digits so the
+    result is still a session name.
+    """
+    pins = {r.get("name") for r in rows if r.get("name_source") == "pinned" and r.get("name")}
+    groups: dict[str, list[dict]] = {}
+    for r in rows:
+        if r.get("name_source") == "pinned":
+            continue
+        groups.setdefault(r.get("name") or "", []).append(r)
+    for name, group in groups.items():
+        if not name or (len(group) < 2 and name not in pins):
+            continue
+        placed = False
+        for n in (4, 8, 12):
+            tails = [re.sub(r"[^a-z0-9]", "", (r.get("session_id") or "").lower())[:n] for r in group]
+            cands = []
+            for tail in tails:
+                base = name[: max(1, 31 - len(tail))] if tail else name
+                cands.append(f"{base}-{tail}".strip("-") if tail else base)
+            if all(tails) and len(set(cands)) == len(group) and not (set(cands) & pins):
+                for r, cand in zip(group, cands):
+                    r["name"] = cand
+                placed = True
+                break
+        if placed:
+            continue
+        for i, r in enumerate(group, 1):
+            r["name"] = f"{name[:28]}-{i}"
 
 
 # --- catalog -------------------------------------------------------------------
@@ -876,6 +1017,56 @@ def claude_store(root: str, home: Path | None = None) -> Path:
     return base / re.sub(r"[/.]", "-", os.path.realpath(root))
 
 
+def _claude_hit(f: Path) -> dict:
+    """customTitle and the first real user line from one Claude session file."""
+    hit = {"session_id": f.stem, "harness_title": "", "utterance": "", "started": "", "last": ""}
+    try:
+        with open(f, "r", errors="replace") as fh:
+            for i, line in enumerate(fh):
+                if i > 400:
+                    break
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                ts = d.get("timestamp") or ""
+                if ts:
+                    hit["started"] = hit["started"] or ts
+                    hit["last"] = max(hit["last"], ts)
+                if d.get("type") == "custom-title" and d.get("customTitle"):
+                    hit["harness_title"] = str(d["customTitle"])[:60]
+                elif not hit["utterance"] and d.get("type") == "user":
+                    t = session_title(d.get("message"))
+                    if t and not INJECTED.match(t):
+                        hit["utterance"] = t
+    except OSError:
+        pass
+    return hit
+
+
+def _history_row(hit: dict, harness: str) -> dict:
+    """Cache stores the raw title fields. The menu name is chosen at read time."""
+    title = hit.get("harness_title") or hit.get("utterance") or ""
+    name, source = canonical_name(
+        harness_title=hit.get("harness_title") or "",
+        utterance=hit.get("utterance") or "",
+        kind=harness,
+        session_id=hit.get("session_id") or "",
+    )
+    return {
+        "session_id": hit.get("session_id") or "",
+        "title": title,
+        "harness_title": hit.get("harness_title") or "",
+        "utterance": hit.get("utterance") or "",
+        "started": hit.get("started") or "",
+        "last": hit.get("last") or "",
+        "name": name,
+        "name_source": source,
+        "harness": harness,
+        "kind": harness,
+    }
+
+
 def claude_sessions(root: str, cache: dict, home: Path | None = None) -> list[dict]:
     out = []
     store = claude_store(root, home)
@@ -884,30 +1075,10 @@ def claude_sessions(root: str, cache: dict, home: Path | None = None) -> list[di
     for f in sorted(store.glob("*.jsonl")):
         key = cache_key(f)
         hit = cache.get(key)
-        if hit is None:
-            hit = {"session_id": f.stem, "title": "", "started": "", "last": ""}
-            try:
-                with open(f, "r", errors="replace") as fh:
-                    for i, line in enumerate(fh):
-                        if i > 400:
-                            break
-                        try:
-                            d = json.loads(line)
-                        except ValueError:
-                            continue
-                        ts = d.get("timestamp") or ""
-                        if ts:
-                            hit["started"] = hit["started"] or ts
-                            hit["last"] = max(hit["last"], ts)
-                        if d.get("type") == "custom-title" and d.get("customTitle"):
-                            hit["title"] = str(d["customTitle"])[:60]
-                        elif not hit["title"] and d.get("type") == "user":
-                            t = session_title(d.get("message"))
-                            hit["title"] = "" if INJECTED.match(t) else t
-            except OSError:
-                continue
+        if not isinstance(hit, dict) or "utterance" not in hit:
+            hit = _claude_hit(f)
             cache[key] = hit
-        out.append({**hit, "harness": "claude", "kind": "claude"})
+        out.append(_history_row(hit, "claude"))
     return out
 
 
@@ -915,6 +1086,56 @@ def grok_store(root: str, home: Path | None = None) -> Path:
     """Grok keys a session dir by the percent-encoded cwd."""
     base = (home or Path.home()) / ".grok" / "sessions"
     return base / urllib.parse.quote(os.path.realpath(root), safe="")
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(errors="replace"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _grok_hit(d: Path) -> dict:
+    """generated_title from summary.json, else the first real user line.
+
+    Both files sit in the session directory Grok already writes. The user
+    line is read only when the title is missing or is chrome.
+    """
+    hit = {"session_id": d.name, "harness_title": "", "utterance": "", "started": "", "last": ""}
+    title = _read_json(d / "summary.json").get("generated_title")
+    if isinstance(title, str):
+        hit["harness_title"] = title[:60]
+    chat = d / "chat_history.jsonl"
+    try:
+        st = chat.stat()
+    except OSError:
+        return hit
+    hit["last"] = _dt.datetime.fromtimestamp(st.st_mtime, _dt.timezone.utc).isoformat()
+    hit["started"] = _dt.datetime.fromtimestamp(getattr(st, "st_birthtime", st.st_mtime),
+                                                 _dt.timezone.utc).isoformat()
+    kept = hit["harness_title"] and not title_is_chrome(hit["harness_title"]) and usable_slug(hit["harness_title"])
+    if kept:
+        return hit
+    try:
+        with open(chat, "r", errors="replace") as fh:
+            for i, line in enumerate(fh):
+                if i > 40:
+                    break
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("type") == "user":
+                    t = session_title(r.get("content"))
+                    if t and INJECTED.match(t):
+                        continue
+                    if t:
+                        hit["utterance"] = t
+                        break
+    except OSError:
+        pass
+    return hit
 
 
 def grok_sessions(root: str, cache: dict, home: Path | None = None) -> list[dict]:
@@ -926,35 +1147,36 @@ def grok_sessions(root: str, cache: dict, home: Path | None = None) -> list[dict
         chat = d / "chat_history.jsonl"
         if not chat.is_file():
             continue
-        key = cache_key(chat)
+        summary = d / "summary.json"
+        key = cache_key(chat) + "|" + cache_key(summary)
         hit = cache.get(key)
-        if hit is None:
-            hit = {"session_id": d.name, "title": "", "started": "", "last": ""}
-            try:
-                st = chat.stat()
-                hit["last"] = _dt.datetime.fromtimestamp(st.st_mtime, _dt.timezone.utc).isoformat()
-                hit["started"] = _dt.datetime.fromtimestamp(getattr(st, "st_birthtime", st.st_mtime),
-                                                            _dt.timezone.utc).isoformat()
-                with open(chat, "r", errors="replace") as fh:
-                    for i, line in enumerate(fh):
-                        if i > 40:
-                            break
-                        try:
-                            r = json.loads(line)
-                        except ValueError:
-                            continue
-                        if r.get("type") == "user":
-                            t = session_title(r.get("content"))
-                            if t and INJECTED.match(t):
-                                continue
-                            if t:
-                                hit["title"] = t
-                                break
-            except OSError:
-                continue
+        if not isinstance(hit, dict) or "utterance" not in hit:
+            hit = _grok_hit(d)
             cache[key] = hit
-        out.append({**hit, "harness": "grok", "kind": "grok"})
+        out.append(_history_row(hit, "grok"))
     return out
+
+
+def session_fields(kind: str, root: str, session_id: str, home: Path | None = None) -> dict:
+    """Title and first user line for one session. No full-store scan.
+
+    A live pane already carries the session id. History can be off. Only
+    Claude and Grok have a store format this tree reads; other kinds wait
+    until a test fixture shows the file.
+    """
+    if not kind or not root or not session_id:
+        return {}
+    if kind == "claude":
+        f = claude_store(root, home) / f"{session_id}.jsonl"
+        if not f.is_file():
+            return {}
+        return _claude_hit(f)
+    if kind == "grok":
+        d = grok_store(root, home) / session_id
+        if not (d / "chat_history.jsonl").is_file() and not (d / "summary.json").is_file():
+            return {}
+        return _grok_hit(d)
+    return {}
 
 
 HISTORY_PROVIDERS = {"claude": claude_sessions, "grok": grok_sessions}
@@ -1025,32 +1247,20 @@ def discover_sessions(root: str, cat: dict, home: Path | None = None) -> list[di
     if history_mode(cat) != "all":
         rows = [r for r in rows if not DISPATCHED.match(r.get("title") or "")]
     for r in rows:
-        title = r.get("title") or ""
-        r.setdefault("name", (title[:21] + "…") if len(title) > 22 else (title or r["session_id"][:8]))
+        if not r.get("name"):
+            name, source = canonical_name(
+                harness_title=r.get("harness_title") or "",
+                utterance=r.get("utterance") or "",
+                kind=r.get("kind") or "",
+                session_id=r.get("session_id") or "",
+            )
+            r["name"] = name
+            r["name_source"] = source
         r["cwd"], r["source"] = os.path.realpath(root), "history"
         r["last_seen"] = (r.get("last") or "")[:10]
-    _disambiguate_history_names(rows)
+    disambiguate_names(rows)
     rows.sort(key=lambda r: r.get("last") or "", reverse=True)
     return rows
-
-
-def _disambiguate_history_names(rows: list[dict]) -> None:
-    """Two sittings can share a truncated title. The picker passes the row; the CLI matches the name."""
-    groups: dict[str, list[dict]] = {}
-    for r in rows:
-        groups.setdefault(r.get("name") or "", []).append(r)
-    for name, group in groups.items():
-        if len(group) < 2 or not name:
-            continue
-        for n in (4, 8, 12):
-            tails = [(r.get("session_id") or "")[:n] for r in group]
-            if all(tails) and len(set(tails)) == len(group):
-                for r, tail in zip(group, tails):
-                    r["name"] = f"{name} {tail}"
-                break
-        else:
-            for i, r in enumerate(group, 1):
-                r["name"] = f"{name} {i}"
 
 
 # --- trust (delegated to EXT["trust_command"]; never re-encoded here) ----------------
@@ -1111,8 +1321,13 @@ def verdict_mark(v: dict) -> str:
 
 def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], roster: list[dict],
                    matcher=None, subject: str = "", tab_label: dict | None = None,
-                   history: list[dict] | None = None) -> dict:
-    """Partition the herd for one root: live here, cold here, absent here."""
+                   history: list[dict] | None = None, home: Path | None = None) -> dict:
+    """Partition the herd for one root: live here, cold here, absent here.
+
+    Each row's name is `canonical_name`. A herdr tab that differs is `tab_label`
+    on the row, for the faint location, not a second name. `home` is the
+    harness store root (tests); a stock install uses the process user's home.
+    """
     matcher = matcher or (lambda tool: trust_match(tool, root))
     labels = tab_label or {}
     live = [a for a in agents if a.get("cwd") and at_or_beneath(a["cwd"], root)]
@@ -1132,15 +1347,31 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
     for a in live:
         r = by_pane.get(a["pane_id"])
         lab = labels.get(a.get("tab_id"), "")
+        kind = a.get("agent") or ""
+        sid = (a.get("agent_session") or {}).get("value") or (r or {}).get("session_id", "") or ""
+        fields = session_fields(kind, a.get("cwd") or root, sid, home)
+        pinned = ((r or {}).get("name") or "") if (r or {}).get("name_source") == "pinned" else ""
+        stored = "" if pinned else ((r or {}).get("name") or "")
+        name, source = canonical_name(
+            pinned=pinned,
+            harness_title=fields.get("harness_title") or "",
+            tab=lab,
+            stored=stored,
+            utterance=fields.get("utterance") or "",
+            terminal=a.get("terminal_title_stripped") or "",
+            kind=kind,
+            session_id=sid,
+        )
         live_rows.append({
-            "name": ((r or {}).get("name") or (slug(lab) if lab else "")
-                     or slug(a.get("terminal_title_stripped") or a.get("agent") or "agent")),
-            "harness": (r or {}).get("harness") or kind_id.get(a.get("agent") or "", "") or a.get("agent"),
-            "kind": a.get("agent"), "model": (r or {}).get("model", ""), "lane": (r or {}).get("lane", ""),
+            "name": name,
+            "name_source": source,
+            "tab_label": lab,
+            "harness": (r or {}).get("harness") or kind_id.get(kind, "") or kind,
+            "kind": kind, "model": (r or {}).get("model", ""), "lane": (r or {}).get("lane", ""),
             "status": a.get("agent_status") or "live", "pane_id": a["pane_id"], "tab_id": a.get("tab_id"),
             "workspace_id": a.get("workspace_id"), "cwd": a.get("cwd"),
             "place": (place_for(cat, a.get("cwd") or "") or {}).get("name") or "",
-            "session_id": (a.get("agent_session") or {}).get("value") or (r or {}).get("session_id", ""),
+            "session_id": sid,
             "on_roster": r is not None,
             # turn clock, only where a sidebar reporter publishes one ($since while working, $total when done)
             "since": ((a.get("tokens") or {}).get("since") or (a.get("tokens") or {}).get("total") or "").strip(),
@@ -1149,15 +1380,31 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
         seen_pane.add(a["pane_id"])
 
     allowed = {h["id"] for h in cat.get("harness", [])}
+    live_sids = {x.get("session_id") for x in live_rows if x.get("session_id")}
     cold_rows = []
     for r in rows_here:
         if r.get("pane_id") in seen_pane:
             continue
+        sid = r.get("session_id") or ""
+        if sid and sid in live_sids:
+            continue  # this session is already in Active; Resume must not list it again
         hid = r.get("harness") or r.get("kind") or ""
         if allowed and hid not in allowed:
             continue  # place catalog: do not offer resume of a harness the door does not admit
         pane_alive = r.get("pane_id") in pane_ids and r.get("pane_id") not in live_by_pane
-        cold_rows.append({**r, "status": "unknown" if pane_alive else "cold", "pane_alive": pane_alive})
+        named = dict(r)
+        if named.get("name_source") != "pinned":
+            fields = session_fields(named.get("kind") or "", named.get("cwd") or root, sid, home)
+            name, source = canonical_name(
+                harness_title=fields.get("harness_title") or "",
+                stored=named.get("name") or "",
+                utterance=fields.get("utterance") or "",
+                kind=named.get("kind") or "",
+                session_id=sid,
+            )
+            named["name"] = name
+            named["name_source"] = source
+        cold_rows.append({**named, "status": "unknown" if pane_alive else "cold", "pane_alive": pane_alive})
 
     # sessions the harnesses recorded themselves; a roster row wins, it knows the pane
     seen_ids = {x.get("session_id") for x in live_rows} | {x.get("session_id") for x in cold_rows}
@@ -1182,6 +1429,7 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
         startable.append(row)
         if h["id"] not in present:
             absent.append(row)
+    disambiguate_names(live_rows + cold_rows)
     return {"root": root, "subject": subject, "live": live_rows, "cold": cold_rows, "absent": absent,
             "startable": startable, "default_harness": cat.get("defaults", {}).get("default_harness", "")}
 
@@ -1384,6 +1632,22 @@ def _with_more(rows: list[dict], section: str, expanded: set[str], show: int) ->
                            "line": paint(f"+ {hidden} more", FAINT)}]
 
 
+def _live_where(r: dict, here_ws: str | None, ws_labels: dict[str, str]) -> str:
+    """Faint location: a herdr tab that is not the session name, else another workspace, else the tty."""
+    bits = []
+    tab = (r.get("tab_label") or "").strip()
+    shown = tab_name(tab)
+    if shown and shown != r.get("name"):
+        bits.append(tab)
+    if r.get("workspace_id") and r.get("workspace_id") != here_ws:
+        ws = ws_labels.get(r.get("workspace_id") or "", "")
+        if ws:
+            bits.append(f"in {ws}")
+    if not bits and r.get("tty"):
+        bits.append(f"on {r['tty']}")
+    return "  ".join(bits)
+
+
 def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | None = None,
                    ws_labels: dict[str, str] | None = None, expanded: set[str] | None = None,
                    lines: int | None = None) -> list[dict]:
@@ -1394,8 +1658,7 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
     for r in sorted(reg["live"], key=lambda r: bool(here_ws) and r.get("workspace_id") != here_ws):
         name = f"{r['name']:<22}"
         g = glyph_for(r.get("kind") or r.get("harness") or "")
-        where = ws_labels.get(r.get("workspace_id") or "", "") if r.get("workspace_id") != here_ws else ""
-        where = f"in {where}" if where else f"on {r['tty']}" if r.get("tty") else ""
+        where = _live_where(r, here_ws, ws_labels)
         clock_w = max((len(x.get("since") or "") for x in reg["live"]), default=0)
         clock = f"{r.get('since', ''):<{clock_w + 2}}" if clock_w else ""
         extra = f"{clock}{where}".rstrip()
@@ -1711,12 +1974,12 @@ def _here_exe(h: dict, cmd: list[str]) -> str:
     return exe
 
 
-def unix_confine(cat: dict, root: str, cmd: list[str]) -> list[str]:
-    """Drop to the place's unix_user, then optional nono. agent-run if it is on PATH, else sudo -u."""
+def unix_confine(cat: dict, root: str, cmd: list[str], h: dict | None = None) -> list[str]:
+    """Drop to the harness or place's unix_user, then optional nono. agent-run if it is on PATH, else sudo -u."""
     import pwd
     pl = place_for(cat, root)
     defaults = cat.get("defaults") or {}
-    uid = ((pl or {}).get("unix_user") or defaults.get("unix_user") or "").strip()
+    uid = (((h or {}).get("unix_user") or (pl or {}).get("unix_user") or defaults.get("unix_user") or "")).strip()
     require = (pl or {}).get("require_uid")
     if require is None:
         require = bool(defaults.get("require_uid"))
@@ -1752,22 +2015,54 @@ def unix_confine(cat: dict, root: str, cmd: list[str]) -> list[str]:
     return [sudo, "-u", uid, "--"] + inner
 
 
+def _sitting_kept(rows: list[dict], name: str, session_id: str) -> tuple[list[dict], dict | None]:
+    """Drop rows that are this sitting (same name, or the same session id). Keep the first as `old`."""
+    kept, old = [], None
+    for r in rows:
+        same = (name and r.get("name") == name) or (session_id and r.get("session_id") == session_id)
+        if same:
+            old = old or r
+            continue
+        kept.append(r)
+    return kept, old
+
+
+def _apply_name_source(row: dict, old: dict | None, name_source: str) -> None:
+    """A pin survives a relaunch. A new explicit name pins. An automatic name does not."""
+    if name_source == "pinned":
+        row["name_source"] = "pinned"
+        return
+    if old and old.get("name_source") == "pinned":
+        row["name"] = old.get("name") or row["name"]
+        row["name_source"] = "pinned"
+        return
+    if name_source:
+        row["name_source"] = name_source
+    elif old and old.get("name_source"):
+        row["name_source"] = old["name_source"]
+
+
 def _record_here(h: dict, name: str, root: str, model: str, lane: str, allow: str, deny: str,
-                 seat: Path | None, session: str, cmd: list[str], pane_id: str | None) -> None:
-    rows = [r for r in load_roster() if r.get("name") != name]
-    rows.append({"name": name, "cwd": root, "harness": h["id"], "kind": h["kind"], "model": model, "lane": lane,
-                 "allow": allow, "deny": deny, "seat": str(seat) if seat else "", "session_id": session,
-                 "pane_id": pane_id, "created": now(), "last_seen": now()[:10], "argv": cmd[1:], "source": "here"})
+                 seat: Path | None, session: str, cmd: list[str], pane_id: str | None,
+                 name_source: str = "") -> None:
+    rows, old = _sitting_kept(load_roster(), name, session)
+    row = {"name": name, "cwd": root, "harness": h["id"], "kind": h["kind"], "model": model, "lane": lane,
+           "allow": allow, "deny": deny, "seat": str(seat) if seat else "", "session_id": session,
+           "pane_id": pane_id, "created": (old or {}).get("created") or now(), "last_seen": now()[:10],
+           "argv": cmd[1:], "source": "here"}
+    _apply_name_source(row, old, name_source)
+    rows.append(row)
     save_roster(rows)
 
 
 def exec_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", lane="", allow="", deny="",
-              seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True):
+              seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True,
+              name_source: str = ""):
     """Hand this terminal to the agent. Does not return."""
     cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra)
-    cmd = unix_confine(cat, root, cmd)
+    cmd = unix_confine(cat, root, cmd, h=h)
     exe = _here_exe(h, cmd)
-    _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, None)
+    _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, None, name_source)
     sys.stdout.write("\x1b[H\x1b[2J" if sys.stdout.isatty() else "")
     print(f"  {paint(name, INK, bold=True)}  {paint(shell_join(cmd), MUTED)}  {paint(tilde(root), FAINT)}")
     sys.stdout.flush()
@@ -1776,17 +2071,18 @@ def exec_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", la
 
 
 def spawn_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", lane="", allow="", deny="",
-               seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True) -> dict:
+               seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True,
+               name_source: str = "") -> dict:
     """Start the agent in a new session at root and return. Assemblies raise N times this way."""
     cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra)
-    cmd = unix_confine(cat, root, cmd)
+    cmd = unix_confine(cat, root, cmd, h=h)
     exe = _here_exe(h, cmd)
     proc = subprocess.Popen(
         [exe, *cmd[1:]], cwd=root, start_new_session=True,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     pane_id = f"pid:{proc.pid}"
-    _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, pane_id)
+    _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, pane_id, name_source)
     return {"pane_id": pane_id, "pid": proc.pid}
 
 
@@ -2157,11 +2453,11 @@ def start_native(name: str, kind: str, pane_id: str, argv: list[str]) -> dict:
 def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", lane="", allow="", deny="",
                   seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None,
                   focus: bool = True, pen: bool = False, split: bool = False,
-                  reuse_pane: dict | None = None) -> dict:
+                  reuse_pane: dict | None = None, name_source: str = "") -> dict:
     argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, sitting=name, extra=extra)
     place = place_for(cat, root)
     base = ([h["command"], *argv] if is_wrapper(h) else [h["kind"], *argv])
-    confined = unix_confine(cat, root, base)
+    confined = unix_confine(cat, root, base, h=h)
     # --pen is a new machine-list line (the place's workspace_label).
     # Otherwise create a tab in the project workspace that already exists (proj:<dir>).
     # reuse_pane resumes into a pane that is still present — never a new tab.
@@ -2193,18 +2489,21 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
             except HerdrError:
                 pass
         raise
-    rows = [r for r in load_roster() if r.get("name") != name]
-    rows.append({
+    session = launched_session or resume_id
+    rows, old = _sitting_kept(load_roster(), name, session)
+    row = {
         "name": name, "cwd": root, "harness": h["id"], "kind": h["kind"], "model": model, "lane": lane,
         "allow": allow, "deny": deny, "seat": str(seat) if seat else "",
-        "session_id": launched_session or resume_id, "pane_id": pid, "tab_id": pane.get("tab_id"),
-        "workspace_id": pane.get("workspace_id"), "created": now(), "argv": argv,
-    })
+        "session_id": session, "pane_id": pid, "tab_id": pane.get("tab_id"),
+        "workspace_id": pane.get("workspace_id"), "created": (old or {}).get("created") or now(), "argv": argv,
+    }
+    _apply_name_source(row, old, name_source)
+    rows.append(row)
     save_roster(rows)
-    report_identity(pid, name, h["kind"], model)   # one publish per raise
-    # Tab stays the sitting. The pane border caches the harness just launched;
-    # `cowbell reconcile` rewrites it from the agent Herdr detects.
-    mark_harness(pid, name, h["id"])
+    report_identity(pid, row["name"], h["kind"], model)   # one publish per raise
+    # Tab stays the label create_tab was given. The pane border caches the
+    # harness just launched; `cowbell reconcile` rewrites it from the agent Herdr detects.
+    mark_harness(pid, row["name"], h["id"])
     if focus and pane.get("tab_id"):
         try:
             herdr("tab", "focus", pane["tab_id"])
@@ -2283,6 +2582,34 @@ def session_label(title: str, tab: str) -> str:
     return head
 
 
+def badge_name(agent: dict | None, tab: str, title: str = "") -> str:
+    """Name published on a pane badge. Same order as the menu. Does not rename the tab."""
+    agent = agent or {}
+    sid = ((agent.get("agent_session") or {}).get("value") or "")
+    kind = str(agent.get("agent") or agent.get("kind") or "")
+    cwd = str(agent.get("cwd") or "")
+    fields = session_fields(kind, cwd, sid) if kind and cwd and sid else {}
+    pinned = stored = ""
+    if sid:
+        matches = [r for r in load_roster() if r.get("session_id") == sid]
+        if len(matches) == 1:
+            if matches[0].get("name_source") == "pinned":
+                pinned = matches[0].get("name") or ""
+            else:
+                stored = matches[0].get("name") or ""
+    name, _source = canonical_name(
+        pinned=pinned,
+        harness_title=fields.get("harness_title") or "",
+        tab=tab,
+        stored=stored,
+        utterance=fields.get("utterance") or "",
+        terminal=title or str(agent.get("terminal_title_stripped") or ""),
+        kind=kind,
+        session_id=sid,
+    )
+    return name
+
+
 def report_identity(pane_id: str, name: str, kind: str, model: str = "") -> bool:
     """One event, one publish: $glyph (badge), $name (the sitting), $line1, display_agent."""
     if not pane_id or str(pane_id).startswith("pid:"):
@@ -2324,7 +2651,7 @@ def stamp_live_identities(snap: dict | None = None) -> int:
         if not pane_id or pane_id.startswith("pid:") or not kind:
             continue
         tab = labels.get(a.get("tab_id"), "") or ""
-        name = session_label(str(a.get("terminal_title_stripped") or ""), tab) or pane_id
+        name = badge_name(a, tab) or pane_id
         tokens = a.get("tokens") or {}
         model = tokens.get("quota_model") or "" if isinstance(tokens, dict) else ""
         if report_identity(pane_id, name, kind, model):
@@ -2401,7 +2728,7 @@ def sync_identity_from_plugin_event(event: dict | None = None, context: dict | N
             current_name = str(tokens.get("name") or "")
     if not tab:
         tab = str(context.get("tab_label") or "")
-    row_name = session_label(title, tab) or pane_id
+    row_name = badge_name(live, tab, title) or pane_id
     border = slug(tab) or row_name
     if name == "pane.agent_status_changed" and current_glyph == glyph_for(agent, model) and current_name == row_name:
         return "skipped"
@@ -2762,6 +3089,8 @@ def cmd_adopt(ctx: Ctx, cat: dict, name: str | None = None, pane_id: str | None 
         "label": title or nm, "created": now(), "source": "adopt",
         "place": (place or {}).get("name") or "",
     }
+    if roster_as:
+        row["name_source"] = "pinned"  # an explicit name; a guessed one stays replaceable
     rows.append(row)
     save_roster(rows)
     apane = str(a.get("pane_id") or "")
@@ -2771,10 +3100,80 @@ def cmd_adopt(ctx: Ctx, cat: dict, name: str | None = None, pane_id: str | None 
     return row
 
 
-def cmd_list(ctx: Ctx, all_rows: bool) -> None:
+def accepted_pin(text: str) -> str:
+    """A name a person typed. Nudges are allowed; `.` and the word harness are not."""
+    s = slug(text or "")
+    if s in {"", "harness", "h", "h-"} or len(s) < 2 or not NAME_RE.match(s):
+        raise SystemExit(f"cowbell: {text!r} is not a session name")
+    return s
+
+
+def pin_session_name(current: str, new: str, target: dict | None = None) -> str:
+    """Pin `new` on the roster row `current` names, or whose session id is `current`.
+
+    Works with herdr down: the badge publish is best-effort. A history row that
+    was never on the roster is added so the pin survives the next refresh.
+    """
+    rows = load_roster()
+    nm = accepted_pin(new)
+    hits = [r for r in rows if r.get("name") == current or (current and r.get("session_id") == current)]
+    if len(hits) > 1:
+        exact = [r for r in hits if r.get("name") == current]
+        if len(exact) == 1:
+            hits = exact
+    if not hits and target:
+        sid = target.get("session_id") or ""
+        if sid:
+            hits = [r for r in rows if r.get("session_id") == sid]
+        if not hits:
+            row = {
+                "name": current, "cwd": target.get("cwd") or "",
+                "harness": target.get("harness") or target.get("kind") or "",
+                "kind": target.get("kind") or "",
+                "session_id": sid, "pane_id": target.get("pane_id") or "",
+                "model": target.get("model") or "", "lane": target.get("lane") or "",
+                "created": now(), "source": "rename",
+            }
+            rows.append(row)
+            hits = [row]
+    if len(hits) != 1:
+        if not hits:
+            raise SystemExit(f"cowbell: no session {current!r}")
+        raise SystemExit(f"cowbell: ambiguous session {current!r}")
+    row = hits[0]
+    taken = {r.get("name") for r in rows if r is not row and r.get("name")}
+    nm = unique_name(nm, taken)
+    row["name"] = nm
+    row["name_source"] = "pinned"
+    save_roster(rows)
+    pane = str(row.get("pane_id") or "")
+    if pane and pane != "gone" and not pane.startswith("pid:"):
+        report_identity(pane, nm, row.get("kind") or "", row.get("model") or "")
+    return nm
+
+
+def cmd_list(ctx: Ctx, all_rows: bool, cat: dict | None = None) -> None:
+    cat = cat or load_catalog()
     rows = load_roster()
     ctx.live.refresh_sessions(rows)
-    by_pane = {a["pane_id"]: a for a in ctx.live.agents() if a.get("pane_id")}
+    agents = [a for a in ctx.live.agents() if isinstance(a, dict)]
+    panes = ctx.live.panes()
+    try:
+        snap = ctx.live.snapshot()
+    except HerdrError:
+        snap = {}
+    labels = tab_labels(snap if isinstance(snap, dict) else {})
+    scope = rows if all_rows else roster_here(rows, ctx.cwd)
+    roots = {os.path.realpath(r.get("cwd") or ctx.cwd) for r in scope} or {os.path.realpath(ctx.cwd)}
+    changed = False
+    for root in roots:
+        reg = build_registry(cat, root, agents, panes, roster_here(rows, root),
+                             matcher=lambda _t: {"verdict": "unknown"}, tab_label=labels)
+        if persist_canonical(reg, rows):
+            changed = True
+    if changed:
+        save_roster(rows)
+    by_pane = {a["pane_id"]: a for a in agents if a.get("pane_id")}
     rows = rows if all_rows else roster_here(rows, ctx.cwd)
     if not rows:
         print("no roster entries" + ("" if all_rows else f" under {tilde(ctx.cwd)}  (try --all)"))
@@ -2830,7 +3229,7 @@ def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="",
     base = slug(name or h["id"])
     nm = unique_name(base, live_names(ctx.live.snapshot()) | {r["name"] for r in load_roster()})
     pane = launch(cat, h, nm, root, ctx, model, lane, allow, deny, seat, extra=extra, focus=focus, spawn=spawn,
-                  pen=pen)
+                  pen=pen, name_source="pinned" if name else "")
     print(f"raised {nm}  {h['id']}{(' ' + model) if model else ''}{(' ' + lane) if lane else ''}  in {pane['pane_id']}  {tilde(root)}")
 
 
@@ -3715,9 +4114,10 @@ def model_menu_items(h: dict) -> list[str]:
     return ["(agent default)", "(type another)"]
 
 
-def _edit_row(label: str, value: str) -> str:
+def _edit_row(label: str, value: str, val_color: str = "") -> str:
     shown = value if value else "—"
-    return f"{paint(f'{label:<16}', SECONDARY)} {paint(shown, MUTED)}"
+    val_c = val_color or (MUTED if value else FAINT)
+    return f"{paint(f'{label:<16}', SECONDARY)} {paint(shown, val_c)}"
 
 
 def display_command(path: str) -> str:
@@ -3741,6 +4141,7 @@ _KIND_TOOL_FLAGS = {
 # and the seed lanes. Kinds without a list still get none and type-another.
 _NONE = "(none)"
 _TYPE = "(type another)"
+_PROBE = "(probe installed)"
 _KIND_MODELS = {
     "claude": ["claude-sonnet-5", "claude-opus-5", "claude-fable-5-1", "claude-haiku-4-5-20251001"],
     "grok": ["grok-4.6", "grok-4.7", "grok-4.7-build-fast", "grok-4.5"],
@@ -3756,16 +4157,74 @@ _KIND_DENY = {
 }
 
 
-def _preset_choice(title: str, presets: list[str], current: str, intro: str = "") -> str | None:
+def probe_installed_models(h: dict, run=subprocess.run) -> list[str]:
+    """Find models actually available locally for this harness kind/CLI."""
+    found: list[str] = []
+    kind = h.get("kind") or ""
+    provider = h.get("provider") or ""
+
+    # 1. Ollama CLI & local server
+    if kind == "ollama" or provider == "ollama":
+        if shutil.which("ollama"):
+            try:
+                res = run(["ollama", "list"], capture_output=True, text=True, timeout=3)
+                if res.returncode == 0:
+                    for line in res.stdout.splitlines()[1:]:
+                        parts = line.strip().split()
+                        if parts:
+                            found.append(parts[0])
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        if not found:
+            try:
+                import urllib.request
+                import json
+                with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=0.8) as resp:
+                    data = json.loads(resp.read().decode())
+                    for m in data.get("models", []):
+                        if m.get("name"):
+                            found.append(m["name"])
+            except Exception:
+                pass
+
+    # 2. Codex
+    if kind == "codex" and shutil.which("codex"):
+        try:
+            res = run(["codex", "--help"], capture_output=True, text=True, timeout=3)
+            text = (res.stdout or "") + (res.stderr or "")
+            for m in re.findall(r"(?:gpt-4o|o1|o3-mini|claude-[\w.-]+)", text):
+                found.append(m)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    # 3. Generic CLI --help scan if not found yet
+    if not found:
+        exe = h.get("command") if is_wrapper(h) else h.get("kind")
+        if exe and shutil.which(os.path.expanduser(exe)):
+            try:
+                res = run([os.path.expanduser(exe), "--help"], capture_output=True, text=True, timeout=3)
+                text = (res.stdout or "") + (res.stderr or "")
+                matches = re.findall(r"(?:claude-[\w.-]+|gpt-[\w.-]+|grok-[\w.-]+|llama[\w.:-]+)", text)
+                found.extend(matches)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+
+    return list(dict.fromkeys(found))
+
+
+def _preset_choice(title: str, presets: list[str], current: str, intro: str = "",
+                   probe_fn=None) -> str | None:
     """Pick a known value, clear it, or type one. None means the choice was cancelled."""
     options = list(dict.fromkeys(x for x in presets if x))
     items = options + [_NONE, _TYPE]
+    if probe_fn:
+        items.append(_PROBE)
     if current and current in options:
         default = options.index(current)
     elif not current:
         default = len(options)
     else:
-        default = len(items) - 1
+        default = len(options) + 1
     j = choose(title, items, default=default, intro=intro)
     if j is None:
         return None
@@ -3773,6 +4232,13 @@ def _preset_choice(title: str, presets: list[str], current: str, intro: str = ""
         return ""
     if items[j] == _TYPE:
         return ask(f"  {title}: ", current)
+    if probe_fn and items[j] == _PROBE:
+        probed = probe_fn()
+        if not probed:
+            print(f"  no installed models detected for {title}")
+            return _preset_choice(title, presets, current, intro=intro, probe_fn=probe_fn)
+        new_presets = list(dict.fromkeys(presets + probed))
+        return _preset_choice(title, new_presets, current, intro=intro, probe_fn=None)
     return options[j]
 
 
@@ -3783,6 +4249,8 @@ def harness_edit_rows(cat: dict, h: dict) -> list[tuple[str, str]]:
     Empty models, permissions, and tools stay on the menu so they can be set.
     """
     models = list(h.get("models") or [])
+    lane = harness_lane(h, cat)
+    lane_c = {"green": GREEN, "yellow": GOLD, "red": RED}.get(lane, MUTED)
     rows = [
         ("name", _edit_row("name", h.get("id") or "")),
         ("description", _edit_row("description", h.get("title") or "")),
@@ -3792,13 +4260,18 @@ def harness_edit_rows(cat: dict, h: dict) -> list[tuple[str, str]]:
     rows += [
         ("models", _edit_row("models", ", ".join(models))),
         ("default", _edit_row("default model", models[0] if models else "")),
-        ("permissions", _edit_row("permissions", harness_lane(h, cat))),
+        ("permissions", _edit_row("permissions", lane, val_color=lane_c)),
         ("allow", _edit_row("tools allow", h.get("tools_allow") or "")),
         ("deny", _edit_row("tools deny", h.get("tools_deny") or "")),
         ("provider", _edit_row("provider", h.get("provider") or "")),
         ("cycle", _edit_row("model cycle", " ".join(h.get("cycle_flag") or []))),
         ("prompt", _edit_row("system prompt", h.get("system_prompt") or "")),
+        ("user", _edit_row("unix user", h.get("unix_user") or "")),
+        ("preview", _edit_row("launch preview", "inspect argv & confinement", val_color=BLUE)),
+        ("clone", _edit_row("clone harness", "duplicate to new preset", val_color=GOLD)),
+        ("verify", _edit_row("verify harness", "check binary, flags & tools", val_color=GREEN)),
     ]
+    return rows
     return rows
 
 
@@ -3853,7 +4326,8 @@ def _edit_harness_field(cat: dict, h: dict, key: str) -> bool:
         for model in h.get("models") or []:
             if model not in presets:
                 presets.append(model)
-        picked = _preset_choice("models", presets, current, intro=intro)
+        picked = _preset_choice("models", presets, current, intro=intro,
+                                probe_fn=lambda: probe_installed_models(h))
         if picked is None or picked == current:
             return False
         if not picked:
@@ -3873,13 +4347,18 @@ def _edit_harness_field(cat: dict, h: dict, key: str) -> bool:
         models = list(h.get("models") or [])
         presets = models or list(_KIND_MODELS.get(h.get("kind") or "", []))
         if not presets:
+            probed = probe_installed_models(h)
+            if probed:
+                presets = probed
+        if not presets:
             name = (ask("  default model: ", "") or "").strip()
             if not name:
                 return False
             _ensure_model_flag(h)
             harness_set_field(hid, "models", [name])
             return True
-        picked = _preset_choice("default model", presets, models[0] if models else "", intro=intro)
+        picked = _preset_choice("default model", presets, models[0] if models else "", intro=intro,
+                                probe_fn=lambda: probe_installed_models(h))
         if picked is None or not picked:
             return False
         if picked not in presets:
@@ -3944,7 +4423,157 @@ def _edit_harness_field(cat: dict, h: dict, key: str) -> bool:
         if val and not h.get("system_prompt_flag") and (h.get("kind") or "") == "pi":
             harness_set_field(hid, "system_prompt_flag", "--append-system-prompt")
         return True
+    if key == "user":
+        cur = h.get("unix_user") or ""
+        presets: list[str] = []
+        for pl in (cat.get("places") or {}).values():
+            u = (pl.get("unix_user") or "").strip()
+            if u and u not in presets:
+                presets.append(u)
+        def_u = ((cat.get("defaults") or {}).get("unix_user") or "").strip()
+        if def_u and def_u not in presets:
+            presets.append(def_u)
+        val = _preset_choice("unix user", presets, cur, intro=intro)
+        if val is None or val == cur:
+            return False
+        harness_set_field(hid, "unix_user", val)
+        return True
     return False
+
+
+def preview_harness_launch(cat: dict, h: dict, root: str = "") -> None:
+    """Display the exact command line, environment, and confinement cowbell will use."""
+    root = root or os.getcwd()
+    models = list(h.get("models") or [])
+    model = models[0] if models else ""
+    lane = harness_lane(h, cat)
+    allow = h.get("tools_allow") or ""
+    deny = h.get("tools_deny") or ""
+    cmd, session = here_command(cat, h, name="preview-agent", model=model, lane=lane,
+                                allow=allow, deny=deny, seat=None, resume_id="")
+    confined = unix_confine(cat, root, list(cmd), h=h)
+
+    lane_c = {"green": GREEN, "yellow": GOLD, "red": RED}.get(lane, MUTED)
+    user_str = h.get("unix_user") or (place_for(cat, root) or {}).get("unix_user") or "(current user)"
+
+    print()
+    print(f"  {paint('Launch Preview', INK, bold=True)}  {paint(h.get('id') or '', TEAL)}")
+    print(f"  {paint('─' * 52, FAINT)}")
+    print(f"  {paint('harness:', SECONDARY):<18} {paint(h.get('id', ''), INK)} {paint('(' + (h.get('kind') or '') + ')', FAINT)}")
+    print(f"  {paint('directory:', SECONDARY):<18} {paint(tilde(root), TEAL)}")
+    print(f"  {paint('unix user:', SECONDARY):<18} {paint(user_str, GOLD if h.get('unix_user') else MUTED)}")
+    print(f"  {paint('permissions:', SECONDARY):<18} {paint(lane, lane_c, bold=True)}")
+    if model:
+        print(f"  {paint('model:', SECONDARY):<18} {paint(model, INK)}")
+    if allow:
+        print(f"  {paint('tools allow:', SECONDARY):<18} {paint(allow, MUTED)}")
+    if deny:
+        print(f"  {paint('tools deny:', SECONDARY):<18} {paint(deny, MUTED)}")
+    print(f"  {paint('session id:', SECONDARY):<18} {paint(session, FAINT)}")
+    print(f"  {paint('command argv:', SECONDARY):<18}")
+    print(f"    {paint(shell_join(confined), GOLD)}")
+    print(f"  {paint('─' * 52, FAINT)}")
+    try:
+        ask("  press Enter to return", "")
+    except (EOFError, KeyboardInterrupt):
+        pass
+    print()
+
+
+def clone_harness(cat: dict, h: dict) -> str | None:
+    """Duplicate this harness preset into a new catalog entry."""
+    old_id = h.get("id") or ""
+    raw = ask(f"  new harness id [{old_id}-copy]: ", f"{old_id}-copy")
+    if not (raw or "").strip():
+        return None
+    new_id = slug(raw.strip())
+    if not new_id or new_id == old_id:
+        return None
+    if harness_by_id(cat, new_id):
+        print(f"  harness {new_id!r} already exists")
+        return None
+    old_title = h.get("title") or old_id
+    new_title = ask("  description: ", f"{old_title} (copy)")
+    new_rec = {k: v for k, v in h.items() if k not in ("id", "title") and _BARE_KEY.match(k)}
+    new_rec["id"] = new_id
+    new_rec["title"] = new_title or f"{old_title} (copy)"
+    harness_insert(new_rec)
+    print(f"  cloned {old_id} -> {new_id}")
+    return new_id
+
+
+def verify_harness_interactive(cat: dict, h: dict) -> None:
+    """Run an interactive sanity check on binary, flags, permissions, and unix user."""
+    hid = h.get("id") or ""
+    print()
+    print(f"  {paint('Verify Harness', INK, bold=True)}  {paint(hid, TEAL)}")
+    print(f"  {paint('─' * 52, FAINT)}")
+
+    target = h.get("command") if is_wrapper(h) else h.get("kind")
+    if not target:
+        print(f"  {paint('FAIL', RED, bold=True)}  target executable/kind is not specified")
+    else:
+        expanded = os.path.expanduser(target)
+        exe = expanded if os.path.isabs(expanded) and os.path.exists(expanded) else shutil.which(target)
+        if exe:
+            print(f"  {paint(' OK ', GREEN, bold=True)}  binary: {paint(exe, INK)}")
+        else:
+            print(f"  {paint('FAIL', RED, bold=True)}  binary not found on PATH: {paint(target, GOLD)}")
+
+    u = (h.get("unix_user") or "").strip()
+    if u:
+        import pwd
+        try:
+            pw = pwd.getpwnam(u)
+            helper = shutil.which("agent-run") or shutil.which("sudo")
+            helper_str = f"via {helper}" if helper else "no agent-run or sudo!"
+            h_color = GREEN if helper else RED
+            print(f"  {paint(' OK ' if helper else 'WARN', h_color, bold=True)}  unix user: {paint(u, INK)} (uid {pw.pw_uid}, {helper_str})")
+        except KeyError:
+            print(f"  {paint('FAIL', RED, bold=True)}  unix user {u!r} does not exist on this host")
+    else:
+        print(f"  {paint('INFO', FAINT)}  unix user: none specified (runs as current user)")
+
+    models = list(h.get("models") or [])
+    if models:
+        mflag = h.get("model_flag") or _KIND_MODEL_FLAG.get(h.get("kind") or "")
+        if mflag:
+            print(f"  {paint(' OK ', GREEN, bold=True)}  model flag: {paint(' '.join(mflag) if isinstance(mflag, list) else str(mflag), INK)} ({len(models)} models)")
+        else:
+            print(f"  {paint('WARN', GOLD, bold=True)}  models defined ({len(models)}) but no model_flag set")
+    else:
+        print(f"  {paint('INFO', FAINT)}  models: none specified (uses agent default)")
+
+    allow = h.get("tools_allow")
+    allow_flag = h.get("tools_allow_flag") or (_KIND_TOOL_FLAGS.get(h.get("kind") or "") or (None, None))[0]
+    if allow:
+        if allow_flag:
+            print(f"  {paint(' OK ', GREEN, bold=True)}  tools allow flag: {paint(str(allow_flag), INK)}")
+        else:
+            print(f"  {paint('WARN', GOLD, bold=True)}  tools_allow set but tools_allow_flag missing")
+
+    deny = h.get("tools_deny")
+    deny_flag = h.get("tools_deny_flag") or (_KIND_TOOL_FLAGS.get(h.get("kind") or "") or (None, None))[1]
+    if deny:
+        if deny_flag:
+            print(f"  {paint(' OK ', GREEN, bold=True)}  tools deny flag: {paint(str(deny_flag), INK)}")
+        else:
+            print(f"  {paint('WARN', GOLD, bold=True)}  tools_deny set but tools_deny_flag missing")
+
+    misses = flag_probe(h)
+    if misses is None:
+        print(f"  {paint('INFO', FAINT)}  help probe: CLI could not be queried or timed out")
+    elif misses:
+        print(f"  {paint('WARN', GOLD, bold=True)}  flags not found in CLI --help: {paint(', '.join(misses), GOLD)}")
+    else:
+        print(f"  {paint(' OK ', GREEN, bold=True)}  all declared flags verified in CLI help")
+
+    print(f"  {paint('─' * 52, FAINT)}")
+    try:
+        ask("  press Enter to return", "")
+    except (EOFError, KeyboardInterrupt):
+        pass
+    print()
 
 
 def edit_harness(cat: dict, hid: str) -> bool:
@@ -3962,7 +4591,10 @@ def edit_harness(cat: dict, hid: str) -> bool:
             print(f"  unknown harness {hid}")
             return wrote
         spec = harness_edit_rows(fresh, h)
-        j = choose("edit", [row for _, row in spec], intro=f"{paint(hid, INK, bold=True)}  edit")
+        lane = harness_lane(h, fresh)
+        lane_c = {"green": GREEN, "yellow": GOLD, "red": RED}.get(lane, MUTED)
+        intro = f"{paint(hid, INK, bold=True)}  {paint('[' + (h.get('kind') or 'agent') + ']', SECONDARY)}  {paint(lane, lane_c)}  {paint(h.get('title') or '', FAINT)}"
+        j = choose("edit", [row for _, row in spec], intro=intro)
         if j is None:
             return wrote
         try:
@@ -3972,6 +4604,15 @@ def edit_harness(cat: dict, hid: str) -> bool:
                 if new:
                     hid = new
                     wrote = True
+            elif key == "clone":
+                new = clone_harness(fresh, h)
+                if new:
+                    hid = new
+                    wrote = True
+            elif key == "preview":
+                preview_harness_launch(fresh, h)
+            elif key == "verify":
+                verify_harness_interactive(fresh, h)
             elif _edit_harness_field(fresh, h, key):
                 wrote = True
         except KeyboardInterrupt:
@@ -4049,8 +4690,8 @@ def apply_hide(root: str, hid: str) -> str:
     return f"hidden {hid}"
 
 
-def picker_hints(can_widen: bool, start_row: bool) -> list[tuple[str, str, str]]:
-    """Hint bar for the picker. e / p / h / − only on a Start new row; g only when widen applies."""
+def picker_hints(can_widen: bool, start_row: bool, resume_row: bool = False) -> list[tuple[str, str, str]]:
+    """Hint bar for the picker. e / p / h / − only on a Start new row; r only on Resume."""
     crowded = start_row and can_widen
     hints = [("⏎", "" if crowded else "open", "enter"),
              ("n", "new", "n"),
@@ -4058,6 +4699,8 @@ def picker_hints(can_widen: bool, start_row: bool) -> list[tuple[str, str, str]]
              ("a", "adopt", "a")]
     if can_widen:
         hints.append(("g", "widen", "g"))
+    if resume_row and not start_row:
+        hints.append(("r", "rename", "r"))
     if start_row:
         hints += [("e", "edit", "e"), ("p", "pin", "p"), ("h", "hide", "h"), ("-", "rm", "-")]
     hints.append(("esc", "" if start_row else "close", "esc"))
@@ -4101,7 +4744,7 @@ def raise_with_options(ctx: Ctx, cat: dict, h: dict, root: str, v: dict, name: s
     shown = shell_join([h["command"], *argv]) if is_wrapper(h) else shell_join([h["kind"], *argv])
     if ctx.mode != "here":
         print(f"\n  {paint(name, INK, bold=True)}  {paint(shown, MUTED)}")
-    pane = launch(cat, h, name, root, ctx, model, lane, allow, deny, seat)
+    pane = launch(cat, h, name, root, ctx, model, lane, allow, deny, seat, name_source="pinned")
     print(f"  started {name} in {pane['pane_id']}")
     return True
 
@@ -4185,13 +4828,14 @@ def raise_quick(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
         print(f"  {paint('! ' + trust_note(h['id'], v, root), FAINT)}")
     model = h["models"][0] if h["models"] else ""
     seat = seat_file(root) if prompt_flag(h) else None
-    pane = launch(cat, h, name, root, ctx, model, lane, allow, deny, seat)
+    pane = launch(cat, h, name, root, ctx, model, lane, allow, deny, seat,
+                  name_source="pinned" if cat["defaults"].get("ask_name") else "")
     print(f"  started {name} in {pane['pane_id']}")
     return True
 
 
 REFRESH_S = 2.0
-PICKER_HOTKEYS = "nwgae+ph-"
+PICKER_HOTKEYS = "nwgae+ph-r"
 
 
 def footer(can_widen: bool = False, start_row: bool = False) -> str:
@@ -4221,6 +4865,43 @@ def _reclaim_cold(live: dict, cold: list[dict]) -> dict | None:
     if len(by_cwd) == 1:
         return by_cwd[0]
     return None
+
+
+def persist_canonical(reg: dict, rows: list[dict]) -> bool:
+    """Write recomputed names back onto unpinned roster rows. A pin is left alone."""
+    changed = False
+
+    def match(src: dict) -> dict | None:
+        pane = str(src.get("pane_id") or "")
+        if pane and pane != "gone" and not pane.startswith("pid:"):
+            hits = [r for r in rows if str(r.get("pane_id") or "") == pane]
+            if len(hits) == 1:
+                return hits[0]
+        sid = src.get("session_id") or ""
+        if sid:
+            hits = [r for r in rows if r.get("session_id") == sid]
+            if len(hits) == 1:
+                return hits[0]
+        return None
+
+    for src in list(reg.get("live") or []) + list(reg.get("cold") or []):
+        if src.get("name_source") == "pinned":
+            continue
+        target = match(src)
+        if target is None or target.get("name_source") == "pinned":
+            continue
+        desired = src.get("name") or ""
+        if not desired:
+            continue
+        taken = {r.get("name") for r in rows if r is not target and r.get("name")}
+        desired = unique_name(desired, taken)
+        if target.get("name") == desired:
+            continue
+        target["name"] = desired
+        if src.get("name_source"):
+            target["name_source"] = src["name_source"]
+        changed = True
+    return changed
 
 
 def remember_live(reg: dict, rows: list[dict]) -> int:
@@ -4293,6 +4974,8 @@ def picker(ctx: Ctx, cat: dict) -> int:
             if place:
                 reg["place_note"] = place["name"] + (" · from ~" if remapped and root == place["cwd"] else "")
             remember_live(reg, rows)
+            if persist_canonical(reg, rows):
+                save_roster(rows)
             # publish sidebar identity once per event (a state change seen
             # here, or a name/harness change after an adopt) — never per refresh.
             for r in identity_events(ident_seen, reg["live"]):
@@ -4309,9 +4992,8 @@ def picker(ctx: Ctx, cat: dict) -> int:
                 selected = keys.index(sel_key) if sel_key in keys else min(sel_at, max(0, len(keys) - 1))
 
                 def hints_for(sel, _openable=openable, _widen=can_widen):
-                    start = bool(_openable and 0 <= sel < len(_openable)
-                                 and _openable[sel].get("action") == "raise")
-                    return picker_hints(_widen, start)
+                    action = (_openable[sel].get("action") if _openable and 0 <= sel < len(_openable) else "")
+                    return picker_hints(_widen, action == "raise", action == "enter")
 
                 res = menu([""] + text.split("\n"), [c["row"] + 1 for c in openable], hints_for,
                            selected=selected, hotkeys=PICKER_HOTKEYS, flash=flash,
@@ -4331,8 +5013,8 @@ def picker(ctx: Ctx, cat: dict) -> int:
                     raw = ""
                 elif res[0] == "key":
                     raw = res[1]
-                    # a / e / p / h / − use the highlighted row; n / w / g / + do not
-                    hit = (openable[sel_at] if raw in "aeph-" and openable and 0 <= sel_at < len(openable)
+                    # a / e / p / h / − / r use the highlighted row; n / w / g / + do not
+                    hit = (openable[sel_at] if raw in "aeph-r" and openable and 0 <= sel_at < len(openable)
                            else None)
                 else:
                     hit, raw = None, res[1] if len(res) > 1 else ""
@@ -4349,6 +5031,22 @@ def picker(ctx: Ctx, cat: dict) -> int:
                     return 0
                 hit = next((c for c in choices if raw.isdigit() and c.get("idx") == int(raw)), None)
             if raw == "r":
+                if hit and hit.get("action") == "enter":
+                    if scr:
+                        scr.close()
+                        sys.stdout.write("\x1b[H\x1b[2J")
+                    try:
+                        cur = hit["target"].get("name") or ""
+                        typed = ask(f"  rename {cur} to: ", cur)
+                        if typed.strip() and slug(typed) != cur:
+                            nm = pin_session_name(cur, typed, target=hit["target"])
+                            flash = f"pinned {nm}"
+                    except KeyboardInterrupt:
+                        pass
+                    except SystemExit as e:
+                        flash = ((str(e) or "").splitlines() or ["error"])[0]
+                        if not tui:
+                            print(f"  {e}")
                 continue
             if raw == "g":
                 root = top or root
@@ -4549,7 +5247,7 @@ def main(argv: list[str]) -> int:
         cmd_registry(ctx, cat, opts.get("root"), as_json=bool(opts.get("json")),
                      place_name=opts.get("place") or ""); return 0
     if cmd == "list":
-        cmd_list(ctx, bool(opts.get("all"))); return 0
+        cmd_list(ctx, bool(opts.get("all")), cat); return 0
     if cmd == "catalog":
         if opts.get("check"):
             return cmd_catalog_check(cat)
@@ -4558,6 +5256,16 @@ def main(argv: list[str]) -> int:
         if not pos:
             raise SystemExit("enter <name>")
         cmd_enter(ctx, cat, pos[0]); return 0
+    if cmd == "rename":
+        if opts.get("help") or opts.get("h") or len(pos) != 2:
+            print("cowbell rename <name-or-session-id> <new-name>")
+            print("  Pin a session name. A later refresh will not replace a pin.")
+            print("  The herdr tab is left as it is. Works with herdr down.")
+            if len(pos) != 2 and not (opts.get("help") or opts.get("h")):
+                return 2
+            return 0
+        print(f"pinned {pin_session_name(pos[0], pos[1])}")
+        return 0
     if cmd == "adopt":
         cmd_adopt(ctx, cat, name=pos[0] if pos else None, pane_id=opts.get("pane"))
         return 0

@@ -2,6 +2,13 @@
 
 ## Unreleased (0.3.2)
 
+- In-place harness editor (`e` menu) improvements:
+  - Live Launch Command Preview (`launch preview`): shows the exact expanded argv, directory, lane permissions, and confinement uid drops (`agent-run` / `sudo -u`).
+  - Per-harness `unix_user` configuration: individual harnesses can specify a confined UNIX user, overriding place defaults or satisfying `require_uid`.
+  - Dynamic model auto-discovery (`(probe installed)`): detects locally installed models via Ollama CLI/API, Codex, Grok, and `--help` CLI inspection.
+  - Clone harness preset (`clone harness`): duplicates any harness definition into a new catalog preset with custom ID and title, seamlessly switching editor focus.
+  - In-place harness sanity check (`verify harness`): checks executable existence on PATH, unix user validity, declared flags, tools allow/deny configuration, and CLI help concordance.
+  - Polished edit interface: rich header banner showing kind, lane badge, and title, with styled row values and status colors.
 - A bare pane border that is not the current tab is a stale sitting: `reconcile_label` rewrites it, and `identity sync` restamps `sitting · kind` on `pane.agent_detected`.
 - A sitting opens on a grouped `proj:` workspace when a pane there already has this directory, instead of the caller's line.
 - Harness rows can carry `provider`, a model cycle, and an inline `system_prompt`; `build_argv` emits them when the row sets the matching flags, and picker `e` edits the three fields.

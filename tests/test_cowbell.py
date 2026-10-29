@@ -2356,6 +2356,171 @@ class SessionHistory(unittest.TestCase):
         self.assertEqual(captured[0][1].get("resume_id"), "sess-a")
 
 
+class CanonicalNames(unittest.TestCase):
+    """One name per resumable session, from stores a stock install already has."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        self.root = "/Users/x/code/acme"
+        self.state = self.home / "state"
+        self.state.mkdir()
+        self._env = os.environ.get("COWBELL_STATE_DIR")
+        os.environ["COWBELL_STATE_DIR"] = str(self.state)
+        self.sid = "01a0f3c6"
+        self.gdir = hm.grok_store(self.root, self.home) / self.sid
+        self.gdir.mkdir(parents=True)
+
+    def tearDown(self):
+        if self._env is None:
+            os.environ.pop("COWBELL_STATE_DIR", None)
+        else:
+            os.environ["COWBELL_STATE_DIR"] = self._env
+        self.tmp.cleanup()
+
+    def _summary(self, title: str) -> None:
+        (self.gdir / "summary.json").write_text(json.dumps({"generated_title": title}))
+
+    def _chat(self, lines: list[str]) -> None:
+        body = "".join(json.dumps({"type": "user", "content": line}) + "\n" for line in lines)
+        (self.gdir / "chat_history.jsonl").write_text(body)
+
+    def test_dot_is_not_a_slug_and_not_a_usable_name(self):
+        self.assertEqual(hm.slug("."), "h")  # "h-" then rstrip; still not a session name
+        self.assertEqual(hm.usable_slug("."), "")
+        self.assertEqual(hm.usable_slug("h"), "")
+        self.assertEqual(hm.usable_slug("h-"), "")
+        self.assertEqual(hm.usable_slug("continue"), "continue")
+        self.assertEqual(hm.utterance_name("."), "")
+        self.assertEqual(hm.utterance_name("continue"), "")
+        self.assertEqual(hm.utterance_name("ok"), "")
+
+    def test_grok_summary_title_beats_a_dot_and_a_rules_preamble(self):
+        self._summary("builder-cowbell")
+        self._chat(["The rules section has a number of possible rules", "."])
+        cat = {"defaults": {"session_history": "on"}, "harness": [{"id": "grok"}]}
+        with mock.patch.object(hm.Path, "home", side_effect=AssertionError("process home")):
+            rows = hm.discover_sessions(self.root, cat, home=self.home)
+        row = next(r for r in rows if r["session_id"] == self.sid)
+        self.assertEqual(row["name"], "builder-cowbell")
+        self.assertEqual(row["name_source"], "harness")
+        self.assertEqual(row["title"], "builder-cowbell")
+
+    def test_dot_without_a_summary_falls_back_to_kind_and_id_tail(self):
+        self._chat(["The rules section has a number of possible rules", "."])
+        cat = {"defaults": {"session_history": "on"}, "harness": [{"id": "grok"}]}
+        rows = hm.discover_sessions(self.root, cat, home=self.home)
+        row = rows[0]
+        self.assertNotEqual(row["name"], ".")
+        self.assertNotIn("harness", row["name"])
+        self.assertTrue(row["name"].startswith("grok-"))
+        self.assertTrue(hm.NAME_RE.match(row["name"]))
+
+    def test_claude_custom_title_beats_a_later_user_line(self):
+        cdir = hm.claude_store(self.root, self.home)
+        cdir.mkdir(parents=True)
+        (cdir / "sess-a.jsonl").write_text(
+            json.dumps({"type": "custom-title", "customTitle": "parser-work"}) + "\n" +
+            json.dumps({"type": "user", "message": {"content": "ship the parser later"}}) + "\n")
+        cat = {"defaults": {"session_history": "on"}, "harness": [{"id": "claude"}]}
+        rows = hm.discover_sessions(self.root, cat, home=self.home)
+        row = next(r for r in rows if r["session_id"] == "sess-a")
+        self.assertEqual(row["title"], "parser-work")
+        self.assertEqual(row["name"], "parser-work")
+
+    def test_utterance_names_a_session_with_no_title_file_and_no_tab(self):
+        cdir = hm.claude_store(self.root, self.home)
+        cdir.mkdir(parents=True)
+        (cdir / "sess-u.jsonl").write_text(
+            json.dumps({"type": "user", "message": {"content": "parser-work"}}) + "\n")
+        cat = {"defaults": {"session_history": "on"}, "harness": [{"id": "claude"}]}
+        rows = hm.discover_sessions(self.root, cat, home=self.home)
+        self.assertEqual(rows[0]["name"], "parser-work")
+        self.assertEqual(rows[0]["name_source"], "utterance")
+
+    def test_duplicate_titles_get_distinct_id_tails(self):
+        cdir = hm.claude_store(self.root, self.home)
+        cdir.mkdir(parents=True)
+        for sid in ("sess-a", "sess-c", "sess-d"):
+            (cdir / f"{sid}.jsonl").write_text(
+                json.dumps({"type": "custom-title", "customTitle": "parser-work"}) + "\n")
+        cat = {"defaults": {"session_history": "on"}, "harness": [{"id": "claude"}]}
+        rows = hm.discover_sessions(self.root, cat, home=self.home)
+        names = [r["name"] for r in rows]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertTrue(all(n.startswith("parser-work") and hm.NAME_RE.match(n) for n in names))
+
+    def _live(self, roster):
+        agents = [agent("w1:p9", "grok", self.root, "idle", "builder-cowbell - Grok 4.7", sid=self.sid)]
+        agents[0]["tab_id"] = "w1:t4"
+        return hm.build_registry(
+            CAT, self.root, agents, [{"pane_id": "w1:p9"}], roster,
+            matcher=lambda _t: {"verdict": "ok"},
+            tab_label={"w1:t4": "cowbell-demo"}, home=self.home)
+
+    def test_pinned_roster_name_beats_the_harness_title(self):
+        self._summary("builder-cowbell")
+        self._chat(["."])
+        roster = [{"name": "kept-name", "name_source": "pinned", "cwd": self.root,
+                   "harness": "grok", "kind": "grok", "session_id": self.sid, "pane_id": "w1:p9"}]
+        reg = self._live(roster)
+        self.assertEqual(reg["live"][0]["name"], "kept-name")
+        self.assertEqual(reg["live"][0]["name_source"], "pinned")
+
+    def test_unpinned_dot_is_replaced_and_not_listed_twice(self):
+        self._summary("builder-cowbell")
+        self._chat(["The rules section has a number of possible rules", "."])
+        roster = [{"name": ".", "cwd": self.root, "harness": "grok", "kind": "grok",
+                   "session_id": self.sid, "pane_id": None, "source": "here"}]
+        reg = self._live(roster)
+        self.assertEqual([r["name"] for r in reg["live"]], ["builder-cowbell"])
+        self.assertEqual(reg["live"][0]["name_source"], "harness")
+        self.assertNotIn(self.sid, {r.get("session_id") for r in reg["cold"]})
+        choices = hm.picker_choices(reg, roster, here_ws="w1")
+        line = hm.ANSI_RE.sub("", next(c["line"] for c in choices if c["action"] == "focus"))
+        self.assertIn("builder-cowbell", line)
+        self.assertIn("cowbell-demo", line)
+        self.assertNotIn(".", line.split())
+
+    def test_cold_unpinned_dot_uses_the_same_title(self):
+        self._summary("builder-cowbell")
+        self._chat(["."])
+        roster = [{"name": ".", "cwd": self.root, "harness": "grok", "kind": "grok",
+                   "session_id": self.sid, "pane_id": None}]
+        reg = hm.build_registry(CAT, self.root, [], [], roster, matcher=lambda _t: {"verdict": "ok"},
+                                home=self.home)
+        self.assertEqual(reg["cold"][0]["name"], "builder-cowbell")
+
+    def test_rename_pins_one_session_and_leaves_the_other(self):
+        hm.save_roster([
+            {"name": ".", "cwd": self.root, "harness": "grok", "kind": "grok",
+             "session_id": self.sid, "pane_id": None},
+            {"name": "other-session", "cwd": self.root, "harness": "claude", "kind": "claude",
+             "session_id": "sess-other", "pane_id": None},
+        ])
+        with mock.patch.object(hm, "report_identity", return_value=True) as pub:
+            nm = hm.pin_session_name(self.sid, "builder-cowbell")
+        self.assertEqual(nm, "builder-cowbell")
+        pub.assert_not_called()
+        rows = {r["session_id"]: r for r in hm.load_roster()}
+        self.assertEqual(rows[self.sid]["name"], "builder-cowbell")
+        self.assertEqual(rows[self.sid]["name_source"], "pinned")
+        self.assertEqual(rows["sess-other"]["name"], "other-session")
+        self.assertNotIn("name_source", rows["sess-other"])
+        with self.assertRaises(SystemExit):
+            hm.pin_session_name("builder-cowbell", ".")
+
+    def test_rename_republishes_a_pane_badge_without_herdr_up(self):
+        hm.save_roster([
+            {"name": "old-name", "cwd": self.root, "harness": "grok", "kind": "grok",
+             "session_id": self.sid, "pane_id": "w1:p9"},
+        ])
+        with mock.patch.object(hm, "report_identity", return_value=False) as pub:
+            hm.pin_session_name("old-name", "fresh-name")
+        pub.assert_called_once_with("w1:p9", "fresh-name", "grok", "")
+        self.assertEqual(hm.load_roster()[0]["name_source"], "pinned")
+
+
 class UnixConfine(unittest.TestCase):
     """Place unix_user: drop uid (and optional nono) before exec."""
 
@@ -2469,6 +2634,24 @@ class UnixConfine(unittest.TestCase):
                 hm.spawn_here(cat, h, "seat", tmp, hm.Ctx(cwd=tmp))
         self.assertIn("unix_user", str(e.exception))
         self.assertEqual(called, [])
+
+    def test_harness_user_overrides_place_user(self):
+        tmp = tempfile.mkdtemp()
+        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "place-user"}}}
+        h = {"id": "custom", "kind": "bash", "unix_user": "harness-user"}
+        patches = self._as_user({"sudo": "/usr/bin/sudo"})
+        with patches[0], patches[1], patches[2]:
+            out = hm.unix_confine(cat, tmp, ["/bin/bash"], h=h)
+        self.assertEqual(out, ["/usr/bin/sudo", "-u", "harness-user", "--", "/bin/bash"])
+
+    def test_harness_user_satisfies_require_uid(self):
+        tmp = tempfile.mkdtemp()
+        cat = {**CAT, "places": {"lab": {"cwd": tmp, "require_uid": True}}}
+        h = {"id": "custom", "kind": "bash", "unix_user": "harness-user"}
+        patches = self._as_user({"sudo": "/usr/bin/sudo"})
+        with patches[0], patches[1], patches[2]:
+            out = hm.unix_confine(cat, tmp, ["/bin/bash"], h=h)
+        self.assertEqual(out, ["/usr/bin/sudo", "-u", "harness-user", "--", "/bin/bash"])
 
 
 class CatalogWriter(unittest.TestCase):
@@ -2836,13 +3019,13 @@ class PickerEdit(unittest.TestCase):
         cat = hm.load_catalog()
         keys = [k for k, _ in hm.harness_edit_rows(cat, hm.harness_by_id(cat, "claude"))]
         self.assertEqual(keys, ["name", "description", "models", "default", "permissions", "allow", "deny",
-                                "provider", "cycle", "prompt"])
+                                "provider", "cycle", "prompt", "user", "preview", "clone", "verify"])
         wrapped = {"id": "local-ornith", "kind": "pi", "command": os.path.expanduser("~/.local/bin/local-ornith"),
                    "title": "ornith", "models": []}
         spec = hm.harness_edit_rows({"defaults": {"lane": "yellow"}, "lanes": {}}, wrapped)
         self.assertEqual([k for k, _ in spec],
                          ["name", "description", "command", "models", "default", "permissions", "allow", "deny",
-                          "provider", "cycle", "prompt"])
+                          "provider", "cycle", "prompt", "user", "preview", "clone", "verify"])
         self.assertIn("~/.local/bin/local-ornith", spec[2][1])
 
     def test_edit_menu_writes_the_field_you_pick(self):
@@ -3116,6 +3299,60 @@ class PickerEdit(unittest.TestCase):
         self.assertIn("# House wrappers", after)
         self.assertIn("[places.lobby]", after)
         self.assertIn("unix_user = \"guest\"", after)
+
+    def test_edit_user_sets_field(self):
+        idx = self._edit_row_index("claude", "user")
+        with mock.patch("cowbell.choose", side_effect=[idx, 1, None]), \
+             mock.patch("cowbell.ask", return_value="agent-runner"):
+            self.assertTrue(hm.edit_harness(hm.load_catalog(), "claude"))
+        h = hm.harness_by_id(hm.load_catalog(), "claude")
+        self.assertEqual(h["unix_user"], "agent-runner")
+        self.assertIn('unix_user = "agent-runner"', self._text())
+
+    def test_edit_preview_launch(self):
+        idx = self._edit_row_index("claude", "preview")
+        with mock.patch("cowbell.choose", side_effect=[idx, None]), \
+             mock.patch("cowbell.ask", return_value=""), \
+             mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            hm.edit_harness(hm.load_catalog(), "claude")
+        output = out.getvalue()
+        self.assertIn("Launch Preview", output)
+        self.assertIn("command argv:", output)
+
+    def test_edit_clone_harness(self):
+        idx = self._edit_row_index("claude", "clone")
+        with mock.patch("cowbell.choose", side_effect=[idx, None]), \
+             mock.patch("cowbell.ask", side_effect=["claude-twin", "Claude Twin"]):
+            self.assertTrue(hm.edit_harness(hm.load_catalog(), "claude"))
+        cat = hm.load_catalog()
+        twin = hm.harness_by_id(cat, "claude-twin")
+        self.assertIsNotNone(twin)
+        self.assertEqual(twin["title"], "Claude Twin")
+        self.assertEqual(twin["kind"], "claude")
+        self.assertIn("[[harness]]\nid = \"claude-twin\"", self._text())
+
+    def test_edit_verify_harness(self):
+        idx = self._edit_row_index("claude", "verify")
+        with mock.patch("cowbell.choose", side_effect=[idx, None]), \
+             mock.patch("cowbell.ask", return_value=""), \
+             mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            hm.edit_harness(hm.load_catalog(), "claude")
+        output = out.getvalue()
+        self.assertIn("Verify Harness", output)
+
+    def test_probe_installed_models_ollama(self):
+        mock_proc = mock.Mock(returncode=0, stdout="NAME ID SIZE MODIFIED\nllama3:latest 123 4GB 1d\nqwen2.5:7b 456 5GB 2d\n", stderr="")
+        with mock.patch("shutil.which", return_value="/usr/local/bin/ollama"):
+            models = hm.probe_installed_models({"kind": "ollama"}, run=lambda *a, **kw: mock_proc)
+        self.assertEqual(models, ["llama3:latest", "qwen2.5:7b"])
+
+    def test_preset_choice_probe(self):
+        with mock.patch("cowbell.choose", side_effect=[3, 0]), \
+             mock.patch("cowbell.ask", return_value=""):
+            # items: ["m1"] + [_NONE, _TYPE, _PROBE] -> index 3 is _PROBE
+            # after probing, new options: ["m1", "m2"], index 0 picks "m1"
+            res = hm._preset_choice("models", ["m1"], "m1", probe_fn=lambda: ["m2"])
+        self.assertEqual(res, "m1")
 
 
 class Coherence(unittest.TestCase):
