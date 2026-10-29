@@ -579,6 +579,7 @@ def disambiguate_names(rows: list[dict]) -> None:
 # absent from PATH means no trust verdicts at all. seat_file: a brief found by
 # walking up from the directory, handed to a harness via its system_prompt_flag.
 EXT = {"trust_command": "harness-trust", "seat_file": "SEAT.md"}
+TRUST_TIMEOUT = 2.5  # seconds; a slow checker reads as no verdict, never a stalled list
 
 
 def apply_ext(cat: dict) -> None:
@@ -1307,7 +1308,11 @@ def trust_note(hid: str, v: dict, root: str) -> str:
 def trust_match(tool: str, root: str) -> dict:
     if not trust_available():
         return {"verdict": "unknown", "flag": "?", "exit": -1}
-    proc = subprocess.run([EXT["trust_command"], "match", tool, root], capture_output=True, text=True)
+    try:
+        proc = subprocess.run([EXT["trust_command"], "match", tool, root], capture_output=True, text=True,
+                              timeout=TRUST_TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError):
+        return {"verdict": "unknown", "flag": "?", "exit": -1}
     if proc.returncode not in (0, 3, 4):
         return {"verdict": "unknown", "flag": "?", "exit": proc.returncode}
     return parse_match(proc.stdout, proc.returncode)
@@ -1316,7 +1321,11 @@ def trust_match(tool: str, root: str) -> dict:
 def trust_badge(tool: str) -> str:
     if not trust_available():
         return "?"
-    proc = subprocess.run([EXT["trust_command"], "badge", tool], capture_output=True, text=True)
+    try:
+        proc = subprocess.run([EXT["trust_command"], "badge", tool], capture_output=True, text=True,
+                              timeout=TRUST_TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError):
+        return "?"
     return proc.stdout.strip() or "?"
 
 
@@ -2188,9 +2197,14 @@ def herdr_bin() -> str:
     return os.environ.get("HERDR_BIN_PATH") or shutil.which("herdr") or os.path.expanduser("~/.local/bin/herdr")
 
 
-def herdr(*args: str, expect_json: bool = True) -> dict:
+HERDR_TIMEOUT = 5.0  # seconds; a hung herdr server must not freeze the picker tick
+
+
+def herdr(*args: str, expect_json: bool = True, timeout: float = HERDR_TIMEOUT) -> dict:
     try:
-        proc = subprocess.run([herdr_bin(), *args], capture_output=True, text=True, check=False)
+        proc = subprocess.run([herdr_bin(), *args], capture_output=True, text=True, check=False, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        raise HerdrError(f"herdr {' '.join(args[:2])} timed out after {timeout:g}s") from e
     except OSError as e:  # herdr not installed: standalone cowbell still works
         raise HerdrError(f"herdr unavailable: {e}") from e
     if proc.returncode != 0:
@@ -2445,7 +2459,7 @@ def start_native(name: str, kind: str, pane_id: str, argv: list[str]) -> dict:
     last: HerdrError | None = None
     for _ in range(5):
         try:
-            return herdr(*args)
+            return herdr(*args, timeout=35)  # herdr itself waits up to 30s (--timeout 30000)
         except HerdrError as e:
             last = e
             msg = str(e)

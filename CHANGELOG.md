@@ -18,6 +18,7 @@
 - An existing catalog is filled once with `droid` and `devin` when on PATH; the seed carries a commented `[places.lab]` example; session-history discovery runs as the launch uid for `unix_user` places.
 - `cowbell new --split` opens a pane split in the project workspace instead of being dropped; outside herdr it is ignored.
 - Session titles read from a harness's store drop terminal controls (CSI, OSC title and hyperlink sequences, other control characters) before the picker prints them.
+- A hung herdr server or harness-trust check times out instead of freezing the picker. Agent start still waits up to 35s.
 - Codex lane flags verified against Codex 0.160.1.
 - Tests: Lobe glyph table and identity tokens pinned, sdist no longer ships `tests/`, host-dependent premises pinned by lookup and mock.
 

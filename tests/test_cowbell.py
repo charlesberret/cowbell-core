@@ -2187,6 +2187,28 @@ class ExtensionPoints(unittest.TestCase):
         self.assertEqual(hm.trust_badge("claude"), "?")
         self.assertEqual(hm.trust_match("claude", "/tmp")["verdict"], "unknown")
 
+    def test_a_slow_checker_is_no_verdict(self):
+        import subprocess
+
+        def slow(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs.get("timeout") or 1)
+
+        with mock.patch("cowbell.subprocess.run", slow), \
+             mock.patch("cowbell.trust_available", return_value=True):
+            self.assertEqual(hm.trust_badge("claude"), "?")
+            self.assertEqual(hm.trust_match("claude", "/tmp")["verdict"], "unknown")
+
+    def test_a_slow_herdr_is_an_error_not_a_hang(self):
+        import subprocess
+
+        def slow(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs.get("timeout") or 1)
+
+        with mock.patch("cowbell.subprocess.run", slow):
+            with self.assertRaises(hm.HerdrError) as caught:
+                hm.herdr("api", "snapshot", timeout=0.1)
+        self.assertIn("timed out", str(caught.exception))
+
     def test_seat_file_honours_the_configured_name(self):
         with tempfile.TemporaryDirectory() as td:
             (Path(td) / "BRIEF.md").write_text("brief\n")
@@ -3564,6 +3586,35 @@ class FlagProbe(unittest.TestCase):
         kinds = {h["kind"] for h in cat.get("harness", [])}
         self.assertTrue(kinds)
         self.assertLessEqual(kinds, set(hm.KIND_PROBE))
+
+
+class SubprocessTimeouts(unittest.TestCase):
+    """A hung herdr or trust checker ends in a bounded wait, never an uncaught exception."""
+
+    def _hang(self, argv, **kw):
+        self.kw = kw
+        raise hm.subprocess.TimeoutExpired(argv, kw.get("timeout"))
+
+    def test_herdr_timeout_is_a_herdr_error(self):
+        with mock.patch.object(hm.subprocess, "run", side_effect=self._hang):
+            with self.assertRaises(hm.HerdrError) as e:
+                hm.herdr("pane", "list")
+        self.assertEqual(self.kw["timeout"], hm.HERDR_TIMEOUT)
+        self.assertIn("timed out", str(e.exception))
+
+    def test_agent_start_gets_the_long_timeout(self):
+        seen = []
+        with mock.patch("cowbell.wait_shell"), \
+             mock.patch("cowbell.herdr", side_effect=lambda *a, **k: seen.append(k) or {"agent": {}}):
+            hm.start_native("seat", "claude", "w1:p1", [])
+        self.assertEqual(seen[0].get("timeout"), 35)
+
+    def test_trust_timeout_reads_as_unknown(self):
+        with mock.patch("cowbell.trust_available", return_value=True), \
+             mock.patch.object(hm.subprocess, "run", side_effect=self._hang):
+            self.assertEqual(hm.trust_match("claude", "/tmp")["verdict"], "unknown")
+            self.assertEqual(self.kw["timeout"], hm.TRUST_TIMEOUT)
+            self.assertEqual(hm.trust_badge("claude"), "?")
 
 
 class SessionTitle(unittest.TestCase):
