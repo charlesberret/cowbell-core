@@ -16,6 +16,7 @@
 - `cowbell new --yes` is documented as accepted and unused; `reconcile --dry-run` with no herdr binary names the skip.
 - Agent-list `$glyph` restamps on `pane.agent_detected` / `pane.exited` and from detector kind, so a tab that swaps harnesses does not keep the old mark.
 - An existing catalog is filled once with `droid` and `devin` when on PATH; the seed carries a commented `[places.lab]` example; session-history discovery runs as the launch uid for `unix_user` places.
+- `cowbell new --split` opens a pane split in the project workspace instead of being dropped; outside herdr it is ignored.
 - Codex lane flags verified against Codex 0.160.1.
 - Tests: Lobe glyph table and identity tokens pinned, sdist no longer ships `tests/`, host-dependent premises pinned by lookup and mock.
 

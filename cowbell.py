@@ -2170,6 +2170,7 @@ class HereLaunch(HostLaunch):
     def start(self, cat, h, name, root, ctx, *args, **kw):
         spawn = kw.pop("spawn", False)
         kw.pop("pen", None)  # a pen is a herdr workspace; this host has no tab
+        kw.pop("split", None)  # a split is a herdr pane; this host has none
         fn = spawn_here if spawn else exec_here
         return fn(cat, h, name, root, ctx, *args, **kw)
 
@@ -3229,7 +3230,7 @@ def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="",
     base = slug(name or h["id"])
     nm = unique_name(base, live_names(ctx.live.snapshot()) | {r["name"] for r in load_roster()})
     pane = launch(cat, h, nm, root, ctx, model, lane, allow, deny, seat, extra=extra, focus=focus, spawn=spawn,
-                  pen=pen, name_source="pinned" if name else "")
+                  pen=pen, split=split, name_source="pinned" if name else "")
     print(f"raised {nm}  {h['id']}{(' ' + model) if model else ''}{(' ' + lane) if lane else ''}  in {pane['pane_id']}  {tilde(root)}")
 
 

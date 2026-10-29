@@ -1978,6 +1978,34 @@ class RaiseCLI(unittest.TestCase):
             except ChildProcessError:
                 pass
 
+    def test_new_split_reaches_the_launch(self):
+        class FakeLaunch:
+            def start(self, cat, h, name, root, ctx, *args, **kw):
+                self.kw = kw
+                return {"pane_id": "p1"}
+
+        fake = FakeLaunch()
+        ctx = hm.Ctx(cwd="/tmp", mode="tab", live=EmptyLive(), launch=fake)
+        hm.cmd_new(ctx, self.cat, "true", name="seat-a", place="lab", split=True, no_seat=True, assume_yes=True)
+        self.assertIs(fake.kw.get("split"), True)
+        hm.cmd_new(ctx, self.cat, "true", name="seat-b", place="lab", no_seat=True, assume_yes=True)
+        self.assertIs(fake.kw.get("split"), False)
+
+    def test_split_flag_parses(self):
+        opts, _ = hm.parse_flags(["--split", "--harness", "true"])
+        self.assertTrue(opts.get("split"))
+
+    def test_here_launch_ignores_split(self):
+        ctx = hm.Ctx(cwd="/tmp", mode="here", live=EmptyLive(), launch=hm.HereLaunch())
+        hm.cmd_new(ctx, self.cat, "true", name="seat-s", place="lab", spawn=True, split=True,
+                   no_seat=True, assume_yes=True)
+        rows = {r["name"]: r for r in hm.load_roster()}
+        self.assertIn("seat-s", rows)
+        try:
+            os.waitpid(int(str(rows["seat-s"]["pane_id"]).split(":")[1]), 0)
+        except ChildProcessError:
+            pass
+
     def test_here_launch_auto_spawns_when_not_a_tty(self):
         host = hm.HereLaunch()
         self.assertFalse(host.tabs)
