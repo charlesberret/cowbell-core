@@ -44,7 +44,7 @@ import tempfile
 import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 try:
@@ -2934,7 +2934,13 @@ def cmd_registry(ctx: Ctx, cat: dict, root: str | None = None, as_json: bool = F
     return reg
 
 
-def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None, target: dict | None = None) -> None:
+def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None, target: dict | None = None,
+              shape=None) -> bool:
+    """Focus the sitting if it is live, else resume it. False when `shape` was cancelled.
+
+    `shape(cat, h, row, root)` returns the LaunchSpec to resume with, or None to cancel;
+    without it the recorded row is replayed as it is.
+    """
     root, place, _ = resolve_root(cat, root or ctx.cwd)
     scoped = scoped_catalog(cat, place)
     r = target
@@ -2970,11 +2976,11 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None, target: d
     live = ctx.live.agent(r["name"])
     if live and live.get("pane_id"):
         print(ctx.live.focus({**live, "name": r["name"]}))
-        return
+        return True
     for a in ctx.live.agents():
         if r.get("pane_id") and a.get("pane_id") == r.get("pane_id"):
             print(ctx.live.focus({**a, "name": r["name"]}))
-            return
+            return True
     hid = r.get("harness") or r.get("kind") or ""
     h = harness_by_id(scoped, hid) or next((x for x in scoped.get("harness", []) if x.get("kind") == r.get("kind")), None)
     if not h:
@@ -2982,6 +2988,12 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None, target: d
         raise SystemExit(f"cowbell: {r['name']} uses harness {hid!r} which may not resume in {where}")
     cat = scoped
     seat = Path(r["seat"]) if r.get("seat") and Path(r["seat"]).is_file() else None
+    if shape is not None:
+        spec = shape(cat, h, r, r.get("cwd") or root or ctx.cwd)
+        if spec is None:
+            return False
+        r = {**r, "model": spec.model, "effort": spec.effort, "lane": spec.lane,
+             "allow": spec.allow, "deny": spec.deny}
     # a still-present pane takes the resume in place; a torn-down one gets a new tab.
     pane_row = next((p for p in ctx.live.panes() if p.get("pane_id") == r.get("pane_id")), None)
     if pane_row and getattr(ctx.live, "herdr", False):
@@ -2990,12 +3002,13 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None, target: d
                              seat, resume_id=r.get("session_id", ""), reuse_pane=pane_row, focus=False,
                              effort=r.get("effort", ""))
         print(f"resumed {r['name']} ({h['id']}) in {pane_row['pane_id']}")
-        return
+        return True
     pane = launch(cat, h, r["name"], r.get("cwd") or root or ctx.cwd, ctx, r.get("model", ""), r.get("lane", ""),
                   r.get("allow", ""), r.get("deny", ""), seat, resume_id=r.get("session_id", ""),
                   effort=r.get("effort", ""))
     pid = (pane or {}).get("pane_id") or ""
     print(f"resumed {r['name']} ({h['id']}){(' in ' + pid) if pid else ''}")
+    return True
 
 
 def adopt_pane_from_choice(choice: dict | None) -> str | None:
@@ -4055,8 +4068,11 @@ def line_input(prompt: str, default: str = "") -> str:
         termios.tcsetattr(fd, termios.TCSADRAIN, saved)
 
 
-def choose(title: str, items: list[str], default: int = 0, intro: str = "") -> int | None:
-    """Numbered choice: the menu on a terminal (click, arrows, enter, esc), typed numbers otherwise."""
+def choose(title: str, items: list[str], default: int = 0, intro: str = "", mark: str = "default") -> int | None:
+    """Numbered choice: the menu on a terminal (click, arrows, enter, esc), typed numbers otherwise.
+
+    `mark` labels the preselected item: "default" where it is one, "current" where it is the value now set.
+    """
     if not items:
         return None
     if tui_ok():
@@ -4064,13 +4080,13 @@ def choose(title: str, items: list[str], default: int = 0, intro: str = "") -> i
         rows = []
         for i, s_ in enumerate(items):
             rows.append(len(body))
-            body.append(f"  {key(i + 1)}  {s_}{paint('   default', FAINT) if i == default else ''}")
+            body.append(f"  {key(i + 1)}  {s_}{paint('   ' + mark, FAINT) if i == default and mark else ''}")
         res = menu([""] + body, [r + 1 for r in rows],
                    [("↑↓", "move", ""), ("⏎", "pick", "enter"), ("esc", "cancel", "esc")], selected=default)
         return res[1] if res[0] == "pick" else None
     print(f"  {title}")
     for i, s in enumerate(items):
-        print(f"  {i + 1:>3}  {s}{'   (default)' if i == default else ''}")
+        print(f"  {i + 1:>3}  {s}{f'   ({mark})' if i == default and mark else ''}")
     raw = ask("  number (empty = default, q = cancel): ", str(default + 1))
     if raw.lower() == "q":
         return None
@@ -4755,18 +4771,18 @@ def apply_hide(root: str, hid: str) -> str:
 
 
 def picker_hints(can_widen: bool, start_row: bool, resume_row: bool = False) -> list[tuple[str, str, str]]:
-    """Hint bar for the picker. e / p / h / − only on a Start new row; r only on Resume."""
-    crowded = start_row and can_widen
+    """Hint bar for the picker. o on Start new and Resume rows; e / p / h / − only on Start new; r only on Resume."""
+    crowded = start_row  # the row actions fill the bar; ⏎ keeps its key, not its word
     hints = [("⏎", "" if crowded else "open", "enter"),
              ("n", "new", "n"),
              ("+", "add", "+"),
              ("a", "adopt", "a")]
-    if can_widen:
+    if can_widen and not start_row:  # the header's [g] widen is clickable too
         hints.append(("g", "widen", "g"))
     if resume_row and not start_row:
-        hints.append(("r", "rename", "r"))
+        hints += [("o", "shape", "o"), ("r", "rename", "r")]
     if start_row:
-        hints += [("e", "edit", "e"), ("p", "pin", "p"), ("h", "hide", "h"), ("-", "rm", "-")]
+        hints += [("o", "shape", "o"), ("e", "edit", "e"), ("p", "pin", "p"), ("h", "hide", "h"), ("-", "rm", "-")]
     hints.append(("esc", "" if start_row else "close", "esc"))
     return hints
 
@@ -4847,13 +4863,17 @@ def spec_command(cat: dict, h: dict, spec: LaunchSpec, root: str, mode: str = "t
     return unix_confine(cat, root, cmd, h=h)
 
 
-def sheet_fields(cat: dict, h: dict, spec: LaunchSpec, root: str) -> list[tuple[str, str, str, bool]]:
-    """(key, label, shown value, changed from the harness default), in sheet order.
+def sheet_fields(cat: dict, h: dict, spec: LaunchSpec, root: str,
+                 base: LaunchSpec | None = None) -> list[tuple[str, str, str, bool]]:
+    """(key, label, shown value, changed from the baseline), in sheet order.
 
-    Only settings this harness can take are listed.
+    Only settings this harness can take are listed. The baseline is the harness
+    default for a new sitting and the recorded launch for a resume. A resume keeps
+    its name and its seat file, so neither is a row.
     """
-    d = spec_default(cat, h, root, spec.name)
-    rows: list[tuple[str, str, str, bool]] = [("name", "name", spec.name, False)]
+    resume = bool(spec.resume_id)
+    d = base or spec_default(cat, h, root, spec.name)
+    rows: list[tuple[str, str, str, bool]] = [] if resume else [("name", "name", spec.name, False)]
     if h.get("model_flag"):
         rows.append(("model", "model", spec.model or "agent default", spec.model != d.model))
     if h.get("effort_flag"):
@@ -4864,7 +4884,7 @@ def sheet_fields(cat: dict, h: dict, spec: LaunchSpec, root: str) -> list[tuple[
         rows.append(("allow", "tools allow", spec.allow or "all", spec.allow != d.allow))
     if h.get("tools_deny_flag") and not is_wrapper(h):
         rows.append(("deny", "tools deny", spec.deny or "none", spec.deny != d.deny))
-    if prompt_flag(h) and not is_wrapper(h):
+    if prompt_flag(h) and not is_wrapper(h) and not resume:
         shown = tilde(spec.seat) if spec.seat else "none"
         rows.append(("seat", "seat file", shown, spec.seat != d.seat))
     return rows
@@ -4878,7 +4898,7 @@ def _sheet_value(key: str, value: str, changed: bool) -> str:
 
 
 def sheet_body(cat: dict, h: dict, spec: LaunchSpec, root: str, mode: str = "tab",
-               cols: int = 100) -> tuple[list[str], list[int], list[str], list[str]]:
+               cols: int = 100, base: LaunchSpec | None = None) -> tuple[list[str], list[int], list[str], list[str]]:
     """Lines of the sheet, the line index of each pickable row, the row keys, and
     the command lines.
 
@@ -4886,14 +4906,17 @@ def sheet_body(cat: dict, h: dict, spec: LaunchSpec, root: str, mode: str = "tab
     uid check; the menu pins them above the hint bar so a short popup still shows them.
     """
     where = "new tab in" if mode != "here" else "in this terminal ·"
+    if spec.resume_id:
+        where = f"resume {spec.resume_id[:8]} ·"
     who = h.get("title") or h["id"]
     if spec.name and spec.name != h["id"]:
         who = f"{h['id']} · {who}"
     body = [f"  {paint(spec.name or h['id'], INK, bold=True)}  {paint(who, MUTED)}  "
             f"{paint(where, FAINT)} {paint(tilde(root), TEAL)}", ""]
     rows, keys = [len(body)], ["start"]
-    body.append(f"  {paint('▶', GREEN, bold=True)}  {paint('start', INK, bold=True)}")
-    for k, label, shown, changed in sheet_fields(cat, h, spec, root):
+    verb = "resume" if spec.resume_id else "start"
+    body.append(f"  {paint('▶', GREEN, bold=True)}  {paint(verb, INK, bold=True)}")
+    for k, label, shown, changed in sheet_fields(cat, h, spec, root, base):
         rows.append(len(body))
         keys.append(k)
         shown = _middle_cut(shown, max(12, cols - 24))
@@ -4940,7 +4963,7 @@ def _sheet_pick_model(h: dict, spec: LaunchSpec) -> str | None:
     items = model_menu_items(h)
     models = list(h.get("models") or [])
     cur = models.index(spec.model) if spec.model in models[:10] else 0
-    j = choose("model", items, default=cur)
+    j = choose("model", items, default=cur, mark="current" if spec.model else "")
     if j is None:
         return None
     if j == len(items) - 1:
@@ -4963,7 +4986,7 @@ def sheet_edit(cat: dict, h: dict, spec: LaunchSpec, key_: str, root: str, taken
             levels = [x for x in (h.get("efforts") or []) if isinstance(x, str) and x]
             items = ["(agent default)"] + levels + ["(type another)"]
             cur = 1 + levels.index(spec.effort) if spec.effort in levels else 0
-            j = choose("effort", items, default=cur)
+            j = choose("effort", items, default=cur, mark="current")
             if j is not None:
                 if j == 0:
                     spec.effort = ""
@@ -4973,7 +4996,7 @@ def sheet_edit(cat: dict, h: dict, spec: LaunchSpec, key_: str, root: str, taken
                     spec.effort = levels[j - 1]
         elif key_ == "lane":
             cur = LANES.index(spec.lane) if spec.lane in LANES else 1
-            j = choose("permissions", _lane_rows(cat, h), default=cur)
+            j = choose("permissions", _lane_rows(cat, h), default=cur, mark="current")
             if j is not None:
                 spec.lane = LANES[j]
         elif key_ == "allow":
@@ -4987,31 +5010,38 @@ def sheet_edit(cat: dict, h: dict, spec: LaunchSpec, key_: str, root: str, taken
         pass
 
 
-def sheet_hints(keys: list[str]):
+def sheet_hints(keys: list[str], resume: bool = False):
+    go, reset = ("resume", "as recorded") if resume else ("start", "defaults")
+
     def hints(i: int):
         if keys[i] == "start":
-            return [("⏎", "start", "enter"), ("d", "defaults", "d"), ("esc", "cancel", "esc")]
-        return [("⏎", "change", "enter"), ("s", "start", "s"), ("d", "defaults", "d"), ("esc", "cancel", "esc")]
+            return [("⏎", go, "enter"), ("d", reset, "d"), ("esc", "cancel", "esc")]
+        return [("⏎", "change", "enter"), ("s", go, "s"), ("d", reset, "d"), ("esc", "cancel", "esc")]
     return hints
 
 
 def launch_sheet(ctx: Ctx, cat: dict, h: dict, root: str, spec: LaunchSpec,
-                 taken: set[str] | None = None) -> LaunchSpec | None:
-    """Show the sheet until start (returns the spec) or esc (returns None)."""
+                 taken: set[str] | None = None, base: LaunchSpec | None = None) -> LaunchSpec | None:
+    """Show the sheet until start (returns the spec) or esc (returns None).
+
+    `base` is what `d` restores and what a dim value means; default: the harness defaults.
+    """
     taken = set(taken or ())
+    spec = replace(spec, extra=list(spec.extra))
     selected = 0
     while True:
         cols = shutil.get_terminal_size((100, 24))[0]
-        body, rows, keys, cmd = sheet_body(cat, h, spec, root, ctx.mode, cols)
+        body, rows, keys, cmd = sheet_body(cat, h, spec, root, ctx.mode, cols, base)
         if tui_ok():
-            res = menu(body, rows, sheet_hints(keys), selected=selected, hotkeys="sd", foot=cmd)
+            res = menu(body, rows, sheet_hints(keys, bool(spec.resume_id)), selected=selected,
+                       hotkeys="sd", foot=cmd)
             if res[0] == "cancel":
                 return None
             selected = res[-1]
             k = keys[selected] if res[0] == "pick" else res[1]
         else:
             print("\n".join([""] + body + [""] + cmd))
-            labels = {k_: l_ for k_, l_, *_ in sheet_fields(cat, h, spec, root)}
+            labels = {k_: l_ for k_, l_, *_ in sheet_fields(cat, h, spec, root, base)}
             for n, kk in enumerate(keys[1:], 1):
                 print(f"  {n:>3}  change {labels.get(kk, kk)}")
             raw = ask("  number to change (empty = start, q = cancel): ", "")
@@ -5027,17 +5057,52 @@ def launch_sheet(ctx: Ctx, cat: dict, h: dict, root: str, spec: LaunchSpec,
         if k in ("start", "s"):
             return spec
         if k == "d":
-            fresh = spec_default(cat, h, root, spec.name)
-            fresh.resume_id, fresh.extra = spec.resume_id, spec.extra
-            spec = fresh
+            if base is not None:
+                spec = replace(base, name=spec.name, extra=list(base.extra))
+            else:
+                fresh = spec_default(cat, h, root, spec.name)
+                fresh.resume_id, fresh.extra = spec.resume_id, spec.extra
+                spec = fresh
             continue
         sheet_edit(cat, h, spec, k, root, taken)
 
 
+def resume_sheet(ctx: Ctx, cat: dict, h: dict, row: dict, root: str) -> LaunchSpec | None:
+    """The sheet over a recorded session: what it ran with, ready to change, then resume."""
+    rec = spec_from_row(cat, h, row, root)
+    rec.extra = []  # a resume does not replay passthrough argv
+    return launch_sheet(ctx, cat, h, root, rec, base=rec)
+
+
+def last_launch_here(cat: dict, h: dict, root: str, rows: list[dict] | None = None) -> dict | None:
+    """The newest roster row for this harness in this directory: how it was last started here."""
+    here = os.path.realpath(root)
+    mine = [r for r in (load_roster() if rows is None else rows)
+            if r.get("harness") == h["id"] and r.get("cwd") and os.path.realpath(r["cwd"]) == here]
+    if not mine:
+        return None
+    return max(mine, key=lambda r: (r.get("last_seen") or "", r.get("created") or ""))
+
+
+def seed_spec(cat: dict, h: dict, root: str, name: str, rows: list[dict] | None = None) -> LaunchSpec:
+    """What the sheet opens on for a new sitting: the last launch here, else the harness defaults.
+
+    Only the launch settings carry over; the name, session and passthrough argv are new.
+    """
+    last = last_launch_here(cat, h, root, rows)
+    if not last:
+        return spec_default(cat, h, root, name)
+    spec = spec_from_row(cat, h, last, root)
+    spec.name, spec.resume_id, spec.extra = name, "", []
+    if spec.seat and not Path(spec.seat).is_file():
+        spec.seat = spec_default(cat, h, root, name).seat
+    return spec
+
+
 def raise_with_options(ctx: Ctx, cat: dict, h: dict, root: str, v: dict, name: str,
-                       *, save_as: bool, taken: set[str] | None = None) -> bool:
+                       *, save_as: bool, taken: set[str] | None = None, seed: LaunchSpec | None = None) -> bool:
     """Open the launch sheet for this harness, then start what it shows. Esc cancels."""
-    spec = launch_sheet(ctx, cat, h, root, spec_default(cat, h, root, name), taken=taken)
+    spec = launch_sheet(ctx, cat, h, root, seed or spec_default(cat, h, root, name), taken=taken)
     if spec is None:
         return False
     if save_as:
@@ -5058,9 +5123,8 @@ def raise_with_options(ctx: Ctx, cat: dict, h: dict, root: str, v: dict, name: s
 
 
 def edit_sitting(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
-    """New Session `e`: the launch sheet for this harness. Does not rewrite the catalog.
-
-    Esc returns to the picker.
+    """New Session `o`: the launch sheet for this harness, opened on how it was last
+    started here (else its defaults). Does not rewrite the catalog. Esc returns to the picker.
     """
     h = harness_by_id(cat, hid)
     if not h:
@@ -5070,9 +5134,11 @@ def edit_sitting(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
     v = trust_match(h["trust_tool"], root)
     if v["verdict"] == "blocked":
         print(f"  ⊘ refused: {hid} on {tilde(root)} is blocked {v['flag']}"); return False
-    taken = live_names(ctx.live.snapshot()) | {r["name"] for r in load_roster()}
+    rows = load_roster()
+    taken = live_names(ctx.live.snapshot()) | {r["name"] for r in rows}
     name = unique_name(slug(h["id"]), taken)
-    return raise_with_options(ctx, cat, h, root, v, name, save_as=False, taken=taken)
+    return raise_with_options(ctx, cat, h, root, v, name, save_as=False, taken=taken,
+                              seed=seed_spec(cat, h, root, name, rows))
 
 
 def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
@@ -5137,7 +5203,7 @@ def raise_quick(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
 
 
 REFRESH_S = 2.0
-PICKER_HOTKEYS = "nwgae+ph-r"
+PICKER_HOTKEYS = "nwgae+ph-ro"
 
 
 def footer(can_widen: bool = False, start_row: bool = False) -> str:
@@ -5315,12 +5381,12 @@ def picker(ctx: Ctx, cat: dict) -> int:
                     raw = ""
                 elif res[0] == "key":
                     raw = res[1]
-                    # a / e / p / h / − / r use the highlighted row; n / w / g / + do not
-                    hit = (openable[sel_at] if raw in "aeph-r" and openable and 0 <= sel_at < len(openable)
+                    # a / e / p / h / − / r / o use the highlighted row; n / w / g / + do not
+                    hit = (openable[sel_at] if raw in "aeph-ro" and openable and 0 <= sel_at < len(openable)
                            else None)
                 else:
                     hit, raw = None, res[1] if len(res) > 1 else ""
-                if hit and hit["action"] == "more" and raw not in ("a", "e", "p", "h", "-"):
+                if hit and hit["action"] == "more" and raw not in ("a", "e", "p", "h", "-", "o"):
                     expanded.add(hit["section"])
                     continue
             else:
@@ -5384,6 +5450,8 @@ def picker(ctx: Ctx, cat: dict) -> int:
                 continue  # Active is a census; cowbell cannot take over a sitting already running
             if raw in ("e", "-") and not (hit and hit.get("action") == "raise"):
                 continue
+            if raw == "o" and not (hit and hit.get("action") in ("raise", "enter")):
+                continue
             if scr:
                 scr.close()
                 sys.stdout.write("\x1b[H\x1b[2J")  # prompts that follow start on a clean popup
@@ -5399,6 +5467,11 @@ def picker(ctx: Ctx, cat: dict) -> int:
                 elif raw == "-":
                     remove_harness(hit["target"]["harness"])
                     done = False
+                elif raw == "o" and hit["action"] == "enter":
+                    done = cmd_enter(ctx, cat, hit["target"]["name"], root, target=hit["target"],
+                                     shape=lambda c, h, row, rt: resume_sheet(ctx, c, h, row, rt))
+                elif raw == "o":
+                    done = edit_sitting(ctx, cat, hit["target"]["harness"], root)
                 elif hit["action"] == "enter":
                     cmd_enter(ctx, cat, hit["target"]["name"], root, target=hit["target"])
                     done = True

@@ -2,6 +2,7 @@
 
 ## Unreleased (0.3.2)
 
+- `o` shapes the launch under the cursor. On a New Session row it opens that harness's sheet on the settings last used for it in this directory; on a Resume row it opens the sheet over the recorded session and resumes with any change, and the roster row is rewritten with what ran. The hint bar fits 80 columns on every row.
 - Effort is a launch setting: harness rows carry `effort_flag` (a `{}` marks where the level goes), `efforts` and an optional default `effort`; the launch sheet has an effort row, `cowbell new --effort` passes one, the roster keeps it and resume replays it. The seed sets it for claude, codex, grok, agy, pi and omp from each CLI's `--help`. `catalog --check` rejects a malformed effort field.
 - `n` opens a launch sheet instead of a run of prompts: start, then every setting the harness takes with defaults dim and changes bright, the uid it runs as, and the exact command. `d` resets. A launch is now a `LaunchSpec`; a roster row rebuilds to the argv it recorded, and passthrough argv after `--` is kept on the row as `extra`.
 - The seed catalog carries `omp` (oh-my-pi): `--model`, `--resume`, `--tools`, the seat file through `--append-system-prompt`, and lanes on `--approval-mode` (`always-ask` · `write` · `yolo`).

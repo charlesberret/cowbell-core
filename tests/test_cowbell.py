@@ -2102,6 +2102,92 @@ class LaunchSheet(unittest.TestCase):
         self.assertIn("b: efforts must be a list", out)
         self.assertIn("c: effort 'high' set but no effort_flag", out)
 
+    def _row(self, **kw):
+        row = {"name": "api", "cwd": self.root, "harness": "claude", "kind": "claude",
+               "model": "claude-opus-5", "effort": "high", "lane": "green", "allow": "Read",
+               "deny": "", "seat": "", "session_id": "0f3c6a1b-aaaa", "argv": [],
+               "created": "2026-10-30T10:00:00", "last_seen": "2026-10-30"}
+        row.update(kw)
+        return row
+
+    def test_resume_sheet_is_the_recorded_launch(self):
+        rec = hm.spec_from_row(self.cat, self.h, self._row(), self.root)
+        keys = [k for k, *_ in hm.sheet_fields(self.cat, self.h, rec, self.root, rec)]
+        self.assertEqual(keys, ["model", "effort", "lane", "allow", "deny"])
+        self.assertFalse(any(c for *_, c in hm.sheet_fields(self.cat, self.h, rec, self.root, rec)))
+        body, rows, keys, cmd = hm.sheet_body(self.cat, self.h, rec, self.root, base=rec)
+        self.assertTrue(any("resume 0f3c6a1b" in ln for ln in body))
+        joined = " ".join(" ".join(cmd).split())
+        self.assertIn("--resume 0f3c6a1b-aaaa", joined)
+        self.assertIn("--effort high", joined)
+
+    def test_resume_sheet_change_then_d_restores_the_record(self):
+        ctx = hm.Ctx(cwd=self.root, mode="tab", live=hm.LiveSource(), launch=None)
+        row = self._row(extra=["--print"])
+        with mock.patch("cowbell.tui_ok", return_value=True), \
+             mock.patch("cowbell.menu", side_effect=[("pick", 1), ("pick", 0)]), \
+             mock.patch("cowbell.choose", return_value=0):
+            got = hm.resume_sheet(ctx, self.cat, self.h, row, self.root)
+        self.assertEqual(got.model, "claude-sonnet-5")
+        self.assertEqual(got.resume_id, "0f3c6a1b-aaaa")
+        self.assertEqual(got.extra, [])
+        with mock.patch("cowbell.tui_ok", return_value=True), \
+             mock.patch("cowbell.menu", side_effect=[("pick", 1), ("key", "d", 1), ("pick", 0)]), \
+             mock.patch("cowbell.choose", return_value=0):
+            got = hm.resume_sheet(ctx, self.cat, self.h, row, self.root)
+        self.assertEqual((got.model, got.effort, got.lane), ("claude-opus-5", "high", "green"))
+
+    def test_enter_with_shape_resumes_with_the_change_or_cancels(self):
+        class FakeLaunch:
+            def start(self, cat, h, name, root, ctx, *args, **kw):
+                self.got = (name,) + args
+                self.kw = kw
+                return {"pane_id": "p1"}
+
+        fake = FakeLaunch()
+        ctx = hm.Ctx(cwd=self.root, mode="tab", live=EmptyLive(), launch=fake)
+        row = self._row()
+
+        def shape(cat, h, r, rt):
+            s = hm.spec_from_row(cat, h, r, rt)
+            s.model, s.effort = "claude-sonnet-5", "max"
+            return s
+
+        with mock.patch("builtins.print"):
+            self.assertTrue(hm.cmd_enter(ctx, self.cat, "api", self.root, target=row, shape=shape))
+        self.assertEqual(fake.got[:5], ("api", "claude-sonnet-5", "green", "Read", ""))
+        self.assertEqual(fake.kw["effort"], "max")
+        self.assertEqual(fake.kw["resume_id"], "0f3c6a1b-aaaa")
+        del fake.got
+        self.assertFalse(hm.cmd_enter(ctx, self.cat, "api", self.root, target=row, shape=lambda *a: None))
+        self.assertFalse(hasattr(fake, "got"))
+
+    def test_a_changed_resume_replaces_its_roster_row(self):
+        state = Path(self.root) / "state"
+        with mock.patch.dict(os.environ, {"COWBELL_STATE_DIR": str(state)}):
+            hm.save_roster([self._row(), self._row(name="other", session_id="s2")])
+            hm._record_here(self.h, "api", self.root, "claude-sonnet-5", "green", "Read", "", None,
+                            "0f3c6a1b-aaaa", ["claude"], None, effort="max")
+            rows = [r for r in hm.load_roster() if r["session_id"] == "0f3c6a1b-aaaa"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["model"], rows[0]["effort"]), ("claude-sonnet-5", "max"))
+        self.assertEqual(rows[0]["created"], "2026-10-30T10:00:00")
+
+    def test_new_sheet_opens_on_the_last_launch_here(self):
+        other = tempfile.mkdtemp(dir=self.root)
+        rows = [self._row(last_seen="2026-10-29", model="claude-sonnet-5"),
+                self._row(name="api-2", last_seen="2026-10-30", seat=str(Path(self.root) / "gone.md"),
+                          extra=["--print"]),
+                self._row(name="elsewhere", cwd=other, last_seen="2026-10-31", model="claude-fable-5-1")]
+        s = hm.seed_spec(self.cat, self.h, self.root, "claude", rows)
+        self.assertEqual((s.name, s.model, s.effort, s.lane, s.allow), ("claude", "claude-opus-5", "high", "green", "Read"))
+        self.assertEqual((s.resume_id, s.extra, s.seat), ("", [], ""))
+        changed = {k: c for k, _l, _v, c in hm.sheet_fields(self.cat, self.h, s, self.root)}
+        self.assertTrue(changed["model"] and changed["effort"] and changed["lane"])
+        fresh = hm.seed_spec(self.cat, self.h, other + "-none", "claude", rows)
+        self.assertEqual(fresh.model, "claude-sonnet-5")
+        self.assertEqual(fresh.effort, "")
+
     def test_name_edit_stays_unique(self):
         s = hm.spec_default(self.cat, self.h, self.root, "api")
         with mock.patch("cowbell.ask", return_value="reviewer"):
@@ -3254,6 +3340,11 @@ class PickerEdit(unittest.TestCase):
         self.assertTrue({"e", "p", "h", "-", "+", "n", "a", "enter", "esc"}.issubset(start))
         self.assertFalse({"e", "p", "h", "-"} & other)
         self.assertTrue({"+", "n", "a", "enter", "esc"}.issubset(other))
+        self.assertIn("o", start)
+        self.assertNotIn("o", other)
+        self.assertIn("o", {ev for *_, ev in hm.picker_hints(False, False, True)})
+        for args in ((False, True), (True, True), (True, False, True), (False, False, True)):
+            self.assertLessEqual(hm.hint_bar(hm.picker_hints(*args))[1][-1][1], 80, args)
         self.assertIn("g", {ev for *_, ev in hm.picker_hints(True, False)})
         self.assertNotIn("g", other)
         _, spans = hm.hint_bar(hm.picker_hints(False, True))
