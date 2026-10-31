@@ -2192,7 +2192,7 @@ class LaunchSheet(unittest.TestCase):
 
     def test_new_sheet_opens_on_the_last_launch_here(self):
         other = tempfile.mkdtemp(dir=self.root)
-        rows = [self._row(last_seen="2026-10-29", model="claude-sonnet-5"),
+        rows = [self._row(created="2026-10-28T09:00:00", last_seen="2026-10-29", model="claude-sonnet-5"),
                 self._row(name="api-2", last_seen="2026-10-30", seat=str(Path(self.root) / "gone.md"),
                           extra=["--print"]),
                 self._row(name="elsewhere", cwd=other, last_seen="2026-10-31", model="claude-fable-5-1")]
@@ -2229,6 +2229,15 @@ class LaunchSheet(unittest.TestCase):
         self.assertEqual(s.dirs, [os.path.realpath(self.root)])
         joined = " ".join(" ".join(hm.sheet_body(self.cat, self.h, s, self.root)[3]).split())
         self.assertIn("--add-dir " + os.path.realpath(self.root), joined)
+
+    def test_a_fresh_herdr_row_outranks_an_old_here_row(self):
+        old_here = self._row(name="old", model="claude-sonnet-5", created="2026-10-01T09:00:00",
+                             last_seen="2026-10-02")
+        herdr = self._row(name="new", model="claude-fable-5-1", created="2026-10-30T18:00:00")
+        herdr.pop("last_seen")
+        self.assertIs(hm.last_launch_here(self.cat, self.h, self.root, [old_here, herdr]), herdr)
+        self.assertEqual(hm.seed_spec(self.cat, self.h, self.root, "claude", [old_here, herdr]).model,
+                         "claude-fable-5-1")
 
     def test_name_edit_stays_unique(self):
         s = hm.spec_default(self.cat, self.h, self.root, "api")

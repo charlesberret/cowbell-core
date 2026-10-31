@@ -5156,7 +5156,10 @@ def last_launch_here(cat: dict, h: dict, root: str, rows: list[dict] | None = No
             if r.get("harness") == h["id"] and r.get("cwd") and os.path.realpath(r["cwd"]) == here]
     if not mine:
         return None
-    return max(mine, key=lambda r: (r.get("last_seen") or "", r.get("created") or ""))
+    # A herdr raise writes `created` and no `last_seen`; a here launch writes both. The day
+    # is the later of the two, so a fresh herdr row is not outranked by an old here row.
+    return max(mine, key=lambda r: (max(r.get("last_seen") or "", (r.get("created") or "")[:10]),
+                                    r.get("created") or ""))
 
 
 def seed_spec(cat: dict, h: dict, root: str, name: str, rows: list[dict] | None = None) -> LaunchSpec:
