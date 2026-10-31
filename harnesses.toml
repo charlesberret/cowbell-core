@@ -21,7 +21,7 @@
 #
 # Resuming outside herdr: a harness is resume-capable in a plain terminal only
 # when cowbell can choose its session id (`session_id_flag`), start with that id,
-# and replay it later. claude is the one seeded harness that is resume-capable
+# and replay it later. claude and pi are the seeded harnesses that are resume-capable
 # outside herdr; every other seeded harness is honestly absent from Resume when
 # raised outside herdr — its CLI picks its own session id, which cowbell cannot
 # set or replay. (Raised under herdr, session ids are observed and replay works
@@ -184,6 +184,8 @@ model_flag = ["--model"]
 effort_flag = ["--thinking"]
 efforts = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 resume = ["--session"]   # pi --help: --session <path|id>; --continue takes no id (a word after it is a prompt)
+session_id_flag = "--session-id"   # outside herdr: pi opens or creates the session with this id (a UUID is valid)
+name_flag = "--name"
 tools_allow_flag = "--tools"
 
 [[harness]]

@@ -1579,8 +1579,8 @@ class ResumeOutside(unittest.TestCase):
         self.assertIn("honestly absent from Resume", text)
         claude = next(h for h in cat["harness"] if h["id"] == "claude")
         self.assertEqual(claude.get("session_id_flag"), "--session-id")
-        # only claude claims a cowbell-chosen session id; the others are honestly absent
-        self.assertEqual([h["id"] for h in cat["harness"] if h.get("session_id_flag")], ["claude"])
+        # claude and pi take a cowbell-chosen session id; the others are honestly absent
+        self.assertEqual([h["id"] for h in cat["harness"] if h.get("session_id_flag")], ["claude", "pi"])
 
     def test_seed_documents_unix_user_and_ships_no_place(self):
         import tomllib
@@ -1939,6 +1939,14 @@ class Seed(unittest.TestCase):
         pi = next(h for h in cat["harness"] if h["id"] == "pi")
         sid = "/home/u/.pi/agent/sessions/--x--/2026-09-13T18-10-02-500Z_01a09bf6.jsonl"
         self.assertEqual(hm.build_argv(cat, pi, resume_id=sid), ["--session", sid])
+        cmd, session = hm.here_command(cat, pi, "probe")
+        self.assertEqual(cmd[:3], ["pi", "--session-id", session])
+        self.assertEqual(cmd[-2:], ["--name", "probe"])
+        # pi refuses --session-id beside --session; a resume carries only --session
+        cmd, again = hm.here_command(cat, pi, "probe", resume_id=session)
+        self.assertNotIn("--session-id", cmd)
+        self.assertEqual(again, session)
+        self.assertRegex(session, r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")  # pi's assertValidSessionId
 
     def test_seed_is_standard_agents_only(self):
         import tomllib
