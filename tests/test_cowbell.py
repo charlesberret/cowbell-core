@@ -142,6 +142,11 @@ class Argv(unittest.TestCase):
     def test_resume_shapes(self):
         self.assertEqual(hm.build_argv(CAT, hm.harness_by_id(CAT, "claude"), resume_id="abc"), ["--resume", "abc"])
         self.assertEqual(hm.build_argv(CAT, hm.harness_by_id(CAT, "codex"), resume_id="abc"), ["resume", "abc"])
+        codex = dict(hm.harness_by_id(CAT, "codex"), model_flag=["--model"],
+                     effort_flag=["-c", "model_reasoning_effort={}"], add_dir_flag="--add-dir")
+        argv = hm.build_argv(CAT, codex, model="gpt-6-astra", resume_id="abc", effort="high", dirs=["/d"])
+        self.assertEqual(argv[:2], ["resume", "abc"])  # codex resume <id> takes -m, -c, -s, --add-dir itself
+        self.assertEqual(argv[2:], ["--model", "gpt-6-astra", "-c", "model_reasoning_effort=high", "--add-dir", "/d"])
         self.assertEqual(hm.build_argv(CAT, hm.harness_by_id(CAT, "omp"), resume_id="abc"), ["--resume=abc"])
 
     def test_wrapper_ignores_lane_and_model(self):

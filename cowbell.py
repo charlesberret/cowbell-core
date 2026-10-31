@@ -1871,7 +1871,9 @@ def build_argv(cat: dict, h: dict, model: str = "", lane: str = "", allow: str =
     if resume_id:
         spec = list(h.get("resume") or [])
         if spec == ["resume"]:
-            argv += ["resume", resume_id]
+            # A subcommand goes first: `codex resume <id> --model …`. Its own options are the
+            # ones a resume honours; flags before it belong to the parent command.
+            argv = ["resume", resume_id] + argv
         elif spec and spec[0].endswith("="):
             argv += [spec[0] + resume_id]
         elif spec:
