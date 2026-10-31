@@ -177,7 +177,7 @@ models = []
 model_flag = ["--model"]
 effort_flag = ["--thinking"]
 efforts = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
-resume = ["--continue"]
+resume = ["--session"]   # pi --help: --session <path|id>; --continue takes no id (a word after it is a prompt)
 tools_allow_flag = "--tools"
 
 [[harness]]

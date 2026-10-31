@@ -1927,6 +1927,14 @@ class Seed(unittest.TestCase):
         self.assertIn("max", by_id["agy"]["efforts"])
         self.assertNotIn("effort_flag", by_id["gemini"])
 
+    def test_pi_resumes_the_session_it_names(self):
+        import tomllib
+        seed = Path(__file__).resolve().parent.parent / "harnesses.toml"
+        cat = tomllib.loads(seed.read_text())
+        pi = next(h for h in cat["harness"] if h["id"] == "pi")
+        sid = "/home/u/.pi/agent/sessions/--x--/2026-09-13T18-10-02-500Z_01a09bf6.jsonl"
+        self.assertEqual(hm.build_argv(cat, pi, resume_id=sid), ["--session", sid])
+
     def test_seed_is_standard_agents_only(self):
         import tomllib
         seed = Path(__file__).resolve().parent.parent / "harnesses.toml"
