@@ -167,7 +167,8 @@ class PickerHere(unittest.TestCase):
             (seed / "harnesses.toml").write_text(catalog)
             env = {"HERDR_BIN_PATH": str(stub), "HERDR_SOCKET_PATH": str(base / "no.sock"), "COWBELL_MODE": "here",
                    "COWBELL_CONFIG_DIR": str(base / "cfg"), "COWBELL_STATE_DIR": str(base / "state"),
-                   "HERDR_PLUGIN_ROOT": str(seed)}
+                   "HERDR_PLUGIN_ROOT": str(seed),
+                   "HERDR_PLUGIN_CONFIG_DIR": str(base / "old-cfg"), "HERDR_PLUGIN_STATE_DIR": str(base / "old-state")}
 
             def child():
                 os.environ.update(env)
@@ -199,7 +200,9 @@ class PickerHere(unittest.TestCase):
         (seed / "harnesses.toml").write_text(catalog)
         env = {"HERDR_BIN_PATH": str(stub), "HERDR_SOCKET_PATH": str(base / "no.sock"), "COWBELL_MODE": "here",
                "COWBELL_CONFIG_DIR": str(base / "cfg"), "COWBELL_STATE_DIR": str(base / "state"),
-               "HERDR_PLUGIN_ROOT": str(seed)}
+               "HERDR_PLUGIN_ROOT": str(seed),
+               # no migration from the real herdr plugin dirs into this test's state
+               "HERDR_PLUGIN_CONFIG_DIR": str(base / "old-cfg"), "HERDR_PLUGIN_STATE_DIR": str(base / "old-state")}
 
         def child():
             os.environ.update(env)
@@ -275,6 +278,20 @@ class PickerHere(unittest.TestCase):
             self.assertIn(b"default model", screen)
             self.assertIn(b"alpha-model", screen)
             self.assertEqual(catalog.read_bytes(), before)
+
+    def test_n_opens_the_launch_sheet_and_esc_starts_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            child, env, log = self._here(tmp)
+            res, screen = in_pty(child, ["n", "\r", ESC, ESC, ESC], settle=1.0, gap=0.35)
+            self.assertEqual(res, 0)
+            self.assertIn("▶".encode(), screen)
+            self.assertIn(b"start", screen)
+            self.assertIn(b"runs as", screen)
+            self.assertIn(b"/bin/echo", screen)
+            roster = Path(env["COWBELL_STATE_DIR"]) / "roster.json"
+            rows = json.loads(roster.read_text()).get("harnesses") if roster.exists() else []
+            self.assertEqual(rows, [])
+            self.assertFalse(log.exists())
 
     def test_edit_add_remove_esc_write_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
