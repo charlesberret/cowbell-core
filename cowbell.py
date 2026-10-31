@@ -3898,8 +3898,11 @@ _MENU_PENDING: list = []  # events after a terminating key, saved for the next m
 
 def menu(body: list[str], rows: list[int], hints, selected: int = 0,
          hotkeys: str = "", flash: str = "", line_keys: dict[int, str] | None = None,
-         numbered: list[int] | None = None, scr: Screen | None = None, tick: float | None = None) -> tuple:
+         numbered: list[int] | None = None, scr: Screen | None = None, tick: float | None = None,
+         foot: list[str] | None = None) -> tuple:
     """Pick one of `rows` (line indexes into body).
+
+    `foot` lines are pinned above the hint bar and never scroll with the body.
 
     Returns ("pick", i), ("key", ch, i) for a hotkey, clicked hint or clicked `line_keys` line, ("cancel",),
     or ("tick", i) after `tick` idle seconds so the caller can refresh (pass `scr` to keep the screen up).
@@ -3921,8 +3924,9 @@ def menu(body: list[str], rows: list[int], hints, selected: int = 0,
         while True:
             bar, spans = hint_bar(hints(selected) if callable(hints) else hints)
             cols, height = shutil.get_terminal_size((100, 24))
-            foot = ["", bar] + ([paint("  " + flash, RED)] if flash else [])
-            view = max(3, height - len(foot))
+            pinned = ([""] + list(foot)) if foot else []
+            foot_ = pinned + ["", bar] + ([paint("  " + flash, RED)] if flash else [])
+            view = max(3, height - len(foot_))
             sel_line = rows[selected] if rows else -1
             if not rows:
                 top = 0
@@ -3933,8 +3937,8 @@ def menu(body: list[str], rows: list[int], hints, selected: int = 0,
             shown = [highlight(ln, cols) if n == sel_line else ln
                      for n, ln in enumerate(body[top:top + view], start=top)]
             shown += [""] * (view - len(shown))
-            bar_y = view + 2  # 1-based screen row of the hint bar
-            scr.draw(shown + foot)
+            bar_y = view + len(pinned) + 2  # 1-based screen row of the hint bar
+            scr.draw(shown + foot_)
             # fast-typed keys arrive batched; leftovers carry to the next menu() call
             evs = _MENU_PENDING if _MENU_PENDING else scr.events(tick)
             _MENU_PENDING.clear()
@@ -4874,21 +4878,21 @@ def _sheet_value(key: str, value: str, changed: bool) -> str:
 
 
 def sheet_body(cat: dict, h: dict, spec: LaunchSpec, root: str, mode: str = "tab",
-               cols: int = 100) -> tuple[list[str], list[int], list[str]]:
-    """Lines of the sheet, the line index of each pickable row, and the row keys.
+               cols: int = 100) -> tuple[list[str], list[int], list[str], list[str]]:
+    """Lines of the sheet, the line index of each pickable row, the row keys, and
+    the command lines.
 
-    Row 0 is start. The command that will run is drawn under the settings; a
-    refusal from the uid check is drawn there instead.
+    Row 0 is start. The command lines are what will run, or the refusal from the
+    uid check; the menu pins them above the hint bar so a short popup still shows them.
     """
     where = "new tab in" if mode != "here" else "in this terminal ·"
     who = h.get("title") or h["id"]
     if spec.name and spec.name != h["id"]:
         who = f"{h['id']} · {who}"
-    body = ["", f"  {paint(spec.name or h['id'], INK, bold=True)}  {paint(who, MUTED)}  "
-                f"{paint(where, FAINT)} {paint(tilde(root), TEAL)}", ""]
+    body = [f"  {paint(spec.name or h['id'], INK, bold=True)}  {paint(who, MUTED)}  "
+            f"{paint(where, FAINT)} {paint(tilde(root), TEAL)}", ""]
     rows, keys = [len(body)], ["start"]
     body.append(f"  {paint('▶', GREEN, bold=True)}  {paint('start', INK, bold=True)}")
-    body.append("")
     for k, label, shown, changed in sheet_fields(cat, h, spec, root):
         rows.append(len(body))
         keys.append(k)
@@ -4898,14 +4902,13 @@ def sheet_body(cat: dict, h: dict, spec: LaunchSpec, root: str, mode: str = "tab
     runs_as = f"{'runs as':<14}"
     body.append(f"     {paint(runs_as, SECONDARY)} "
                 f"{paint(uid, GOLD) if uid else paint(os.environ.get('USER') or 'you', FAINT)}")
-    body.append("")
     try:
         words = [w if w == "<new id>" else shell_join([w]) for w in spec_command(cat, h, spec, root, mode)]
         chunks = _wrap_words(words, max(20, cols - 6))
-        body += [f"  {paint('$', FAINT)} {paint(chunks[0], MUTED)}"] + [f"    {paint(c, MUTED)}" for c in chunks[1:]]
+        cmd = [f"  {paint('$', FAINT)} {paint(chunks[0], MUTED)}"] + [f"    {paint(c, MUTED)}" for c in chunks[1:]]
     except SystemExit as e:
-        body.append(f"  {paint(str(e), RED)}")
-    return body, rows, keys
+        cmd = [f"  {paint(str(e), RED)}"]
+    return body, rows, keys, cmd
 
 
 def slug_effort(raw: str) -> str:
@@ -4999,15 +5002,15 @@ def launch_sheet(ctx: Ctx, cat: dict, h: dict, root: str, spec: LaunchSpec,
     selected = 0
     while True:
         cols = shutil.get_terminal_size((100, 24))[0]
-        body, rows, keys = sheet_body(cat, h, spec, root, ctx.mode, cols)
+        body, rows, keys, cmd = sheet_body(cat, h, spec, root, ctx.mode, cols)
         if tui_ok():
-            res = menu(body, rows, sheet_hints(keys), selected=selected, hotkeys="sd")
+            res = menu(body, rows, sheet_hints(keys), selected=selected, hotkeys="sd", foot=cmd)
             if res[0] == "cancel":
                 return None
             selected = res[-1]
             k = keys[selected] if res[0] == "pick" else res[1]
         else:
-            print("\n".join(body))
+            print("\n".join([""] + body + [""] + cmd))
             labels = {k_: l_ for k_, l_, *_ in sheet_fields(cat, h, spec, root)}
             for n, kk in enumerate(keys[1:], 1):
                 print(f"  {n:>3}  change {labels.get(kk, kk)}")

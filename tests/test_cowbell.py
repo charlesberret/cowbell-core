@@ -2016,13 +2016,14 @@ class LaunchSheet(unittest.TestCase):
 
     def test_sheet_body_shows_the_command_or_the_refusal(self):
         s = hm.spec_default(self.cat, self.h, self.root, "api")
-        body, rows, keys = hm.sheet_body(self.cat, self.h, s, self.root)
+        body, rows, keys, cmd = hm.sheet_body(self.cat, self.h, s, self.root)
         self.assertEqual(keys[0], "start")
         self.assertEqual(len(rows), len(keys))
-        self.assertTrue(any("claude --model claude-sonnet-5" in ln for ln in body))
+        self.assertTrue(any("claude --model claude-sonnet-5" in ln for ln in cmd))
+        self.assertFalse(any("$" in ln for ln in body))
         cat = dict(self.cat, defaults={"lane": "yellow", "require_uid": True})
-        body, _r, _k = hm.sheet_body(cat, self.h, s, self.root)
-        self.assertTrue(any("refused" in ln for ln in body))
+        _b, _r, _k, cmd = hm.sheet_body(cat, self.h, s, self.root)
+        self.assertTrue(any("refused" in ln for ln in cmd))
 
     def test_plain_sheet_d_resets_and_start_returns_the_spec(self):
         s = hm.spec_default(self.cat, self.h, self.root, "api")
@@ -2040,9 +2041,8 @@ class LaunchSheet(unittest.TestCase):
 
     def test_command_wraps_between_words_and_shows_new_id_bare(self):
         s = hm.spec_default(self.cat, self.h, self.root, "api")
-        body, _r, _k = hm.sheet_body(self.cat, self.h, s, self.root, mode="here", cols=40)
-        cmd = [ln.strip().lstrip("$").strip() for ln in body[body.index(""
-               , body.index(next(ln for ln in body if "runs as" in ln))) + 1:]]
+        _b, _r, _k, lines = hm.sheet_body(self.cat, self.h, s, self.root, mode="here", cols=40)
+        cmd = [ln.strip().lstrip("$").strip() for ln in lines]
         joined = " ".join(cmd)
         self.assertIn("--session-id <new id>", joined)
         self.assertNotIn("'<new id>'", joined)
