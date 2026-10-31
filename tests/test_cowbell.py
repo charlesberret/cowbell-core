@@ -1926,6 +1926,122 @@ class Seed(unittest.TestCase):
         self.assertIn("grok-4.7", grok["models"])
 
 
+class LaunchSheet(unittest.TestCase):
+    """The launch sheet and the spec it edits."""
+
+    LANES_ = {"claude": {"green": ["--permission-mode", "plan"],
+                         "yellow": ["--permission-mode", "acceptEdits"],
+                         "red": ["--permission-mode", "bypassPermissions"]}}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+        self.h = {"id": "claude", "kind": "claude", "models": ["claude-sonnet-5", "claude-opus-5"],
+                  "model_flag": ["--model"], "resume": ["--resume"],
+                  "tools_allow_flag": "--allowedTools", "tools_deny_flag": "--disallowedTools",
+                  "system_prompt_flag": "--append-system-prompt-file",
+                  "session_id_flag": "--session-id", "name_flag": "--name"}
+        self.cat = {"defaults": {"lane": "yellow"}, "lanes": self.LANES_, "harness": [self.h]}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_default_spec_is_what_enter_starts(self):
+        s = hm.spec_default(self.cat, self.h, self.root, "claude")
+        self.assertEqual((s.model, s.lane, s.allow, s.deny, s.seat), ("claude-sonnet-5", "yellow", "", "", ""))
+        self.assertEqual(hm.spec_argv(self.cat, self.h, s),
+                         ["--model", "claude-sonnet-5", "--permission-mode", "acceptEdits"])
+
+    def test_fields_mark_only_what_this_launch_changed(self):
+        s = hm.spec_default(self.cat, self.h, self.root, "claude")
+        s.model, s.allow = "claude-opus-5", "Read,Grep"
+        changed = {k: c for k, _l, _v, c in hm.sheet_fields(self.cat, self.h, s, self.root)}
+        self.assertTrue(changed["model"])
+        self.assertTrue(changed["allow"])
+        self.assertFalse(changed["lane"])
+        self.assertFalse(changed["deny"])
+
+    def test_wrapper_lists_only_what_it_opted_into(self):
+        w = {"id": "lobby", "kind": "lobby", "command": "/bin/echo"}
+        keys = [k for k, *_ in hm.sheet_fields(self.cat, w, hm.LaunchSpec("lobby", "lobby"), self.root)]
+        self.assertEqual(keys, ["name"])
+
+    def test_roster_rows_replay_to_their_recorded_argv(self):
+        """Every launch the raise path records rebuilds to the same argv from its spec."""
+        seat = Path(self.root) / "SEAT.md"
+        seat.write_text("seat\n")
+        combos = [
+            ("claude-sonnet-5", "yellow", "", "", None, "", None),
+            ("claude-opus-5", "green", "Read,Grep", "", None, "", None),
+            ("", "red", "", "Bash", seat, "", None),
+            ("claude-opus-5", "yellow", "", "", seat, "sess-1", None),
+            ("claude-sonnet-5", "", "", "", None, "", ["--verbose"]),
+        ]
+        for model, lane, allow, deny, st, resume, extra in combos:
+            argv = hm.build_argv(self.cat, self.h, model, lane, allow, deny, st, resume,
+                                 sitting="api", extra=extra)
+            row = {"name": "api", "cwd": self.root, "harness": "claude", "kind": "claude",
+                   "model": model, "lane": lane, "allow": allow, "deny": deny,
+                   "seat": str(st) if st else "", "session_id": resume, "argv": argv}
+            if extra:
+                row["extra"] = extra
+            spec = hm.spec_from_row(self.cat, self.h, row, self.root)
+            self.assertEqual(hm.spec_argv(self.cat, self.h, spec), argv, row)
+
+    def test_old_row_without_launch_fields_takes_defaults(self):
+        spec = hm.spec_from_row(self.cat, self.h, {"name": "old", "session_id": "s9"}, self.root)
+        self.assertEqual((spec.model, spec.lane, spec.resume_id, spec.extra), ("claude-sonnet-5", "yellow", "s9", []))
+
+    def test_here_command_shows_a_new_id_not_a_uuid(self):
+        s = hm.spec_default(self.cat, self.h, self.root, "api")
+        cmd = hm.spec_command(self.cat, self.h, s, self.root, mode="here")
+        self.assertEqual(cmd[:3], ["claude", "--session-id", "<new id>"])
+        self.assertEqual(cmd[-2:], ["--name", "api"])
+
+    def test_sheet_body_shows_the_command_or_the_refusal(self):
+        s = hm.spec_default(self.cat, self.h, self.root, "api")
+        body, rows, keys = hm.sheet_body(self.cat, self.h, s, self.root)
+        self.assertEqual(keys[0], "start")
+        self.assertEqual(len(rows), len(keys))
+        self.assertTrue(any("claude --model claude-sonnet-5" in ln for ln in body))
+        cat = dict(self.cat, defaults={"lane": "yellow", "require_uid": True})
+        body, _r, _k = hm.sheet_body(cat, self.h, s, self.root)
+        self.assertTrue(any("refused" in ln for ln in body))
+
+    def test_plain_sheet_d_resets_and_start_returns_the_spec(self):
+        s = hm.spec_default(self.cat, self.h, self.root, "api")
+        s.model, s.extra = "claude-opus-5", ["--verbose"]
+        ctx = hm.Ctx(cwd=self.root, mode="tab", live=hm.LiveSource(), launch=None)
+        with mock.patch("cowbell.tui_ok", return_value=False), \
+             mock.patch("cowbell.ask", side_effect=["q"]), \
+             mock.patch("builtins.print"):
+            self.assertIsNone(hm.launch_sheet(ctx, self.cat, self.h, self.root, s))
+        with mock.patch("cowbell.tui_ok", return_value=True), \
+             mock.patch("cowbell.menu", side_effect=[("key", "d", 2), ("pick", 0)]):
+            got = hm.launch_sheet(ctx, self.cat, self.h, self.root, s)
+        self.assertEqual(got.model, "claude-sonnet-5")
+        self.assertEqual(got.extra, ["--verbose"])
+
+    def test_command_wraps_between_words_and_shows_new_id_bare(self):
+        s = hm.spec_default(self.cat, self.h, self.root, "api")
+        body, _r, _k = hm.sheet_body(self.cat, self.h, s, self.root, mode="here", cols=40)
+        cmd = [ln.strip().lstrip("$").strip() for ln in body[body.index(""
+               , body.index(next(ln for ln in body if "runs as" in ln))) + 1:]]
+        joined = " ".join(cmd)
+        self.assertIn("--session-id <new id>", joined)
+        self.assertNotIn("'<new id>'", joined)
+        self.assertTrue(all(len(c) <= 34 for c in cmd if " " in c))
+        self.assertEqual(hm._wrap_words(["a", "bb", "ccc"], 4), ["a bb", "ccc"])
+        self.assertEqual(hm._middle_cut("abcdefghij", 5), "ab…ij")
+
+    def test_name_edit_stays_unique(self):
+        s = hm.spec_default(self.cat, self.h, self.root, "api")
+        with mock.patch("cowbell.ask", return_value="reviewer"):
+            hm.sheet_edit(self.cat, self.h, s, "name", self.root, {"reviewer"})
+        self.assertNotEqual(s.name, "reviewer")
+        self.assertTrue(s.name.startswith("reviewer"))
+
+
 class EmptyLive(hm.LiveSource):
     def snapshot(self):
         return {"agents": [], "tabs": []}
@@ -3271,9 +3387,11 @@ class PickerEdit(unittest.TestCase):
             self.assertEqual(hm._ask_tools(filled), ("Read,Grep", ""))
 
     def test_edit_sitting_launches_chosen_model_and_lane(self):
+        """The sheet: change model (row 2) and permissions (row 3), then start (empty)."""
         class FakeLaunch:
             def start(self, cat, h, name, root, ctx, *args, **kw):
                 self.got = (name,) + args
+                self.kw = kw
                 return {"pane_id": "p1"}
 
         fake = FakeLaunch()
@@ -3284,10 +3402,11 @@ class PickerEdit(unittest.TestCase):
              mock.patch("cowbell.installed", return_value=True), \
              mock.patch("cowbell.prompt_flag", return_value=None), \
              mock.patch("cowbell.choose", side_effect=[1, 0]), \
-             mock.patch("cowbell.ask", return_value=""):
+             mock.patch("cowbell.ask", side_effect=["2", "3", ""]):
             self.assertTrue(hm.edit_sitting(ctx, cat, "claude", self.root))
         self.assertEqual(fake.got[0], "claude")
         self.assertEqual(fake.got[1:5], ("claude-opus-5", "green", "", ""))
+        self.assertEqual(fake.kw["name_source"], "pinned")
         self.assertEqual(self.catalog.read_bytes(), before)
 
     def test_edit_sitting_asks_name_and_model_when_catalog_list_empty(self):
@@ -3306,8 +3425,8 @@ class PickerEdit(unittest.TestCase):
              mock.patch("cowbell.installed", return_value=True), \
              mock.patch("cowbell.prompt_flag", return_value=None), \
              mock.patch("cowbell.load_roster", return_value=[]), \
-             mock.patch("cowbell.choose", side_effect=[1, 1]), \
-             mock.patch("cowbell.ask", side_effect=["probe", "grok-4.7"]):
+             mock.patch("cowbell.choose", side_effect=[1]), \
+             mock.patch("cowbell.ask", side_effect=["1", "probe", "2", "grok-4.7", ""]):
             self.assertTrue(hm.edit_sitting(ctx, cat, "grok", self.root))
         self.assertEqual(fake.got[0], "probe")
         self.assertEqual(fake.got[1:5], ("grok-4.7", "yellow", "", ""))
@@ -3325,7 +3444,7 @@ class PickerEdit(unittest.TestCase):
         before = self.catalog.read_bytes()
         with mock.patch("cowbell.trust_match", return_value={"verdict": "ok"}), \
              mock.patch("cowbell.installed", return_value=True), \
-             mock.patch("cowbell.ask", return_value=""), \
+             mock.patch("cowbell.ask", return_value="q"), \
              mock.patch("cowbell.choose", return_value=None):
             self.assertFalse(hm.edit_sitting(ctx, cat, "claude", self.root))
         self.assertFalse(hasattr(fake, "called"))

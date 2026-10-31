@@ -44,6 +44,7 @@ import tempfile
 import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
 
 try:
@@ -2060,12 +2061,14 @@ def _apply_name_source(row: dict, old: dict | None, name_source: str) -> None:
 
 def _record_here(h: dict, name: str, root: str, model: str, lane: str, allow: str, deny: str,
                  seat: Path | None, session: str, cmd: list[str], pane_id: str | None,
-                 name_source: str = "") -> None:
+                 name_source: str = "", extra: list[str] | None = None) -> None:
     rows, old = _sitting_kept(load_roster(), name, session)
     row = {"name": name, "cwd": root, "harness": h["id"], "kind": h["kind"], "model": model, "lane": lane,
            "allow": allow, "deny": deny, "seat": str(seat) if seat else "", "session_id": session,
            "pane_id": pane_id, "created": (old or {}).get("created") or now(), "last_seen": now()[:10],
            "argv": cmd[1:], "source": "here"}
+    if extra:
+        row["extra"] = list(extra)
     _apply_name_source(row, old, name_source)
     rows.append(row)
     save_roster(rows)
@@ -2078,7 +2081,7 @@ def exec_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", la
     cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra)
     cmd = unix_confine(cat, root, cmd, h=h)
     exe = _here_exe(h, cmd)
-    _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, None, name_source)
+    _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, None, name_source, extra)
     sys.stdout.write("\x1b[H\x1b[2J" if sys.stdout.isatty() else "")
     print(f"  {paint(name, INK, bold=True)}  {paint(shell_join(cmd), MUTED)}  {paint(tilde(root), FAINT)}")
     sys.stdout.flush()
@@ -2098,7 +2101,7 @@ def spawn_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", l
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     pane_id = f"pid:{proc.pid}"
-    _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, pane_id, name_source)
+    _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, pane_id, name_source, extra)
     return {"pane_id": pane_id, "pid": proc.pid}
 
 
@@ -2519,6 +2522,8 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
         "session_id": session, "pane_id": pid, "tab_id": pane.get("tab_id"),
         "workspace_id": pane.get("workspace_id"), "created": (old or {}).get("created") or now(), "argv": argv,
     }
+    if extra:
+        row["extra"] = list(extra)
     _apply_name_source(row, old, name_source)
     rows.append(row)
     save_roster(rows)
@@ -4729,52 +4734,275 @@ def picker_hints(can_widen: bool, start_row: bool, resume_row: bool = False) -> 
     return hints
 
 
-def raise_with_options(ctx: Ctx, cat: dict, h: dict, root: str, v: dict, name: str,
-                       *, save_as: bool) -> bool:
-    """Pick model, permissions, and tools for this sitting, then start. Esc cancels."""
-    head = f"{paint(name, INK, bold=True)}  {paint(h['id'], MUTED)}"
-    model = ""
-    models = list(h.get("models") or [])
-    items = model_menu_items(h)
-    if items:
-        j = choose("model", items, intro=head)
-        if j is None:
-            return False
-        if models:
-            model = models[j] if j < len(items) - 1 else ask("  model id: ")
+# --- launch sheet ----------------------------------------------------------------
+# One screen for one launch: every setting the harness takes, its value, and the
+# command that will run. A setting left at the harness default is dim; one this
+# launch changed is ink. `n`, and `e` on a New Session row, open it.
+
+@dataclass
+class LaunchSpec:
+    """How one sitting starts. The roster row's launch fields, with a name.
+
+    A field an older roster row lacks is the harness default, never an error.
+    `extra` is argv passed through after `--`; the roster keeps it so a relaunch
+    from this record does not drop it.
+    """
+    harness: str
+    name: str = ""
+    model: str = ""
+    lane: str = ""
+    allow: str = ""
+    deny: str = ""
+    seat: str = ""
+    resume_id: str = ""
+    extra: list[str] = field(default_factory=list)
+
+    def seat_path(self) -> Path | None:
+        return Path(self.seat) if self.seat else None
+
+    def launch_args(self) -> tuple:
+        """Positional args for launch(), raise_harness() and exec_here() after ctx."""
+        return (self.model, self.lane, self.allow, self.deny, self.seat_path())
+
+
+def spec_default(cat: dict, h: dict, root: str, name: str = "") -> LaunchSpec:
+    """What Enter on New Session would start: the harness's own defaults."""
+    allow, deny = harness_tools(h)
+    seat = seat_file(root) if prompt_flag(h) else None
+    return LaunchSpec(
+        harness=h["id"], name=name, model=(h.get("models") or [""])[0],
+        lane=harness_lane(h, cat), allow=allow, deny=deny, seat=str(seat) if seat else "",
+    )
+
+
+def spec_from_row(cat: dict, h: dict, row: dict, root: str = "") -> LaunchSpec:
+    """A roster row as a launch spec. Missing fields fall back to the harness defaults."""
+    base = spec_default(cat, h, root or row.get("cwd") or os.getcwd(), row.get("name") or "")
+    got = {k: row.get(k) for k in ("model", "lane", "allow", "deny", "seat") if k in row}
+    extra = row.get("extra")
+    return LaunchSpec(
+        harness=h["id"], name=row.get("name") or base.name,
+        model=got.get("model", base.model) or "", lane=got.get("lane", base.lane) or "",
+        allow=got.get("allow", base.allow) or "", deny=got.get("deny", base.deny) or "",
+        seat=got.get("seat", base.seat) or "", resume_id=row.get("session_id") or "",
+        extra=list(extra) if isinstance(extra, list) else [],
+    )
+
+
+def spec_argv(cat: dict, h: dict, spec: LaunchSpec) -> list[str]:
+    return build_argv(cat, h, spec.model, spec.lane, spec.allow, spec.deny, spec.seat_path(),
+                      spec.resume_id, sitting=spec.name, extra=spec.extra or None)
+
+
+def spec_command(cat: dict, h: dict, spec: LaunchSpec, root: str, mode: str = "tab") -> list[str]:
+    """The command line this spec runs, uid drop included. In this terminal a new
+    session id is shown as `<new id>`; cowbell picks the real one at launch."""
+    if mode == "here":
+        cmd, session = here_command(cat, h, spec.name, *spec.launch_args(), resume_id=spec.resume_id,
+                                    extra=spec.extra or None)
+        if session and session != spec.resume_id:
+            cmd = ["<new id>" if p == session else p for p in cmd]
+    else:
+        argv = spec_argv(cat, h, spec)
+        cmd = [h["command"], *argv] if is_wrapper(h) else [h["kind"], *argv]
+    return unix_confine(cat, root, cmd, h=h)
+
+
+def sheet_fields(cat: dict, h: dict, spec: LaunchSpec, root: str) -> list[tuple[str, str, str, bool]]:
+    """(key, label, shown value, changed from the harness default), in sheet order.
+
+    Only settings this harness can take are listed.
+    """
+    d = spec_default(cat, h, root, spec.name)
+    rows: list[tuple[str, str, str, bool]] = [("name", "name", spec.name, False)]
+    if h.get("model_flag"):
+        rows.append(("model", "model", spec.model or "agent default", spec.model != d.model))
+    if not is_wrapper(h) or h.get("lane"):
+        rows.append(("lane", "permissions", spec.lane or "agent default", spec.lane != d.lane))
+    if h.get("tools_allow_flag") and not is_wrapper(h):
+        rows.append(("allow", "tools allow", spec.allow or "all", spec.allow != d.allow))
+    if h.get("tools_deny_flag") and not is_wrapper(h):
+        rows.append(("deny", "tools deny", spec.deny or "none", spec.deny != d.deny))
+    if prompt_flag(h) and not is_wrapper(h):
+        shown = tilde(spec.seat) if spec.seat else "none"
+        rows.append(("seat", "seat file", shown, spec.seat != d.seat))
+    return rows
+
+
+def _sheet_value(key: str, value: str, changed: bool) -> str:
+    if key == "lane" and value in LANES:
+        c = {"green": GREEN, "yellow": GOLD, "red": RED}[value]
+        return paint(value, c, bold=changed) if changed else paint(value, c)
+    return paint(value, INK, bold=True) if changed else paint(value, FAINT)
+
+
+def sheet_body(cat: dict, h: dict, spec: LaunchSpec, root: str, mode: str = "tab",
+               cols: int = 100) -> tuple[list[str], list[int], list[str]]:
+    """Lines of the sheet, the line index of each pickable row, and the row keys.
+
+    Row 0 is start. The command that will run is drawn under the settings; a
+    refusal from the uid check is drawn there instead.
+    """
+    where = "new tab in" if mode != "here" else "in this terminal ·"
+    who = h.get("title") or h["id"]
+    if spec.name and spec.name != h["id"]:
+        who = f"{h['id']} · {who}"
+    body = ["", f"  {paint(spec.name or h['id'], INK, bold=True)}  {paint(who, MUTED)}  "
+                f"{paint(where, FAINT)} {paint(tilde(root), TEAL)}", ""]
+    rows, keys = [len(body)], ["start"]
+    body.append(f"  {paint('▶', GREEN, bold=True)}  {paint('start', INK, bold=True)}")
+    body.append("")
+    for k, label, shown, changed in sheet_fields(cat, h, spec, root):
+        rows.append(len(body))
+        keys.append(k)
+        shown = _middle_cut(shown, max(12, cols - 24))
+        body.append(f"     {paint(f'{label:<14}', SECONDARY)} {_sheet_value(k, shown, changed)}")
+    uid = (h.get("unix_user") or (place_for(cat, root) or {}).get("unix_user") or "")
+    runs_as = f"{'runs as':<14}"
+    body.append(f"     {paint(runs_as, SECONDARY)} "
+                f"{paint(uid, GOLD) if uid else paint(os.environ.get('USER') or 'you', FAINT)}")
+    body.append("")
+    try:
+        words = [w if w == "<new id>" else shell_join([w]) for w in spec_command(cat, h, spec, root, mode)]
+        chunks = _wrap_words(words, max(20, cols - 6))
+        body += [f"  {paint('$', FAINT)} {paint(chunks[0], MUTED)}"] + [f"    {paint(c, MUTED)}" for c in chunks[1:]]
+    except SystemExit as e:
+        body.append(f"  {paint(str(e), RED)}")
+    return body, rows, keys
+
+
+def _middle_cut(text: str, width: int) -> str:
+    if len(text) <= width:
+        return text
+    keep = width - 1
+    return text[: keep // 2] + "…" + text[len(text) - (keep - keep // 2):]
+
+
+def _wrap_words(words: list[str], width: int) -> list[str]:
+    """Lines of at most `width`, broken between words. A word longer than a line gets its own."""
+    lines, cur = [], ""
+    for w in words:
+        if cur and len(cur) + 1 + len(w) > width:
+            lines.append(cur)
+            cur = w
         else:
-            model = "" if j == 0 else ask("  model id: ")
-    lane = ""
-    if not is_wrapper(h):
-        default_lane = harness_lane(h, cat) or "yellow"
-        j = choose("permissions", _lane_rows(cat, h),
-                   default=LANES.index(default_lane) if default_lane in LANES else 1,
-                   intro=f"{head}  {paint(model, MUTED)}")
-        if j is None:
-            return False
-        lane = LANES[j]
-    allow, deny = _ask_tools(h)
+            cur = f"{cur} {w}" if cur else w
+    return lines + [cur] if cur or not lines else lines
+
+
+def _sheet_pick_model(h: dict, spec: LaunchSpec) -> str | None:
+    items = model_menu_items(h)
+    models = list(h.get("models") or [])
+    cur = models.index(spec.model) if spec.model in models[:10] else 0
+    j = choose("model", items, default=cur)
+    if j is None:
+        return None
+    if j == len(items) - 1:
+        return ask("  model id: ", spec.model) or spec.model
+    return "" if not models else models[j]
+
+
+def sheet_edit(cat: dict, h: dict, spec: LaunchSpec, key_: str, root: str, taken: set[str]) -> None:
+    """Change one setting in place. Esc inside a field leaves it as it was."""
+    try:
+        if key_ == "name":
+            raw = ask(f"  name [{spec.name}]: ", spec.name)
+            if (raw or "").strip() and slug(raw) != spec.name:
+                spec.name = unique_name(slug(raw), taken)
+        elif key_ == "model":
+            m = _sheet_pick_model(h, spec)
+            if m is not None:
+                spec.model = m
+        elif key_ == "lane":
+            cur = LANES.index(spec.lane) if spec.lane in LANES else 1
+            j = choose("permissions", _lane_rows(cat, h), default=cur)
+            if j is not None:
+                spec.lane = LANES[j]
+        elif key_ == "allow":
+            spec.allow = ask("  tools allow (empty = all): ", spec.allow)
+        elif key_ == "deny":
+            spec.deny = ask("  tools deny (empty = none): ", spec.deny)
+        elif key_ == "seat":
+            found = seat_file(root)
+            spec.seat = "" if spec.seat else (str(found) if found else "")
+    except KeyboardInterrupt:
+        pass
+
+
+def sheet_hints(keys: list[str]):
+    def hints(i: int):
+        if keys[i] == "start":
+            return [("⏎", "start", "enter"), ("d", "defaults", "d"), ("esc", "cancel", "esc")]
+        return [("⏎", "change", "enter"), ("s", "start", "s"), ("d", "defaults", "d"), ("esc", "cancel", "esc")]
+    return hints
+
+
+def launch_sheet(ctx: Ctx, cat: dict, h: dict, root: str, spec: LaunchSpec,
+                 taken: set[str] | None = None) -> LaunchSpec | None:
+    """Show the sheet until start (returns the spec) or esc (returns None)."""
+    taken = set(taken or ())
+    selected = 0
+    while True:
+        cols = shutil.get_terminal_size((100, 24))[0]
+        body, rows, keys = sheet_body(cat, h, spec, root, ctx.mode, cols)
+        if tui_ok():
+            res = menu(body, rows, sheet_hints(keys), selected=selected, hotkeys="sd")
+            if res[0] == "cancel":
+                return None
+            selected = res[-1]
+            k = keys[selected] if res[0] == "pick" else res[1]
+        else:
+            print("\n".join(body))
+            labels = {k_: l_ for k_, l_, *_ in sheet_fields(cat, h, spec, root)}
+            for n, kk in enumerate(keys[1:], 1):
+                print(f"  {n:>3}  change {labels.get(kk, kk)}")
+            raw = ask("  number to change (empty = start, q = cancel): ", "")
+            if raw.lower() == "q":
+                return None
+            try:
+                n = int(raw) if raw else 0
+            except ValueError:
+                continue
+            if not 0 <= n < len(keys):
+                continue
+            k = keys[n]
+        if k in ("start", "s"):
+            return spec
+        if k == "d":
+            fresh = spec_default(cat, h, root, spec.name)
+            fresh.resume_id, fresh.extra = spec.resume_id, spec.extra
+            spec = fresh
+            continue
+        sheet_edit(cat, h, spec, k, root, taken)
+
+
+def raise_with_options(ctx: Ctx, cat: dict, h: dict, root: str, v: dict, name: str,
+                       *, save_as: bool, taken: set[str] | None = None) -> bool:
+    """Open the launch sheet for this harness, then start what it shows. Esc cancels."""
+    spec = launch_sheet(ctx, cat, h, root, spec_default(cat, h, root, name), taken=taken)
+    if spec is None:
+        return False
     if save_as:
         try:
-            offer_save_as(h, model, lane, allow, deny)
+            offer_save_as(h, spec.model, spec.lane, spec.allow, spec.deny)
         except SystemExit as e:
             print(f"  {e}")
-    seat = seat_file(root) if prompt_flag(h) else None
     if v["verdict"] == "overprivilege":
         print(f"  {paint('! ' + trust_note(h['id'], v, root), FAINT)}")
-    argv = build_argv(cat, h, model, lane, allow, deny, seat, sitting=name)
-    shown = shell_join([h["command"], *argv]) if is_wrapper(h) else shell_join([h["kind"], *argv])
     if ctx.mode != "here":
-        print(f"\n  {paint(name, INK, bold=True)}  {paint(shown, MUTED)}")
-    pane = launch(cat, h, name, root, ctx, model, lane, allow, deny, seat, name_source="pinned")
-    print(f"  started {name} in {pane['pane_id']}")
+        argv = spec_argv(cat, h, spec)
+        shown = shell_join([h["command"], *argv]) if is_wrapper(h) else shell_join([h["kind"], *argv])
+        print(f"\n  {paint(spec.name, INK, bold=True)}  {paint(shown, MUTED)}")
+    pane = launch(cat, h, spec.name, root, ctx, *spec.launch_args(), extra=spec.extra or None,
+                  name_source="pinned")
+    print(f"  started {spec.name} in {pane['pane_id']}")
     return True
 
 
 def edit_sitting(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
-    """New Session `e`: set this sitting's name / model / permissions, then start.
+    """New Session `e`: the launch sheet for this harness. Does not rewrite the catalog.
 
-    Does not rewrite the catalog. Esc returns to the picker. Empty tools boxes stay closed.
+    Esc returns to the picker.
     """
     h = harness_by_id(cat, hid)
     if not h:
@@ -4786,15 +5014,11 @@ def edit_sitting(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
         print(f"  ⊘ refused: {hid} on {tilde(root)} is blocked {v['flag']}"); return False
     taken = live_names(ctx.live.snapshot()) | {r["name"] for r in load_roster()}
     name = unique_name(slug(h["id"]), taken)
-    intro = f"{paint('new tab in' if ctx.mode != 'here' else 'in this terminal ·', FAINT)} {paint(tilde(root), TEAL)}"
-    print(f"  {paint(h['id'], INK, bold=True)}  {intro}")
-    raw = ask(f"  name [{name}]: ", name)
-    name = unique_name(slug(raw) if (raw or "").strip() else name, taken)
-    return raise_with_options(ctx, cat, h, root, v, name, save_as=False)
+    return raise_with_options(ctx, cat, h, root, v, name, save_as=False, taken=taken)
 
 
 def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
-    """New with options: agent, name, model, permissions, optional tools, optional save-as."""
+    """New with options: pick an agent, then its launch sheet, then optional save-as."""
     hs = [h for h in cat.get("harness", [])]
     with ThreadPoolExecutor(max_workers=8) as pool:
         verdicts = dict(zip([h["id"] for h in hs], pool.map(lambda h: trust_match(h["trust_tool"], root), hs)))
@@ -4818,10 +5042,8 @@ def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
     if v["verdict"] == "blocked":
         print(f"  ⊘ refused: {h['id']} on {tilde(root)} is blocked {v['flag']}"); return False
     taken = live_names(ctx.live.snapshot()) | {r["name"] for r in load_roster()}
-    base = unique_name(slug(h["id"]), taken)
-    print(f"  {paint(h['id'], INK, bold=True)}  {intro}")
-    name = unique_name(slug(ask(f"  name [{base}]: ", base)), taken)
-    return raise_with_options(ctx, cat, h, root, v, name, save_as=True)
+    name = unique_name(slug(h["id"]), taken)
+    return raise_with_options(ctx, cat, h, root, v, name, save_as=True, taken=taken)
 
 
 def raise_quick(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:

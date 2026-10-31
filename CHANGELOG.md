@@ -2,6 +2,7 @@
 
 ## Unreleased (0.3.2)
 
+- `n` opens a launch sheet instead of a run of prompts: start, then every setting the harness takes with defaults dim and changes bright, the uid it runs as, and the exact command. `d` resets. A launch is now a `LaunchSpec`; a roster row rebuilds to the argv it recorded, and passthrough argv after `--` is kept on the row as `extra`.
 - The seed catalog carries `omp` (oh-my-pi): `--model`, `--resume`, `--tools`, the seat file through `--append-system-prompt`, and lanes on `--approval-mode` (`always-ask` · `write` · `yolo`).
 - In-place harness editor (`e` menu) improvements:
   - Live Launch Command Preview (`launch preview`): shows the exact expanded argv, directory, lane permissions, and confinement uid drops (`agent-run` / `sudo -u`).
