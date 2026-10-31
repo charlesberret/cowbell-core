@@ -1809,13 +1809,26 @@ def _wrapper_catalog_argv(cat: dict, h: dict, model: str, lane: str, allow: str,
     return argv
 
 
+def effort_argv(h: dict, effort: str) -> list[str]:
+    """`effort_flag` with the level. A `{}` in the flag is where the level goes
+    (codex: `["-c", "model_reasoning_effort={}"]`); otherwise the level follows it."""
+    flag = h.get("effort_flag")
+    if not effort or not isinstance(flag, list) or not flag:
+        return []
+    if any("{}" in part for part in flag):
+        return [part.replace("{}", effort) for part in flag]
+    return list(flag) + [effort]
+
+
 def build_argv(cat: dict, h: dict, model: str = "", lane: str = "", allow: str = "", deny: str = "",
                seat: Path | None = None, resume_id: str = "", sitting: str = "",
-               extra: list[str] | None = None, agents_dir: Path | None = None) -> list[str]:
+               extra: list[str] | None = None, agents_dir: Path | None = None,
+               effort: str = "") -> list[str]:
     """Agent-side argv (after `--` for native kinds; after the wrapper for house wrappers)."""
     argv: list[str] = []
     if is_wrapper(h):
         argv += _wrapper_catalog_argv(cat, h, model, lane, allow, deny)
+        argv += effort_argv(h, effort)
         if resume_id:
             argv += list(h.get("resume") or ["--continue"])
         return argv + list(extra or [])
@@ -1824,6 +1837,7 @@ def build_argv(cat: dict, h: dict, model: str = "", lane: str = "", allow: str =
         argv += list(h["provider_flag"]) + [provider]
     if model and h.get("model_flag"):
         argv += list(h["model_flag"]) + [model]
+    argv += effort_argv(h, effort)
     models = h.get("models") or []
     if isinstance(h.get("cycle_flag"), list) and h["cycle_flag"] and models:
         argv += list(h["cycle_flag"]) + [",".join(models)]
@@ -1971,10 +1985,10 @@ def agent_processes(table: dict[int, dict] | None = None, cwds=process_cwds) -> 
 
 
 def here_command(cat: dict, h: dict, name: str, model="", lane="", allow="", deny="", seat: Path | None = None,
-                 resume_id: str = "", extra: list[str] | None = None) -> tuple[list[str], str]:
+                 resume_id: str = "", extra: list[str] | None = None, effort: str = "") -> tuple[list[str], str]:
     """Full command line for this terminal, and the session id cowbell can record for a later resume."""
     import uuid
-    argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, sitting=name, extra=extra)
+    argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, sitting=name, extra=extra, effort=effort)
     session = resume_id
     if not resume_id and h.get("session_id_flag") and not is_wrapper(h):
         session = str(uuid.uuid4())
@@ -2061,12 +2075,14 @@ def _apply_name_source(row: dict, old: dict | None, name_source: str) -> None:
 
 def _record_here(h: dict, name: str, root: str, model: str, lane: str, allow: str, deny: str,
                  seat: Path | None, session: str, cmd: list[str], pane_id: str | None,
-                 name_source: str = "", extra: list[str] | None = None) -> None:
+                 name_source: str = "", extra: list[str] | None = None, effort: str = "") -> None:
     rows, old = _sitting_kept(load_roster(), name, session)
     row = {"name": name, "cwd": root, "harness": h["id"], "kind": h["kind"], "model": model, "lane": lane,
            "allow": allow, "deny": deny, "seat": str(seat) if seat else "", "session_id": session,
            "pane_id": pane_id, "created": (old or {}).get("created") or now(), "last_seen": now()[:10],
            "argv": cmd[1:], "source": "here"}
+    if effort:
+        row["effort"] = effort
     if extra:
         row["extra"] = list(extra)
     _apply_name_source(row, old, name_source)
@@ -2076,12 +2092,12 @@ def _record_here(h: dict, name: str, root: str, model: str, lane: str, allow: st
 
 def exec_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", lane="", allow="", deny="",
               seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True,
-              name_source: str = ""):
+              name_source: str = "", effort: str = ""):
     """Hand this terminal to the agent. Does not return."""
-    cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra)
+    cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra, effort=effort)
     cmd = unix_confine(cat, root, cmd, h=h)
     exe = _here_exe(h, cmd)
-    _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, None, name_source, extra)
+    _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, None, name_source, extra, effort)
     sys.stdout.write("\x1b[H\x1b[2J" if sys.stdout.isatty() else "")
     print(f"  {paint(name, INK, bold=True)}  {paint(shell_join(cmd), MUTED)}  {paint(tilde(root), FAINT)}")
     sys.stdout.flush()
@@ -2091,9 +2107,9 @@ def exec_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", la
 
 def spawn_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", lane="", allow="", deny="",
                seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True,
-               name_source: str = "") -> dict:
+               name_source: str = "", effort: str = "") -> dict:
     """Start the agent in a new session at root and return. Assemblies raise N times this way."""
-    cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra)
+    cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra, effort=effort)
     cmd = unix_confine(cat, root, cmd, h=h)
     exe = _here_exe(h, cmd)
     proc = subprocess.Popen(
@@ -2101,7 +2117,7 @@ def spawn_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", l
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     pane_id = f"pid:{proc.pid}"
-    _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, pane_id, name_source, extra)
+    _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, pane_id, name_source, extra, effort)
     return {"pane_id": pane_id, "pid": proc.pid}
 
 
@@ -2478,8 +2494,8 @@ def start_native(name: str, kind: str, pane_id: str, argv: list[str]) -> dict:
 def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", lane="", allow="", deny="",
                   seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None,
                   focus: bool = True, pen: bool = False, split: bool = False,
-                  reuse_pane: dict | None = None, name_source: str = "") -> dict:
-    argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, sitting=name, extra=extra)
+                  reuse_pane: dict | None = None, name_source: str = "", effort: str = "") -> dict:
+    argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, sitting=name, extra=extra, effort=effort)
     place = place_for(cat, root)
     base = ([h["command"], *argv] if is_wrapper(h) else [h["kind"], *argv])
     confined = unix_confine(cat, root, base, h=h)
@@ -2522,6 +2538,8 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
         "session_id": session, "pane_id": pid, "tab_id": pane.get("tab_id"),
         "workspace_id": pane.get("workspace_id"), "created": (old or {}).get("created") or now(), "argv": argv,
     }
+    if effort:
+        row["effort"] = effort
     if extra:
         row["extra"] = list(extra)
     _apply_name_source(row, old, name_source)
@@ -2969,11 +2987,13 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None, target: d
     if pane_row and getattr(ctx.live, "herdr", False):
         pane = raise_harness(cat, h, r["name"], r.get("cwd") or root or ctx.cwd, ctx,
                              r.get("model", ""), r.get("lane", ""), r.get("allow", ""), r.get("deny", ""),
-                             seat, resume_id=r.get("session_id", ""), reuse_pane=pane_row, focus=False)
+                             seat, resume_id=r.get("session_id", ""), reuse_pane=pane_row, focus=False,
+                             effort=r.get("effort", ""))
         print(f"resumed {r['name']} ({h['id']}) in {pane_row['pane_id']}")
         return
     pane = launch(cat, h, r["name"], r.get("cwd") or root or ctx.cwd, ctx, r.get("model", ""), r.get("lane", ""),
-                  r.get("allow", ""), r.get("deny", ""), seat, resume_id=r.get("session_id", ""))
+                  r.get("allow", ""), r.get("deny", ""), seat, resume_id=r.get("session_id", ""),
+                  effort=r.get("effort", ""))
     pid = (pane or {}).get("pane_id") or ""
     print(f"resumed {r['name']} ({h['id']}){(' in ' + pid) if pid else ''}")
 
@@ -3224,7 +3244,7 @@ def gate(cat_h: dict, root: str, interactive: bool, assume_yes: bool) -> dict:
 
 def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="", name="", no_seat=False,
             assume_yes=False, root: str | None = None, extra: list[str] | None = None, focus: bool = True,
-            place: str = "", spawn=None, pen: bool = False, split: bool = False) -> None:
+            place: str = "", spawn=None, pen: bool = False, split: bool = False, effort: str = "") -> None:
     if place:
         pl = places(cat).get(place)
         if not pl:
@@ -3251,13 +3271,17 @@ def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="",
     if lane and lane not in LANES:
         raise SystemExit(f"cowbell: lane must be one of {', '.join(LANES)}")
     model = model or (h["models"][0] if h["models"] else "")
+    effort = effort or h.get("effort") or ""
+    if effort and not h.get("effort_flag"):
+        raise SystemExit(f"cowbell: {hid} has no effort_flag in the catalog; --effort has nowhere to go")
     seat = None if (no_seat or not prompt_flag(h)) else seat_file(root)
     gate(h, root, interactive=False, assume_yes=assume_yes)
     base = slug(name or h["id"])
     nm = unique_name(base, live_names(ctx.live.snapshot()) | {r["name"] for r in load_roster()})
     pane = launch(cat, h, nm, root, ctx, model, lane, allow, deny, seat, extra=extra, focus=focus, spawn=spawn,
-                  pen=pen, split=split, name_source="pinned" if name else "")
-    print(f"raised {nm}  {h['id']}{(' ' + model) if model else ''}{(' ' + lane) if lane else ''}  in {pane['pane_id']}  {tilde(root)}")
+                  pen=pen, split=split, name_source="pinned" if name else "", effort=effort)
+    print(f"raised {nm}  {h['id']}{(' ' + model) if model else ''}{(' ' + effort) if effort else ''}"
+          f"{(' ' + lane) if lane else ''}  in {pane['pane_id']}  {tilde(root)}")
 
 
 def cmd_dispatch(ctx: Ctx, cat: dict, hid: str, assume_yes: bool) -> None:
@@ -3297,7 +3321,7 @@ def declared_flags(h: dict) -> list[str]:
     for k, v in h.items():
         if k == "resume" or k.endswith("_flag"):
             out += [v] if isinstance(v, str) else list(v or [])
-    return [a for a in out if isinstance(a, str) and a]
+    return [a for a in out if isinstance(a, str) and a and "{}" not in a]
 
 
 def flag_probe(h: dict, run=subprocess.run) -> list | None:
@@ -3339,6 +3363,13 @@ def cmd_catalog_check(cat: dict) -> int:
             problems.append(f"harness {hid}: unknown lane {h['lane']!r}")
         if "models" in h and not isinstance(h["models"], list):
             problems.append(f"harness {hid}: models must be a list")
+        ef = h.get("effort_flag")
+        if ef is not None and not (isinstance(ef, list) and ef and all(isinstance(x, str) for x in ef)):
+            problems.append(f"harness {hid}: effort_flag must be a list of strings")
+        if "efforts" in h and not (isinstance(h["efforts"], list) and all(isinstance(x, str) for x in h["efforts"])):
+            problems.append(f"harness {hid}: efforts must be a list of strings")
+        if h.get("effort") and not ef:
+            problems.append(f"harness {hid}: effort {h['effort']!r} set but no effort_flag")
         if not installed(h):
             unchecked.append(hid)
             continue
@@ -4071,12 +4102,12 @@ def models_with_default(models: list[str], default: str) -> list[str]:
 
 
 def harness_preset(src: dict, hid: str, title: str, model: str, lane: str,
-                   allow: str, deny: str) -> dict:
+                   allow: str, deny: str, effort: str = "") -> dict:
     """A new [[harness]] copied from `src` with this sitting's model / lane / tools as defaults."""
     out = {"id": hid, "kind": src.get("kind") or hid}
     for k in ("command", "family", "egress", "trust_tool", "model_flag", "resume",
               "tools_allow_flag", "tools_deny_flag", "system_prompt_flag", "session_id_flag",
-              "claim_flag"):
+              "claim_flag", "effort_flag", "efforts"):
         if src.get(k):
             out[k] = src[k]
     models = models_with_default(list(src.get("models") or []), model)
@@ -4084,6 +4115,8 @@ def harness_preset(src: dict, hid: str, title: str, model: str, lane: str,
         out["models"] = models
     if title:
         out["title"] = title
+    if effort and out.get("effort_flag"):
+        out["effort"] = effort
     if lane:
         out["lane"] = lane
     if allow:
@@ -4093,7 +4126,7 @@ def harness_preset(src: dict, hid: str, title: str, model: str, lane: str,
     return out
 
 
-def offer_save_as(src: dict, model: str, lane: str, allow: str, deny: str) -> str:
+def offer_save_as(src: dict, model: str, lane: str, allow: str, deny: str, effort: str = "") -> str:
     """Ask for a new harness id. Empty skip or Esc writes nothing. Returns the id, or \"\"."""
     try:
         raw = ask("  save as harness id (empty skip): ", "")
@@ -4105,7 +4138,7 @@ def offer_save_as(src: dict, model: str, lane: str, allow: str, deny: str) -> st
     title = src.get("title") or hid
     if model:
         title = f"{title} · {model}"
-    harness_insert(harness_preset(src, hid, title, model, lane, allow, deny))
+    harness_insert(harness_preset(src, hid, title, model, lane, allow, deny, effort))
     print(f"  saved {hid}")
     return hid
 
@@ -4750,6 +4783,7 @@ class LaunchSpec:
     harness: str
     name: str = ""
     model: str = ""
+    effort: str = ""
     lane: str = ""
     allow: str = ""
     deny: str = ""
@@ -4770,7 +4804,7 @@ def spec_default(cat: dict, h: dict, root: str, name: str = "") -> LaunchSpec:
     allow, deny = harness_tools(h)
     seat = seat_file(root) if prompt_flag(h) else None
     return LaunchSpec(
-        harness=h["id"], name=name, model=(h.get("models") or [""])[0],
+        harness=h["id"], name=name, model=(h.get("models") or [""])[0], effort=h.get("effort") or "",
         lane=harness_lane(h, cat), allow=allow, deny=deny, seat=str(seat) if seat else "",
     )
 
@@ -4778,11 +4812,12 @@ def spec_default(cat: dict, h: dict, root: str, name: str = "") -> LaunchSpec:
 def spec_from_row(cat: dict, h: dict, row: dict, root: str = "") -> LaunchSpec:
     """A roster row as a launch spec. Missing fields fall back to the harness defaults."""
     base = spec_default(cat, h, root or row.get("cwd") or os.getcwd(), row.get("name") or "")
-    got = {k: row.get(k) for k in ("model", "lane", "allow", "deny", "seat") if k in row}
+    got = {k: row.get(k) for k in ("model", "effort", "lane", "allow", "deny", "seat") if k in row}
     extra = row.get("extra")
     return LaunchSpec(
         harness=h["id"], name=row.get("name") or base.name,
-        model=got.get("model", base.model) or "", lane=got.get("lane", base.lane) or "",
+        model=got.get("model", base.model) or "", effort=got.get("effort", base.effort) or "",
+        lane=got.get("lane", base.lane) or "",
         allow=got.get("allow", base.allow) or "", deny=got.get("deny", base.deny) or "",
         seat=got.get("seat", base.seat) or "", resume_id=row.get("session_id") or "",
         extra=list(extra) if isinstance(extra, list) else [],
@@ -4791,7 +4826,7 @@ def spec_from_row(cat: dict, h: dict, row: dict, root: str = "") -> LaunchSpec:
 
 def spec_argv(cat: dict, h: dict, spec: LaunchSpec) -> list[str]:
     return build_argv(cat, h, spec.model, spec.lane, spec.allow, spec.deny, spec.seat_path(),
-                      spec.resume_id, sitting=spec.name, extra=spec.extra or None)
+                      spec.resume_id, sitting=spec.name, extra=spec.extra or None, effort=spec.effort)
 
 
 def spec_command(cat: dict, h: dict, spec: LaunchSpec, root: str, mode: str = "tab") -> list[str]:
@@ -4799,7 +4834,7 @@ def spec_command(cat: dict, h: dict, spec: LaunchSpec, root: str, mode: str = "t
     session id is shown as `<new id>`; cowbell picks the real one at launch."""
     if mode == "here":
         cmd, session = here_command(cat, h, spec.name, *spec.launch_args(), resume_id=spec.resume_id,
-                                    extra=spec.extra or None)
+                                    extra=spec.extra or None, effort=spec.effort)
         if session and session != spec.resume_id:
             cmd = ["<new id>" if p == session else p for p in cmd]
     else:
@@ -4817,6 +4852,8 @@ def sheet_fields(cat: dict, h: dict, spec: LaunchSpec, root: str) -> list[tuple[
     rows: list[tuple[str, str, str, bool]] = [("name", "name", spec.name, False)]
     if h.get("model_flag"):
         rows.append(("model", "model", spec.model or "agent default", spec.model != d.model))
+    if h.get("effort_flag"):
+        rows.append(("effort", "effort", spec.effort or "agent default", spec.effort != d.effort))
     if not is_wrapper(h) or h.get("lane"):
         rows.append(("lane", "permissions", spec.lane or "agent default", spec.lane != d.lane))
     if h.get("tools_allow_flag") and not is_wrapper(h):
@@ -4871,6 +4908,12 @@ def sheet_body(cat: dict, h: dict, spec: LaunchSpec, root: str, mode: str = "tab
     return body, rows, keys
 
 
+def slug_effort(raw: str) -> str:
+    """A typed effort level: one word of letters, digits, dot, dash or underscore."""
+    raw = (raw or "").strip()
+    return raw if re.fullmatch(r"[A-Za-z0-9._-]{1,32}", raw) else ""
+
+
 def _middle_cut(text: str, width: int) -> str:
     if len(text) <= width:
         return text
@@ -4913,6 +4956,18 @@ def sheet_edit(cat: dict, h: dict, spec: LaunchSpec, key_: str, root: str, taken
             m = _sheet_pick_model(h, spec)
             if m is not None:
                 spec.model = m
+        elif key_ == "effort":
+            levels = [x for x in (h.get("efforts") or []) if isinstance(x, str) and x]
+            items = ["(agent default)"] + levels + ["(type another)"]
+            cur = 1 + levels.index(spec.effort) if spec.effort in levels else 0
+            j = choose("effort", items, default=cur)
+            if j is not None:
+                if j == 0:
+                    spec.effort = ""
+                elif j == len(items) - 1:
+                    spec.effort = slug_effort(ask("  effort: ", spec.effort))
+                else:
+                    spec.effort = levels[j - 1]
         elif key_ == "lane":
             cur = LANES.index(spec.lane) if spec.lane in LANES else 1
             j = choose("permissions", _lane_rows(cat, h), default=cur)
@@ -4984,7 +5039,7 @@ def raise_with_options(ctx: Ctx, cat: dict, h: dict, root: str, v: dict, name: s
         return False
     if save_as:
         try:
-            offer_save_as(h, spec.model, spec.lane, spec.allow, spec.deny)
+            offer_save_as(h, spec.model, spec.lane, spec.allow, spec.deny, spec.effort)
         except SystemExit as e:
             print(f"  {e}")
     if v["verdict"] == "overprivilege":
@@ -4994,7 +5049,7 @@ def raise_with_options(ctx: Ctx, cat: dict, h: dict, root: str, v: dict, name: s
         shown = shell_join([h["command"], *argv]) if is_wrapper(h) else shell_join([h["kind"], *argv])
         print(f"\n  {paint(spec.name, INK, bold=True)}  {paint(shown, MUTED)}")
     pane = launch(cat, h, spec.name, root, ctx, *spec.launch_args(), extra=spec.extra or None,
-                  name_source="pinned")
+                  name_source="pinned", effort=spec.effort)
     print(f"  started {spec.name} in {pane['pane_id']}")
     return True
 
@@ -5072,7 +5127,7 @@ def raise_quick(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
         print(f"  {paint('! ' + trust_note(h['id'], v, root), FAINT)}")
     model = h["models"][0] if h["models"] else ""
     seat = seat_file(root) if prompt_flag(h) else None
-    pane = launch(cat, h, name, root, ctx, model, lane, allow, deny, seat,
+    pane = launch(cat, h, name, root, ctx, model, lane, allow, deny, seat, effort=h.get("effort") or "",
                   name_source="pinned" if cat["defaults"].get("ask_name") else "")
     print(f"  started {name} in {pane['pane_id']}")
     return True
@@ -5393,7 +5448,7 @@ def choose_host(herdr_up: bool, env=None) -> Ctx:
 
 
 NEW_OPTS = frozenset({
-    "harness", "model", "lane", "allow", "deny", "name", "place", "root",
+    "harness", "model", "effort", "lane", "allow", "deny", "name", "place", "root",
     "spawn", "pen", "split", "no-seat", "no-focus", "yes", "y", "help", "h",
 })
 
@@ -5402,7 +5457,8 @@ def new_usage(file=None) -> None:
     print("cowbell new [harness] [options...] [-- extra...]", file=file)
     print("  --harness ID    Harness to run (or the first positional)", file=file)
     print("  --model M       Override the harness default model", file=file)
-    print("  --lane L        Queue lane (default: yellow)", file=file)
+    print("  --effort E      Reasoning effort, through the harness's effort_flag", file=file)
+    print("  --lane L        Permissions preset: green, yellow or red (default: yellow)", file=file)
     print("  --allow T       Tool allow list passed to the harness", file=file)
     print("  --deny T        Tool deny list passed to the harness", file=file)
     print("  --name N        Sitting name", file=file)
@@ -5467,7 +5523,7 @@ def main(argv: list[str]) -> int:
                 opts.get("name", ""), bool(opts.get("no-seat")), bool(opts.get("yes")), opts.get("root"),
                 extra=extra_pos + passthrough, focus=not opts.get("no-focus"),
                 place=opts.get("place", ""), spawn=bool(opts.get("spawn")), pen=bool(opts.get("pen")),
-                split=bool(opts.get("split")))
+                split=bool(opts.get("split")), effort=opts.get("effort", ""))
         return 0
     opts, pos = parse_flags(rest)
     if cmd == "adopt" and (opts.get("help") or opts.get("h") or (pos and pos[0] in ("-h", "--help"))):

@@ -1914,6 +1914,18 @@ class Seed(unittest.TestCase):
         self.assertEqual(argv, ["--model", "opus", "--approval-mode", "write", "--tools", "read,grep",
                                 "--append-system-prompt", "/tmp/SEAT.md"])
         self.assertEqual(hm.build_argv(cat, omp, resume_id="abc123"), ["--resume", "abc123"])
+        self.assertEqual(hm.build_argv(cat, omp, effort="auto"), ["--thinking", "auto"])
+
+    def test_seed_effort_flags(self):
+        import tomllib
+        seed = Path(__file__).resolve().parent.parent / "harnesses.toml"
+        by_id = {h["id"]: h for h in tomllib.loads(seed.read_text())["harness"]}
+        self.assertEqual(hm.effort_argv(by_id["claude"], "max"), ["--effort", "max"])
+        self.assertEqual(hm.effort_argv(by_id["codex"], "high"), ["-c", "model_reasoning_effort=high"])
+        self.assertEqual(hm.effort_argv(by_id["grok"], "high"), ["--reasoning-effort", "high"])
+        self.assertEqual(hm.effort_argv(by_id["pi"], "low"), ["--thinking", "low"])
+        self.assertIn("max", by_id["agy"]["efforts"])
+        self.assertNotIn("effort_flag", by_id["gemini"])
 
     def test_seed_is_standard_agents_only(self):
         import tomllib
@@ -1940,7 +1952,8 @@ class LaunchSheet(unittest.TestCase):
                   "model_flag": ["--model"], "resume": ["--resume"],
                   "tools_allow_flag": "--allowedTools", "tools_deny_flag": "--disallowedTools",
                   "system_prompt_flag": "--append-system-prompt-file",
-                  "session_id_flag": "--session-id", "name_flag": "--name"}
+                  "session_id_flag": "--session-id", "name_flag": "--name",
+                  "effort_flag": ["--effort"], "efforts": ["low", "medium", "high", "xhigh", "max"]}
         self.cat = {"defaults": {"lane": "yellow"}, "lanes": self.LANES_, "harness": [self.h]}
 
     def tearDown(self):
@@ -1977,12 +1990,15 @@ class LaunchSheet(unittest.TestCase):
             ("claude-opus-5", "yellow", "", "", seat, "sess-1", None),
             ("claude-sonnet-5", "", "", "", None, "", ["--verbose"]),
         ]
-        for model, lane, allow, deny, st, resume, extra in combos:
+        for i, (model, lane, allow, deny, st, resume, extra) in enumerate(combos):
+            effort = ["", "high", "", "max", ""][i]
             argv = hm.build_argv(self.cat, self.h, model, lane, allow, deny, st, resume,
-                                 sitting="api", extra=extra)
+                                 sitting="api", extra=extra, effort=effort)
             row = {"name": "api", "cwd": self.root, "harness": "claude", "kind": "claude",
                    "model": model, "lane": lane, "allow": allow, "deny": deny,
                    "seat": str(st) if st else "", "session_id": resume, "argv": argv}
+            if effort:
+                row["effort"] = effort
             if extra:
                 row["extra"] = extra
             spec = hm.spec_from_row(self.cat, self.h, row, self.root)
@@ -2033,6 +2049,58 @@ class LaunchSheet(unittest.TestCase):
         self.assertTrue(all(len(c) <= 34 for c in cmd if " " in c))
         self.assertEqual(hm._wrap_words(["a", "bb", "ccc"], 4), ["a bb", "ccc"])
         self.assertEqual(hm._middle_cut("abcdefghij", 5), "ab…ij")
+
+    def test_effort_flag_forms(self):
+        self.assertEqual(hm.effort_argv(self.h, "high"), ["--effort", "high"])
+        codex = {"effort_flag": ["-c", "model_reasoning_effort={}"]}
+        self.assertEqual(hm.effort_argv(codex, "xhigh"), ["-c", "model_reasoning_effort=xhigh"])
+        self.assertEqual(hm.effort_argv({}, "high"), [])
+        self.assertEqual(hm.effort_argv(self.h, ""), [])
+        argv = hm.build_argv(self.cat, self.h, "claude-opus-5", "green", effort="max")
+        self.assertEqual(argv, ["--model", "claude-opus-5", "--effort", "max", "--permission-mode", "plan"])
+        self.assertEqual(hm.declared_flags(codex), ["-c"])
+
+    def test_effort_row_only_where_the_harness_takes_it(self):
+        s = hm.spec_default(self.cat, self.h, self.root, "api")
+        self.assertIn("effort", [k for k, *_ in hm.sheet_fields(self.cat, self.h, s, self.root)])
+        bare = {k: v for k, v in self.h.items() if not k.startswith("effort")}
+        self.assertNotIn("effort", [k for k, *_ in hm.sheet_fields(self.cat, bare, s, self.root)])
+
+    def test_effort_edit_picks_a_level_default_or_typed(self):
+        s = hm.spec_default(self.cat, self.h, self.root, "api")
+        with mock.patch("cowbell.choose", return_value=3):
+            hm.sheet_edit(self.cat, self.h, s, "effort", self.root, set())
+        self.assertEqual(s.effort, "high")
+        changed = {k: c for k, _l, _v, c in hm.sheet_fields(self.cat, self.h, s, self.root)}
+        self.assertTrue(changed["effort"])
+        with mock.patch("cowbell.choose", return_value=0):
+            hm.sheet_edit(self.cat, self.h, s, "effort", self.root, set())
+        self.assertEqual(s.effort, "")
+        with mock.patch("cowbell.choose", return_value=6), mock.patch("cowbell.ask", return_value="ultra"):
+            hm.sheet_edit(self.cat, self.h, s, "effort", self.root, set())
+        self.assertEqual(s.effort, "ultra")
+        with mock.patch("cowbell.choose", return_value=6), mock.patch("cowbell.ask", return_value="x; rm -rf"):
+            hm.sheet_edit(self.cat, self.h, s, "effort", self.root, set())
+        self.assertEqual(s.effort, "")
+
+    def test_harness_default_effort_and_save_as_keep_it(self):
+        h = dict(self.h, effort="high")
+        self.assertEqual(hm.spec_default(self.cat, h, self.root).effort, "high")
+        out = hm.harness_preset(self.h, "deep", "Deep", "claude-opus-5", "green", "", "", "max")
+        self.assertEqual(out["effort"], "max")
+        self.assertEqual(out["effort_flag"], ["--effort"])
+        bare = {k: v for k, v in self.h.items() if not k.startswith("effort")}
+        self.assertNotIn("effort", hm.harness_preset(bare, "x", "X", "", "", "", "", "max"))
+
+    def test_catalog_check_rejects_a_malformed_effort(self):
+        rows = [dict(self.h, id="a", effort_flag="--effort"), dict(self.h, id="b", efforts="high"),
+                {"id": "c", "kind": "claude", "effort": "high"}]
+        with mock.patch("cowbell.installed", return_value=False), mock.patch("builtins.print") as pr:
+            self.assertEqual(hm.cmd_catalog_check({"harness": rows}), 1)
+        out = " ".join(str(c.args[0]) for c in pr.call_args_list)
+        self.assertIn("a: effort_flag must be a list", out)
+        self.assertIn("b: efforts must be a list", out)
+        self.assertIn("c: effort 'high' set but no effort_flag", out)
 
     def test_name_edit_stays_unique(self):
         s = hm.spec_default(self.cat, self.h, self.root, "api")
@@ -2108,6 +2176,25 @@ class RaiseCLI(unittest.TestCase):
                 os.waitpid(int(str(r["pane_id"]).split(":")[1]), 0)
             except ChildProcessError:
                 pass
+
+    def test_new_effort_reaches_argv_and_roster(self):
+        cat = dict(self.cat, harness=[dict(self.cat["harness"][0], effort_flag=["--effort"])])
+        ctx = hm.Ctx(cwd="/tmp", mode="here", live=EmptyLive(), launch=hm.HereLaunch())
+        hm.cmd_new(ctx, cat, "true", name="deep", place="lab", spawn=True, no_seat=True, assume_yes=True,
+                   effort="high")
+        row = next(r for r in hm.load_roster() if r["name"] == "deep")
+        self.assertEqual(row["effort"], "high")
+        self.assertEqual(row["argv"][-2:], ["--effort", "high"])
+        try:
+            os.waitpid(int(str(row["pane_id"]).split(":")[1]), 0)
+        except ChildProcessError:
+            pass
+        with self.assertRaises(SystemExit) as cm:
+            hm.cmd_new(ctx, self.cat, "true", name="flat", place="lab", spawn=True, no_seat=True,
+                       assume_yes=True, effort="high")
+        self.assertIn("no effort_flag", str(cm.exception))
+        opts, pos = hm.parse_flags(["--effort", "max", "--harness", "true"])
+        self.assertEqual(hm.new_unknown_flags(opts, pos), [])
 
     def test_new_split_reaches_the_launch(self):
         class FakeLaunch:
@@ -3387,7 +3474,7 @@ class PickerEdit(unittest.TestCase):
             self.assertEqual(hm._ask_tools(filled), ("Read,Grep", ""))
 
     def test_edit_sitting_launches_chosen_model_and_lane(self):
-        """The sheet: change model (row 2) and permissions (row 3), then start (empty)."""
+        """The sheet: change model (row 2) and permissions (row 4, after effort), then start (empty)."""
         class FakeLaunch:
             def start(self, cat, h, name, root, ctx, *args, **kw):
                 self.got = (name,) + args
@@ -3402,7 +3489,7 @@ class PickerEdit(unittest.TestCase):
              mock.patch("cowbell.installed", return_value=True), \
              mock.patch("cowbell.prompt_flag", return_value=None), \
              mock.patch("cowbell.choose", side_effect=[1, 0]), \
-             mock.patch("cowbell.ask", side_effect=["2", "3", ""]):
+             mock.patch("cowbell.ask", side_effect=["2", "4", ""]):
             self.assertTrue(hm.edit_sitting(ctx, cat, "claude", self.root))
         self.assertEqual(fake.got[0], "claude")
         self.assertEqual(fake.got[1:5], ("claude-opus-5", "green", "", ""))
