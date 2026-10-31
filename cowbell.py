@@ -3281,7 +3281,7 @@ def cmd_catalog(cat: dict) -> None:
 KIND_PROBE = {  # argv that prints usage without launching a session
     "claude": ["--help"], "codex": ["--help"], "grok": ["--help"], "gemini": ["--help"],
     "agy": ["--help"], "opencode": ["--help"], "pi": ["--help"], "devin": ["--help"],
-    "droid": ["--help"], "aider": ["--help"], "bash": ["--help"], "lab": ["--help"],
+    "droid": ["--help"], "aider": ["--help"], "bash": ["--help"], "lab": ["--help"], "omp": ["--help"],
 }
 
 

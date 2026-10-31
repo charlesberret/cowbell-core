@@ -97,6 +97,14 @@ green  = ["--tools", "read"]
 yellow = ["--tools", "read,edit,write"]
 red    = []
 
+[lanes.omp]
+# omp v18.12.6 --approval-mode: the highest tool tier it runs without asking.
+# always-ask runs reads and asks before edits or commands; write runs edits and
+# asks before commands; yolo asks for nothing.
+green  = ["--approval-mode", "always-ask"]
+yellow = ["--approval-mode", "write"]
+red    = ["--approval-mode", "yolo"]
+
 [[harness]]
 id = "claude"
 kind = "claude"
@@ -158,6 +166,16 @@ models = []
 model_flag = ["--model"]
 resume = ["--continue"]
 tools_allow_flag = "--tools"
+
+[[harness]]
+id = "omp"
+kind = "omp"
+title = "oh-my-pi"
+models = []                   # omp matches fuzzily ("opus", "openai/gpt-5.2"); its roles live in ~/.omp/agent/config.yml
+model_flag = ["--model"]
+resume = ["--resume"]         # takes a session id prefix
+tools_allow_flag = "--tools"
+system_prompt_flag = "--append-system-prompt"   # a path is read as a file
 
 [[harness]]
 id = "devin"

@@ -1900,6 +1900,21 @@ class Seed(unittest.TestCase):
         self.assertEqual(cat["lanes"]["codex"]["red"],
                          ["--dangerously-bypass-approvals-and-sandbox"])
 
+    def test_omp_lanes_and_launch_line(self):
+        import tomllib
+        seed = Path(__file__).resolve().parent.parent / "harnesses.toml"
+        cat = tomllib.loads(seed.read_text())
+        omp = next(h for h in cat["harness"] if h["id"] == "omp")
+        self.assertEqual(omp["kind"], "omp")
+        self.assertEqual(cat["lanes"]["omp"]["green"], ["--approval-mode", "always-ask"])
+        self.assertEqual(cat["lanes"]["omp"]["yellow"], ["--approval-mode", "write"])
+        self.assertEqual(cat["lanes"]["omp"]["red"], ["--approval-mode", "yolo"])
+        argv = hm.build_argv(cat, omp, model="opus", lane="yellow", allow="read,grep",
+                             seat=Path("/tmp/SEAT.md"))
+        self.assertEqual(argv, ["--model", "opus", "--approval-mode", "write", "--tools", "read,grep",
+                                "--append-system-prompt", "/tmp/SEAT.md"])
+        self.assertEqual(hm.build_argv(cat, omp, resume_id="abc123"), ["--resume", "abc123"])
+
     def test_seed_is_standard_agents_only(self):
         import tomllib
         seed = Path(__file__).resolve().parent.parent / "harnesses.toml"

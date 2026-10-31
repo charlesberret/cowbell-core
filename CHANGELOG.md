@@ -2,6 +2,7 @@
 
 ## Unreleased (0.3.2)
 
+- The seed catalog carries `omp` (oh-my-pi): `--model`, `--resume`, `--tools`, the seat file through `--append-system-prompt`, and lanes on `--approval-mode` (`always-ask` · `write` · `yolo`).
 - In-place harness editor (`e` menu) improvements:
   - Live Launch Command Preview (`launch preview`): shows the exact expanded argv, directory, lane permissions, and confinement uid drops (`agent-run` / `sudo -u`).
   - Per-harness `unix_user` configuration: individual harnesses can specify a confined UNIX user, overriding place defaults or satisfying `require_uid`.
