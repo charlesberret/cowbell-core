@@ -1961,7 +1961,8 @@ class LaunchSheet(unittest.TestCase):
                   "tools_allow_flag": "--allowedTools", "tools_deny_flag": "--disallowedTools",
                   "system_prompt_flag": "--append-system-prompt-file",
                   "session_id_flag": "--session-id", "name_flag": "--name",
-                  "effort_flag": ["--effort"], "efforts": ["low", "medium", "high", "xhigh", "max"]}
+                  "effort_flag": ["--effort"], "efforts": ["low", "medium", "high", "xhigh", "max"],
+                  "add_dir_flag": "--add-dir"}
         self.cat = {"defaults": {"lane": "yellow"}, "lanes": self.LANES_, "harness": [self.h]}
 
     def tearDown(self):
@@ -2000,13 +2001,16 @@ class LaunchSheet(unittest.TestCase):
         ]
         for i, (model, lane, allow, deny, st, resume, extra) in enumerate(combos):
             effort = ["", "high", "", "max", ""][i]
+            dirs = [[], [self.root], [], [self.root, "/tmp"], []][i]
             argv = hm.build_argv(self.cat, self.h, model, lane, allow, deny, st, resume,
-                                 sitting="api", extra=extra, effort=effort)
+                                 sitting="api", extra=extra, effort=effort, dirs=dirs)
             row = {"name": "api", "cwd": self.root, "harness": "claude", "kind": "claude",
                    "model": model, "lane": lane, "allow": allow, "deny": deny,
                    "seat": str(st) if st else "", "session_id": resume, "argv": argv}
             if effort:
                 row["effort"] = effort
+            if dirs:
+                row["dirs"] = dirs
             if extra:
                 row["extra"] = extra
             spec = hm.spec_from_row(self.cat, self.h, row, self.root)
@@ -2121,7 +2125,7 @@ class LaunchSheet(unittest.TestCase):
     def test_resume_sheet_is_the_recorded_launch(self):
         rec = hm.spec_from_row(self.cat, self.h, self._row(), self.root)
         keys = [k for k, *_ in hm.sheet_fields(self.cat, self.h, rec, self.root, rec)]
-        self.assertEqual(keys, ["model", "effort", "lane", "allow", "deny"])
+        self.assertEqual(keys, ["model", "effort", "lane", "allow", "deny", "dirs"])
         self.assertFalse(any(c for *_, c in hm.sheet_fields(self.cat, self.h, rec, self.root, rec)))
         body, rows, keys, cmd = hm.sheet_body(self.cat, self.h, rec, self.root, base=rec)
         self.assertTrue(any("resume 0f3c6a1b" in ln for ln in body))
@@ -2195,6 +2199,31 @@ class LaunchSheet(unittest.TestCase):
         fresh = hm.seed_spec(self.cat, self.h, other + "-none", "claude", rows)
         self.assertEqual(fresh.model, "claude-sonnet-5")
         self.assertEqual(fresh.effort, "")
+
+    def test_dirs_go_once_per_directory_and_must_exist(self):
+        self.assertEqual(hm.dirs_argv(self.h, ["/a", "/b"]), ["--add-dir", "/a", "--add-dir", "/b"])
+        self.assertEqual(hm.dirs_argv({}, ["/a"]), [])
+        argv = hm.build_argv(self.cat, self.h, "claude-opus-5", "yellow", dirs=["/a"], resume_id="s1")
+        self.assertEqual(argv, ["--model", "claude-opus-5", "--permission-mode", "acceptEdits",
+                                "--add-dir", "/a", "--resume", "s1"])
+        real = os.path.realpath(self.root)
+        self.assertEqual(hm.parse_dirs([self.root, " ", self.root + "/"]), [real])
+        with self.assertRaises(SystemExit):
+            hm.parse_dirs([self.root + "/no-such-dir"])
+
+    def test_dirs_row_edits_and_refuses_on_the_sheet(self):
+        s = hm.spec_default(self.cat, self.h, self.root, "api")
+        keys = [k for k, *_ in hm.sheet_fields(self.cat, self.h, s, self.root)]
+        self.assertIn("dirs", keys)
+        with mock.patch("cowbell.ask", return_value=self.root):
+            self.assertEqual(hm.sheet_edit(self.cat, self.h, s, "dirs", self.root, set()), "")
+        self.assertEqual(s.dirs, [os.path.realpath(self.root)])
+        with mock.patch("cowbell.ask", return_value="/no/such/place"):
+            msg = hm.sheet_edit(self.cat, self.h, s, "dirs", self.root, set())
+        self.assertIn("not a directory", msg)
+        self.assertEqual(s.dirs, [os.path.realpath(self.root)])
+        joined = " ".join(" ".join(hm.sheet_body(self.cat, self.h, s, self.root)[3]).split())
+        self.assertIn("--add-dir " + os.path.realpath(self.root), joined)
 
     def test_name_edit_stays_unique(self):
         s = hm.spec_default(self.cat, self.h, self.root, "api")
@@ -2287,6 +2316,20 @@ class RaiseCLI(unittest.TestCase):
             hm.cmd_new(ctx, self.cat, "true", name="flat", place="lab", spawn=True, no_seat=True,
                        assume_yes=True, effort="high")
         self.assertIn("no effort_flag", str(cm.exception))
+        with self.assertRaises(SystemExit) as cm:
+            hm.cmd_new(ctx, self.cat, "true", name="flat", place="lab", spawn=True, no_seat=True,
+                       assume_yes=True, dirs=[str(self.place)])
+        self.assertIn("no add_dir_flag", str(cm.exception))
+        cat2 = dict(self.cat, harness=[dict(self.cat["harness"][0], add_dir_flag="--add-dir")])
+        hm.cmd_new(ctx, cat2, "true", name="wide", place="lab", spawn=True, no_seat=True, assume_yes=True,
+                   dirs=[str(self.state)])
+        wide = next(r for r in hm.load_roster() if r["name"] == "wide")
+        self.assertEqual(wide["dirs"], [os.path.realpath(self.state)])
+        self.assertEqual(wide["argv"][-2:], ["--add-dir", os.path.realpath(self.state)])
+        try:
+            os.waitpid(int(str(wide["pane_id"]).split(":")[1]), 0)
+        except ChildProcessError:
+            pass
         opts, pos = hm.parse_flags(["--effort", "max", "--harness", "true"])
         self.assertEqual(hm.new_unknown_flags(opts, pos), [])
 

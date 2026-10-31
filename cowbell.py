@@ -1820,15 +1820,28 @@ def effort_argv(h: dict, effort: str) -> list[str]:
     return list(flag) + [effort]
 
 
+def dirs_argv(h: dict, dirs: list[str] | None) -> list[str]:
+    """`add_dir_flag` once per extra directory the agent may also work in."""
+    flag = h.get("add_dir_flag")
+    if not dirs or not isinstance(flag, str) or not flag:
+        return []
+    out: list[str] = []
+    for d in dirs:
+        if d:
+            out += [flag, d]
+    return out
+
+
 def build_argv(cat: dict, h: dict, model: str = "", lane: str = "", allow: str = "", deny: str = "",
                seat: Path | None = None, resume_id: str = "", sitting: str = "",
                extra: list[str] | None = None, agents_dir: Path | None = None,
-               effort: str = "") -> list[str]:
+               effort: str = "", dirs: list[str] | None = None) -> list[str]:
     """Agent-side argv (after `--` for native kinds; after the wrapper for house wrappers)."""
     argv: list[str] = []
     if is_wrapper(h):
         argv += _wrapper_catalog_argv(cat, h, model, lane, allow, deny)
         argv += effort_argv(h, effort)
+        argv += dirs_argv(h, dirs)
         if resume_id:
             argv += list(h.get("resume") or ["--continue"])
         return argv + list(extra or [])
@@ -1848,6 +1861,7 @@ def build_argv(cat: dict, h: dict, model: str = "", lane: str = "", allow: str =
         argv += [h["tools_allow_flag"], allow]
     if deny and h.get("tools_deny_flag"):
         argv += [h["tools_deny_flag"], deny]
+    argv += dirs_argv(h, dirs)
     if seat and prompt_flag(h):
         argv += [prompt_flag(h), str(seat)]  # claude takes -file; pi's --append-system-prompt accepts a path
     sys_prompt = h.get("system_prompt")
@@ -1985,10 +1999,12 @@ def agent_processes(table: dict[int, dict] | None = None, cwds=process_cwds) -> 
 
 
 def here_command(cat: dict, h: dict, name: str, model="", lane="", allow="", deny="", seat: Path | None = None,
-                 resume_id: str = "", extra: list[str] | None = None, effort: str = "") -> tuple[list[str], str]:
+                 resume_id: str = "", extra: list[str] | None = None, effort: str = "",
+                 dirs: list[str] | None = None) -> tuple[list[str], str]:
     """Full command line for this terminal, and the session id cowbell can record for a later resume."""
     import uuid
-    argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, sitting=name, extra=extra, effort=effort)
+    argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, sitting=name, extra=extra, effort=effort,
+                      dirs=dirs)
     session = resume_id
     if not resume_id and h.get("session_id_flag") and not is_wrapper(h):
         session = str(uuid.uuid4())
@@ -2075,7 +2091,8 @@ def _apply_name_source(row: dict, old: dict | None, name_source: str) -> None:
 
 def _record_here(h: dict, name: str, root: str, model: str, lane: str, allow: str, deny: str,
                  seat: Path | None, session: str, cmd: list[str], pane_id: str | None,
-                 name_source: str = "", extra: list[str] | None = None, effort: str = "") -> None:
+                 name_source: str = "", extra: list[str] | None = None, effort: str = "",
+                 dirs: list[str] | None = None) -> None:
     rows, old = _sitting_kept(load_roster(), name, session)
     row = {"name": name, "cwd": root, "harness": h["id"], "kind": h["kind"], "model": model, "lane": lane,
            "allow": allow, "deny": deny, "seat": str(seat) if seat else "", "session_id": session,
@@ -2083,6 +2100,8 @@ def _record_here(h: dict, name: str, root: str, model: str, lane: str, allow: st
            "argv": cmd[1:], "source": "here"}
     if effort:
         row["effort"] = effort
+    if dirs:
+        row["dirs"] = list(dirs)
     if extra:
         row["extra"] = list(extra)
     _apply_name_source(row, old, name_source)
@@ -2092,12 +2111,13 @@ def _record_here(h: dict, name: str, root: str, model: str, lane: str, allow: st
 
 def exec_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", lane="", allow="", deny="",
               seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True,
-              name_source: str = "", effort: str = ""):
+              name_source: str = "", effort: str = "", dirs: list[str] | None = None):
     """Hand this terminal to the agent. Does not return."""
-    cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra, effort=effort)
+    cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra, effort=effort,
+                                dirs=dirs)
     cmd = unix_confine(cat, root, cmd, h=h)
     exe = _here_exe(h, cmd)
-    _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, None, name_source, extra, effort)
+    _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, None, name_source, extra, effort, dirs)
     sys.stdout.write("\x1b[H\x1b[2J" if sys.stdout.isatty() else "")
     print(f"  {paint(name, INK, bold=True)}  {paint(shell_join(cmd), MUTED)}  {paint(tilde(root), FAINT)}")
     sys.stdout.flush()
@@ -2107,9 +2127,10 @@ def exec_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", la
 
 def spawn_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", lane="", allow="", deny="",
                seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True,
-               name_source: str = "", effort: str = "") -> dict:
+               name_source: str = "", effort: str = "", dirs: list[str] | None = None) -> dict:
     """Start the agent in a new session at root and return. Assemblies raise N times this way."""
-    cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra, effort=effort)
+    cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra, effort=effort,
+                                dirs=dirs)
     cmd = unix_confine(cat, root, cmd, h=h)
     exe = _here_exe(h, cmd)
     proc = subprocess.Popen(
@@ -2117,7 +2138,7 @@ def spawn_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", l
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     pane_id = f"pid:{proc.pid}"
-    _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, pane_id, name_source, extra, effort)
+    _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, pane_id, name_source, extra, effort, dirs)
     return {"pane_id": pane_id, "pid": proc.pid}
 
 
@@ -2494,8 +2515,10 @@ def start_native(name: str, kind: str, pane_id: str, argv: list[str]) -> dict:
 def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", lane="", allow="", deny="",
                   seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None,
                   focus: bool = True, pen: bool = False, split: bool = False,
-                  reuse_pane: dict | None = None, name_source: str = "", effort: str = "") -> dict:
-    argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, sitting=name, extra=extra, effort=effort)
+                  reuse_pane: dict | None = None, name_source: str = "", effort: str = "",
+                  dirs: list[str] | None = None) -> dict:
+    argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, sitting=name, extra=extra, effort=effort,
+                      dirs=dirs)
     place = place_for(cat, root)
     base = ([h["command"], *argv] if is_wrapper(h) else [h["kind"], *argv])
     confined = unix_confine(cat, root, base, h=h)
@@ -2540,6 +2563,8 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
     }
     if effort:
         row["effort"] = effort
+    if dirs:
+        row["dirs"] = list(dirs)
     if extra:
         row["extra"] = list(extra)
     _apply_name_source(row, old, name_source)
@@ -2934,6 +2959,11 @@ def cmd_registry(ctx: Ctx, cat: dict, root: str | None = None, as_json: bool = F
     return reg
 
 
+def _row_dirs(r: dict) -> list[str]:
+    d = r.get("dirs")
+    return [x for x in d if isinstance(x, str) and x] if isinstance(d, list) else []
+
+
 def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None, target: dict | None = None,
               shape=None) -> bool:
     """Focus the sitting if it is live, else resume it. False when `shape` was cancelled.
@@ -2993,19 +3023,19 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None, target: d
         if spec is None:
             return False
         r = {**r, "model": spec.model, "effort": spec.effort, "lane": spec.lane,
-             "allow": spec.allow, "deny": spec.deny}
+             "allow": spec.allow, "deny": spec.deny, "dirs": list(spec.dirs)}
     # a still-present pane takes the resume in place; a torn-down one gets a new tab.
     pane_row = next((p for p in ctx.live.panes() if p.get("pane_id") == r.get("pane_id")), None)
     if pane_row and getattr(ctx.live, "herdr", False):
         pane = raise_harness(cat, h, r["name"], r.get("cwd") or root or ctx.cwd, ctx,
                              r.get("model", ""), r.get("lane", ""), r.get("allow", ""), r.get("deny", ""),
                              seat, resume_id=r.get("session_id", ""), reuse_pane=pane_row, focus=False,
-                             effort=r.get("effort", ""))
+                             effort=r.get("effort", ""), dirs=_row_dirs(r))
         print(f"resumed {r['name']} ({h['id']}) in {pane_row['pane_id']}")
         return True
     pane = launch(cat, h, r["name"], r.get("cwd") or root or ctx.cwd, ctx, r.get("model", ""), r.get("lane", ""),
                   r.get("allow", ""), r.get("deny", ""), seat, resume_id=r.get("session_id", ""),
-                  effort=r.get("effort", ""))
+                  effort=r.get("effort", ""), dirs=_row_dirs(r))
     pid = (pane or {}).get("pane_id") or ""
     print(f"resumed {r['name']} ({h['id']}){(' in ' + pid) if pid else ''}")
     return True
@@ -3257,7 +3287,8 @@ def gate(cat_h: dict, root: str, interactive: bool, assume_yes: bool) -> dict:
 
 def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="", name="", no_seat=False,
             assume_yes=False, root: str | None = None, extra: list[str] | None = None, focus: bool = True,
-            place: str = "", spawn=None, pen: bool = False, split: bool = False, effort: str = "") -> None:
+            place: str = "", spawn=None, pen: bool = False, split: bool = False, effort: str = "",
+            dirs: list[str] | None = None) -> None:
     if place:
         pl = places(cat).get(place)
         if not pl:
@@ -3287,12 +3318,15 @@ def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="",
     effort = effort or h.get("effort") or ""
     if effort and not h.get("effort_flag"):
         raise SystemExit(f"cowbell: {hid} has no effort_flag in the catalog; --effort has nowhere to go")
+    dirs = parse_dirs(dirs or [])
+    if dirs and not h.get("add_dir_flag"):
+        raise SystemExit(f"cowbell: {hid} has no add_dir_flag in the catalog; --add-dir has nowhere to go")
     seat = None if (no_seat or not prompt_flag(h)) else seat_file(root)
     gate(h, root, interactive=False, assume_yes=assume_yes)
     base = slug(name or h["id"])
     nm = unique_name(base, live_names(ctx.live.snapshot()) | {r["name"] for r in load_roster()})
     pane = launch(cat, h, nm, root, ctx, model, lane, allow, deny, seat, extra=extra, focus=focus, spawn=spawn,
-                  pen=pen, split=split, name_source="pinned" if name else "", effort=effort)
+                  pen=pen, split=split, name_source="pinned" if name else "", effort=effort, dirs=dirs or None)
     print(f"raised {nm}  {h['id']}{(' ' + model) if model else ''}{(' ' + effort) if effort else ''}"
           f"{(' ' + lane) if lane else ''}  in {pane['pane_id']}  {tilde(root)}")
 
@@ -3381,6 +3415,9 @@ def cmd_catalog_check(cat: dict) -> int:
             problems.append(f"harness {hid}: effort_flag must be a list of strings")
         if "efforts" in h and not (isinstance(h["efforts"], list) and all(isinstance(x, str) for x in h["efforts"])):
             problems.append(f"harness {hid}: efforts must be a list of strings")
+        adf = h.get("add_dir_flag")
+        if adf is not None and not (isinstance(adf, str) and adf):
+            problems.append(f"harness {hid}: add_dir_flag must be a flag string")
         if h.get("effort") and not ef:
             problems.append(f"harness {hid}: effort {h['effort']!r} set but no effort_flag")
         if not installed(h):
@@ -4127,7 +4164,7 @@ def harness_preset(src: dict, hid: str, title: str, model: str, lane: str,
     out = {"id": hid, "kind": src.get("kind") or hid}
     for k in ("command", "family", "egress", "trust_tool", "model_flag", "resume",
               "tools_allow_flag", "tools_deny_flag", "system_prompt_flag", "session_id_flag",
-              "claim_flag", "effort_flag", "efforts"):
+              "claim_flag", "effort_flag", "efforts", "add_dir_flag"):
         if src.get(k):
             out[k] = src[k]
     models = models_with_default(list(src.get("models") or []), model)
@@ -4810,6 +4847,7 @@ class LaunchSpec:
     seat: str = ""
     resume_id: str = ""
     extra: list[str] = field(default_factory=list)
+    dirs: list[str] = field(default_factory=list)
 
     def seat_path(self) -> Path | None:
         return Path(self.seat) if self.seat else None
@@ -4834,19 +4872,21 @@ def spec_from_row(cat: dict, h: dict, row: dict, root: str = "") -> LaunchSpec:
     base = spec_default(cat, h, root or row.get("cwd") or os.getcwd(), row.get("name") or "")
     got = {k: row.get(k) for k in ("model", "effort", "lane", "allow", "deny", "seat") if k in row}
     extra = row.get("extra")
+    dirs = _row_dirs(row) if "dirs" in row else list(base.dirs)
     return LaunchSpec(
         harness=h["id"], name=row.get("name") or base.name,
         model=got.get("model", base.model) or "", effort=got.get("effort", base.effort) or "",
         lane=got.get("lane", base.lane) or "",
         allow=got.get("allow", base.allow) or "", deny=got.get("deny", base.deny) or "",
         seat=got.get("seat", base.seat) or "", resume_id=row.get("session_id") or "",
-        extra=list(extra) if isinstance(extra, list) else [],
+        extra=list(extra) if isinstance(extra, list) else [], dirs=dirs,
     )
 
 
 def spec_argv(cat: dict, h: dict, spec: LaunchSpec) -> list[str]:
     return build_argv(cat, h, spec.model, spec.lane, spec.allow, spec.deny, spec.seat_path(),
-                      spec.resume_id, sitting=spec.name, extra=spec.extra or None, effort=spec.effort)
+                      spec.resume_id, sitting=spec.name, extra=spec.extra or None, effort=spec.effort,
+                      dirs=spec.dirs or None)
 
 
 def spec_command(cat: dict, h: dict, spec: LaunchSpec, root: str, mode: str = "tab") -> list[str]:
@@ -4854,7 +4894,7 @@ def spec_command(cat: dict, h: dict, spec: LaunchSpec, root: str, mode: str = "t
     session id is shown as `<new id>`; cowbell picks the real one at launch."""
     if mode == "here":
         cmd, session = here_command(cat, h, spec.name, *spec.launch_args(), resume_id=spec.resume_id,
-                                    extra=spec.extra or None, effort=spec.effort)
+                                    extra=spec.extra or None, effort=spec.effort, dirs=spec.dirs or None)
         if session and session != spec.resume_id:
             cmd = ["<new id>" if p == session else p for p in cmd]
     else:
@@ -4884,6 +4924,9 @@ def sheet_fields(cat: dict, h: dict, spec: LaunchSpec, root: str,
         rows.append(("allow", "tools allow", spec.allow or "all", spec.allow != d.allow))
     if h.get("tools_deny_flag") and not is_wrapper(h):
         rows.append(("deny", "tools deny", spec.deny or "none", spec.deny != d.deny))
+    if h.get("add_dir_flag"):
+        shown = ", ".join(tilde(x) for x in spec.dirs) if spec.dirs else "none"
+        rows.append(("dirs", "also in", shown, spec.dirs != d.dirs))
     if prompt_flag(h) and not is_wrapper(h) and not resume:
         shown = tilde(spec.seat) if spec.seat else "none"
         rows.append(("seat", "seat file", shown, spec.seat != d.seat))
@@ -4934,6 +4977,24 @@ def sheet_body(cat: dict, h: dict, spec: LaunchSpec, root: str, mode: str = "tab
     return body, rows, keys, cmd
 
 
+def parse_dirs(raw: list[str]) -> list[str]:
+    """Directories as absolute paths, `~` expanded, duplicates and blanks dropped.
+
+    A directory that does not exist is refused: the agent would be told to work in nothing.
+    """
+    out: list[str] = []
+    for d in raw:
+        d = (d or "").strip()
+        if not d:
+            continue
+        full = os.path.realpath(os.path.expanduser(d))
+        if not os.path.isdir(full):
+            raise SystemExit(f"cowbell: {d} is not a directory")
+        if full not in out:
+            out.append(full)
+    return out
+
+
 def slug_effort(raw: str) -> str:
     """A typed effort level: one word of letters, digits, dot, dash or underscore."""
     raw = (raw or "").strip()
@@ -4971,8 +5032,10 @@ def _sheet_pick_model(h: dict, spec: LaunchSpec) -> str | None:
     return "" if not models else models[j]
 
 
-def sheet_edit(cat: dict, h: dict, spec: LaunchSpec, key_: str, root: str, taken: set[str]) -> None:
-    """Change one setting in place. Esc inside a field leaves it as it was."""
+def sheet_edit(cat: dict, h: dict, spec: LaunchSpec, key_: str, root: str, taken: set[str]) -> str:
+    """Change one setting in place. Esc inside a field leaves it as it was.
+
+    Returns a refusal to show on the sheet ("" when the change took)."""
     try:
         if key_ == "name":
             raw = ask(f"  name [{spec.name}]: ", spec.name)
@@ -5003,11 +5066,18 @@ def sheet_edit(cat: dict, h: dict, spec: LaunchSpec, key_: str, root: str, taken
             spec.allow = ask("  tools allow (empty = all): ", spec.allow)
         elif key_ == "deny":
             spec.deny = ask("  tools deny (empty = none): ", spec.deny)
+        elif key_ == "dirs":
+            cur = ", ".join(tilde(x) for x in spec.dirs)
+            raw = ask("  other directories, comma-separated (empty = none): ", cur)
+            spec.dirs = parse_dirs(raw.split(","))
         elif key_ == "seat":
             found = seat_file(root)
             spec.seat = "" if spec.seat else (str(found) if found else "")
     except KeyboardInterrupt:
         pass
+    except SystemExit as e:
+        return str(e).removeprefix("cowbell: ")
+    return ""
 
 
 def sheet_hints(keys: list[str], resume: bool = False):
@@ -5027,14 +5097,15 @@ def launch_sheet(ctx: Ctx, cat: dict, h: dict, root: str, spec: LaunchSpec,
     `base` is what `d` restores and what a dim value means; default: the harness defaults.
     """
     taken = set(taken or ())
-    spec = replace(spec, extra=list(spec.extra))
-    selected = 0
+    spec = replace(spec, extra=list(spec.extra), dirs=list(spec.dirs))
+    selected, flash = 0, ""
     while True:
         cols = shutil.get_terminal_size((100, 24))[0]
         body, rows, keys, cmd = sheet_body(cat, h, spec, root, ctx.mode, cols, base)
         if tui_ok():
             res = menu(body, rows, sheet_hints(keys, bool(spec.resume_id)), selected=selected,
-                       hotkeys="sd", foot=cmd)
+                       hotkeys="sd", foot=cmd, flash=flash)
+            flash = ""
             if res[0] == "cancel":
                 return None
             selected = res[-1]
@@ -5058,13 +5129,15 @@ def launch_sheet(ctx: Ctx, cat: dict, h: dict, root: str, spec: LaunchSpec,
             return spec
         if k == "d":
             if base is not None:
-                spec = replace(base, name=spec.name, extra=list(base.extra))
+                spec = replace(base, name=spec.name, extra=list(base.extra), dirs=list(base.dirs))
             else:
                 fresh = spec_default(cat, h, root, spec.name)
                 fresh.resume_id, fresh.extra = spec.resume_id, spec.extra
                 spec = fresh
             continue
-        sheet_edit(cat, h, spec, k, root, taken)
+        flash = sheet_edit(cat, h, spec, k, root, taken)
+        if flash and not tui_ok():
+            print(f"  {flash}")
 
 
 def resume_sheet(ctx: Ctx, cat: dict, h: dict, row: dict, root: str) -> LaunchSpec | None:
@@ -5117,7 +5190,7 @@ def raise_with_options(ctx: Ctx, cat: dict, h: dict, root: str, v: dict, name: s
         shown = shell_join([h["command"], *argv]) if is_wrapper(h) else shell_join([h["kind"], *argv])
         print(f"\n  {paint(spec.name, INK, bold=True)}  {paint(shown, MUTED)}")
     pane = launch(cat, h, spec.name, root, ctx, *spec.launch_args(), extra=spec.extra or None,
-                  name_source="pinned", effort=spec.effort)
+                  name_source="pinned", effort=spec.effort, dirs=spec.dirs or None)
     print(f"  started {spec.name} in {pane['pane_id']}")
     return True
 
@@ -5524,7 +5597,7 @@ def choose_host(herdr_up: bool, env=None) -> Ctx:
 
 
 NEW_OPTS = frozenset({
-    "harness", "model", "effort", "lane", "allow", "deny", "name", "place", "root",
+    "harness", "model", "effort", "add-dir", "lane", "allow", "deny", "name", "place", "root",
     "spawn", "pen", "split", "no-seat", "no-focus", "yes", "y", "help", "h",
 })
 
@@ -5534,6 +5607,7 @@ def new_usage(file=None) -> None:
     print("  --harness ID    Harness to run (or the first positional)", file=file)
     print("  --model M       Override the harness default model", file=file)
     print("  --effort E      Reasoning effort, through the harness's effort_flag", file=file)
+    print("  --add-dir D,E   Other directories the agent may work in, through add_dir_flag", file=file)
     print("  --lane L        Permissions preset: green, yellow or red (default: yellow)", file=file)
     print("  --allow T       Tool allow list passed to the harness", file=file)
     print("  --deny T        Tool deny list passed to the harness", file=file)
@@ -5599,7 +5673,8 @@ def main(argv: list[str]) -> int:
                 opts.get("name", ""), bool(opts.get("no-seat")), bool(opts.get("yes")), opts.get("root"),
                 extra=extra_pos + passthrough, focus=not opts.get("no-focus"),
                 place=opts.get("place", ""), spawn=bool(opts.get("spawn")), pen=bool(opts.get("pen")),
-                split=bool(opts.get("split")), effort=opts.get("effort", ""))
+                split=bool(opts.get("split")), effort=opts.get("effort", ""),
+                dirs=[d for d in (opts.get("add-dir") or "").split(",") if d])
         return 0
     opts, pos = parse_flags(rest)
     if cmd == "adopt" and (opts.get("help") or opts.get("h") or (pos and pos[0] in ("-h", "--help"))):

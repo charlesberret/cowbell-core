@@ -2,6 +2,7 @@
 
 ## Unreleased (0.3.2)
 
+- Other directories are a launch setting: `add_dir_flag` on a harness row, an "also in" row on the sheet, `cowbell new --add-dir a,b`; the roster keeps them and resume replays them. Seeded for claude, codex, grok, agy and omp. A refusal on the sheet shows on the sheet.
 - The seed's pi row resumes with `--session <id>`. It had `--continue`, which takes no id: pi read the session id as a prompt and continued the latest session instead.
 - `o` shapes the launch under the cursor. On a New Session row it opens that harness's sheet on the settings last used for it in this directory; on a Resume row it opens the sheet over the recorded session and resumes with any change, and the roster row is rewritten with what ran. The hint bar fits 80 columns on every row.
 - Effort is a launch setting: harness rows carry `effort_flag` (a `{}` marks where the level goes), `efforts` and an optional default `effort`; the launch sheet has an effort row, `cowbell new --effort` passes one, the roster keeps it and resume replays it. The seed sets it for claude, codex, grok, agy, pi and omp from each CLI's `--help`. `catalog --check` rejects a malformed effort field.

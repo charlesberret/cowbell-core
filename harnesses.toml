@@ -13,6 +13,8 @@
 # `effort_flag` and `efforts` give the launch sheet an effort row: the flag, and
 # the levels this CLI accepts (empty: type one). A `{}` inside the flag is where
 # the level goes. `effort = "high"` on a row makes that the default.
+# `add_dir_flag` is how the CLI takes another directory it may work in; the
+# sheet's "also in" row and `cowbell new --add-dir` pass it once per directory.
 # Optional: `trust_tool` is the name this harness answers to when a trust checker
 # is asked about it (see [defaults] trust_command); without such a checker on PATH,
 # cowbell shows no trust verdicts at all.
@@ -116,6 +118,7 @@ models = ["claude-sonnet-5", "claude-opus-5", "claude-fable-5-1", "claude-haiku-
 model_flag = ["--model"]
 effort_flag = ["--effort"]
 efforts = ["low", "medium", "high", "xhigh", "max"]
+add_dir_flag = "--add-dir"
 resume = ["--resume"]
 tools_allow_flag = "--allowedTools"
 tools_deny_flag = "--disallowedTools"
@@ -131,6 +134,7 @@ models = []
 model_flag = ["--model"]
 effort_flag = ["-c", "model_reasoning_effort={}"]   # a config override; {} is the level
 efforts = []                                       # levels depend on the model; type one
+add_dir_flag = "--add-dir"
 resume = ["resume"]   # a subcommand, not a flag
 
 [[harness]]
@@ -141,6 +145,7 @@ models = ["grok-4.6", "grok-4.7", "grok-4.7-build-fast", "grok-4.5"]
 model_flag = ["-m"]
 effort_flag = ["--reasoning-effort"]
 efforts = []                                       # grok --help names no levels; type one
+add_dir_flag = "--add-dir"
 resume = ["--resume"]
 tools_allow_flag = "--allowedTools"
 tools_deny_flag = "--disallowed-tools"
@@ -160,6 +165,7 @@ title = "Antigravity (Gemini)"
 models = []
 effort_flag = ["--effort"]
 efforts = ["low", "medium", "high", "xhigh", "max"]
+add_dir_flag = "--add-dir"
 resume = ["--conversation"]
 
 [[harness]]
@@ -188,6 +194,7 @@ models = []                   # omp matches fuzzily ("opus", "openai/gpt-5.2"); 
 model_flag = ["--model"]
 effort_flag = ["--thinking"]
 efforts = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"]
+add_dir_flag = "--add-dir"
 resume = ["--resume"]         # takes a session id prefix
 tools_allow_flag = "--tools"
 system_prompt_flag = "--append-system-prompt"   # a path is read as a file
