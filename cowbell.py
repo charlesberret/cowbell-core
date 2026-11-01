@@ -3073,6 +3073,7 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None, target: d
         raise SystemExit(f"cowbell: {r['name']} uses harness {hid!r} which may not resume in {where}")
     cat = scoped
     seat = Path(r["seat"]) if r.get("seat") and Path(r["seat"]).is_file() else None
+    r = {**r, "model": row_launch_model(h, r)}
     if shape is not None:
         spec = shape(cat, h, r, r.get("cwd") or root or ctx.cwd)
         if spec is None:
@@ -4922,10 +4923,25 @@ def spec_default(cat: dict, h: dict, root: str, name: str = "") -> LaunchSpec:
     )
 
 
+def row_launch_model(h: dict, row: dict) -> str:
+    """The model id a roster row launches with. bind_sitting stores the live display
+    name ("Sonnet 5") for the glyph, so the id comes from the recorded argv when it has
+    one; a name with a space is never a CLI's model id and falls back to the default."""
+    flag, argv = list(h.get("model_flag") or []), row.get("argv")
+    if flag and isinstance(argv, list):
+        for i in range(len(argv) - len(flag)):
+            if argv[i:i + len(flag)] == flag:
+                return str(argv[i + len(flag)])
+    model = str(row.get("model") or "")
+    return "" if " " in model.strip() else model
+
+
 def spec_from_row(cat: dict, h: dict, row: dict, root: str = "") -> LaunchSpec:
     """A roster row as a launch spec. Missing fields fall back to the harness defaults."""
     base = spec_default(cat, h, root or row.get("cwd") or os.getcwd(), row.get("name") or "")
     got = {k: row.get(k) for k in ("model", "effort", "lane", "allow", "deny", "seat") if k in row}
+    if "model" in got:
+        got["model"] = row_launch_model(h, row)
     extra = row.get("extra")
     dirs = _row_dirs(row) if "dirs" in row else list(base.dirs)
     return LaunchSpec(

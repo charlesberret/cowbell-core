@@ -516,6 +516,18 @@ class PickerList(unittest.TestCase):
         self.assertEqual(row["model"], "Sonnet 5")
         self.assertEqual(hm.glyph_for(row["kind"], row["model"]), hm.LOBE_GLYPH["claude"])
 
+    def test_a_resume_launches_the_model_id_not_the_live_display_name(self):
+        h = {"id": "claude", "kind": "claude", "model_flag": ["--model"], "models": ["claude-sonnet-5"]}
+        row = {"name": "blender", "model": "Sonnet 5",
+               "argv": ["--model", "claude-sonnet-5", "--permission-mode", "acceptEdits"]}
+        self.assertEqual(hm.row_launch_model(h, row), "claude-sonnet-5")
+        self.assertEqual(hm.row_launch_model(h, {"model": "Sonnet 5"}), "")
+        self.assertEqual(hm.row_launch_model(h, {"model": "claude-opus-5"}), "claude-opus-5")
+        grok = {"id": "grok", "kind": "grok", "model_flag": ["-m"]}
+        self.assertEqual(hm.row_launch_model(grok, {"model": "x", "argv": ["-m", "grok-5"]}), "grok-5")
+        cat = {"harness": [h], "defaults": {}, "lanes": {}}
+        self.assertEqual(hm.spec_from_row(cat, h, {**row, "cwd": ROOT}).model, "claude-sonnet-5")
+
     def test_remember_live_reclaims_cold_sitting_by_name_and_cwd(self):
         reg = {"live": [{"name": "herdr-dev", "harness": "grok", "kind": "grok", "cwd": ROOT,
                          "pane_id": "w1A:pD", "session_id": "s-new", "tab_id": "w1A:tA",
