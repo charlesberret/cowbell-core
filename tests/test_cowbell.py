@@ -2876,6 +2876,43 @@ class CanonicalNames(unittest.TestCase):
         names = [r["name"] for r in rows]
         self.assertEqual(len(names), len(set(names)))
         self.assertTrue(all(n.startswith("parser-work") and hm.NAME_RE.match(n) for n in names))
+        self.assertEqual(names.count("parser-work"), 1)
+
+    def test_harness_title_keeps_the_bare_name_ahead_of_an_older_tab(self):
+        rows = [
+            {"name": "builder-cowbell", "name_source": "tab", "session_id": "c3f4ce03",
+             "created": "2026-10-02"},
+            {"name": "builder-cowbell", "name_source": "harness", "session_id": "01a0f3c6",
+             "created": "2026-10-21"},
+        ]
+        hm.disambiguate_names(rows)
+        self.assertEqual(rows[1]["name"], "builder-cowbell")
+        self.assertNotEqual(rows[0]["name"], "builder-cowbell")
+        self.assertTrue(rows[0]["name"].startswith("builder-cowbell-"))
+
+    def test_earliest_equal_title_keeps_the_bare_name(self):
+        rows = [
+            {"name": "parser-work", "name_source": "harness", "session_id": "sess-c",
+             "created": "2026-10-02"},
+            {"name": "parser-work", "name_source": "harness", "session_id": "sess-a",
+             "created": "2026-10-01"},
+            {"name": "parser-work", "name_source": "harness", "session_id": "sess-d",
+             "created": "2026-10-03"},
+        ]
+        hm.disambiguate_names(rows)
+        bare = [r["session_id"] for r in rows if r["name"] == "parser-work"]
+        self.assertEqual(bare, ["sess-a"])
+        self.assertEqual(len({r["name"] for r in rows}), 3)
+
+    def test_a_pin_keeps_the_bare_name(self):
+        rows = [
+            {"name": "builder-cowbell", "name_source": "pinned", "session_id": "pin1"},
+            {"name": "builder-cowbell", "name_source": "harness", "session_id": "01a0f3c6"},
+        ]
+        hm.disambiguate_names(rows)
+        self.assertEqual(rows[0]["name"], "builder-cowbell")
+        self.assertTrue(rows[1]["name"].startswith("builder-cowbell-"))
+        self.assertNotEqual(rows[1]["name"], "builder-cowbell")
 
     def _live(self, roster):
         agents = [agent("w1:p9", "grok", self.root, "idle", "builder-cowbell - Grok 4.7", sid=self.sid)]
@@ -2908,6 +2945,65 @@ class CanonicalNames(unittest.TestCase):
         self.assertIn("builder-cowbell", line)
         self.assertIn("cowbell-demo", line)
         self.assertNotIn(".", line.split())
+
+    def test_shared_tab_does_not_steal_the_harness_title(self):
+        """The shape of the 2026-10-28 list: one titled session, two panes on one tab."""
+        self._summary("builder-cowbell")
+        self._chat(["."])
+        agy = "c3f4ce03-a16e-428d-9710-f3ac267e03eb"
+        claude = "18a7ce8c-2b17-4e58-a144-c7e0b227ba9d"
+        roster = [
+            {"name": ".", "cwd": self.root, "harness": "grok", "kind": "grok",
+             "session_id": self.sid, "pane_id": None, "source": "here",
+             "created": "2026-10-21T17:57:12"},
+            {"name": "builder-cowbell", "cwd": self.root, "harness": "agy", "kind": "agy",
+             "session_id": agy, "pane_id": "w1:p3", "created": "2026-10-02T12:16:14"},
+            {"name": "builder-cowbell-2", "cwd": self.root, "harness": "claude", "kind": "claude",
+             "session_id": claude, "pane_id": "w1:p4", "created": "2026-10-19T14:41:37"},
+        ]
+        agents = [
+            agent("w1:p3", "agy", self.root, "idle", "", sid=agy),
+            agent("w1:p4", "claude", self.root, "idle", "", sid=claude),
+        ]
+        for a in agents:
+            a["tab_id"] = "w1:t2"
+        reg = hm.build_registry(
+            CAT, self.root, agents, [{"pane_id": "w1:p3"}, {"pane_id": "w1:p4"}], roster,
+            matcher=lambda _t: {"verdict": "ok"},
+            tab_label={"w1:t2": "builder-cowbell"}, home=self.home)
+        by_sid = {r["session_id"]: r for r in reg["live"] + reg["cold"]}
+        self.assertEqual(by_sid[self.sid]["name"], "builder-cowbell")
+        self.assertEqual(by_sid[self.sid]["name_source"], "harness")
+        others = [by_sid[agy]["name"], by_sid[claude]["name"]]
+        self.assertEqual(len(set(others)), 2)
+        self.assertTrue(all(n.startswith("builder-cowbell-") and n != "builder-cowbell" for n in others))
+        self.assertTrue(all(hm.NAME_RE.match(n) for n in others))
+
+    def test_persist_keeps_the_bare_name_when_a_sibling_still_holds_it(self):
+        self._summary("builder-cowbell")
+        self._chat(["."])
+        agy = "c3f4ce03-a16e-428d-9710-f3ac267e03eb"
+        cat = {**CAT, "harness": CAT["harness"] + [
+            {"id": "agy", "kind": "agy", "family": "agy", "egress": "vendor",
+             "trust_tool": "agy", "models": []},
+        ]}
+        roster = [
+            {"name": ".", "cwd": self.root, "harness": "grok", "kind": "grok",
+             "session_id": self.sid, "pane_id": "w1:p9", "created": "2026-10-21T17:57:12"},
+            {"name": "builder-cowbell", "cwd": self.root, "harness": "agy", "kind": "agy",
+             "session_id": agy, "pane_id": None, "created": "2026-10-02T12:16:14"},
+        ]
+        agents = [agent("w1:p9", "grok", self.root, "idle", "builder-cowbell - Grok", sid=self.sid)]
+        reg = hm.build_registry(
+            cat, self.root, agents, [{"pane_id": "w1:p9"}], roster,
+            matcher=lambda _t: {"verdict": "ok"}, home=self.home)
+        self.assertEqual(next(r["name"] for r in reg["live"] if r["session_id"] == self.sid),
+                         "builder-cowbell")
+        self.assertTrue(hm.persist_canonical(reg, roster))
+        by_sid = {r["session_id"]: r["name"] for r in roster}
+        self.assertEqual(by_sid[self.sid], "builder-cowbell")
+        self.assertNotEqual(by_sid[agy], "builder-cowbell")
+        self.assertTrue(by_sid[agy].startswith("builder-cowbell-"))
 
     def test_cold_unpinned_dot_uses_the_same_title(self):
         self._summary("builder-cowbell")
