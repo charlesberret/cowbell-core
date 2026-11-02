@@ -1,6 +1,6 @@
 # cowbell
 
-Type `cowbell` in a directory to pick a coding agent for it: one already running there, a session to resume, or a new one.
+Type `cowbell` in a directory to launch or re-launch a coding agent there with the settings you choose: model, effort, permissions, tools, other directories. You see the exact command before it runs. The same list shows who is already working here and which sessions can resume.
 
 cowbell is for people who run several coding-agent CLIs (Claude Code, Codex, Grok and similar) across many folders and want to see and reach them by place. The choices are **Resume** or **New Session**, with an **Active** census of who is already working here. Active is every coding agent whose working directory is this one or below it. You can see them. You cannot take them over from this list. Resume is the sessions cowbell can pick up again. New Session is the agents in your catalog that are installed and allowed here, most used here first.
 
@@ -21,7 +21,29 @@ cowbell is for people who run several coding-agent CLIs (Claude Code, Codex, Gro
     4  agy                    Antigravity (Gemini)
        + 9 more
 
-  ⏎ open   n new with options   g widen   esc close
+  ⏎ open   n new   + add   a adopt   g widen   o shape   r rename   esc
+```
+
+`o` on a row, or `n`, opens the **launch sheet** for that agent: every setting it takes, the account it runs as, and the command that will run. Here it is at the width of the herdr popup, with model, effort and permissions changed from the defaults:
+
+```
+  api  claude · Claude Code  new tab in /home/you/api
+
+  ▶  start
+     name           api
+     model          claude-opus-5
+     effort         high
+     permissions    green
+     tools allow    all
+     tools deny     none
+     also in        none
+     seat file      none
+     runs as        you
+
+  $ claude --model claude-opus-5 --effort high
+    --permission-mode plan
+
+  ⏎ start   d defaults   a save as   esc cancel
 ```
 
 It is mouse-first: click or arrow to a row, Enter or the ⏎ button to open it, Esc to close. A digit jumps to its row, and every hint in the bottom bar is clickable. The list refreshes every two seconds. Off a terminal, or with `COWBELL_PLAIN=1`, it falls back to a typed-number prompt; `NO_COLOR` turns colour off.
@@ -58,7 +80,8 @@ Pre-1.0 (0.3.x). The command line, the picker and the catalog format (`schema = 
 - **Inside a herdr pane**, starting or resuming opens a new herdr tab named for the session, and Active lists herdr's agents.
 - **Anywhere else**, or with `COWBELL_MODE=here`, cowbell hands this terminal to the agent, `exec`, in the chosen directory. Quit the agent and you are back at your shell. Active lists herdr's agents when a herdr server is listening, plus agent CLIs found running in plain terminals by working directory. Those rows say where they run, `on ttys012`. Cowbell can't switch to another terminal window.
 - **Resume** lists only sessions that can resume. Claude started outside herdr gets its session id up front, `session_id_flag`, so it can. Agents without such a flag are not listed. Resume shows the harness's current session title; a herdr tab that differs is the location. When several sessions share a title, the harness title keeps the bare name and the others gain a short id tail. `cowbell rename` pins a name.
-- **Enter on New Session** opens the agent at once with an automatic name, `claude` or `claude-2`, and the default permissions. `[defaults] ask_name = true` asks for the name first. **`e` on a New Session row** opens a menu of that harness. The first line is its name. Then description, models, default model, permissions, tools, provider, model cycle, and system prompt. A field with a known set of values offers those, plus none, and a line to type another. A launcher script also lists its command. Empty fields stay on the menu. Pick a row to change that field. Esc inside a field cancels it. Esc on the menu returns to the list. `+` adds a harness, a herdr kind or a launcher script. `n` asks for the agent, then opens its **launch sheet**: one screen with start at the top, then every setting that harness takes (name, model, effort, permissions, tools, other directories it may work in, seat file) and the account it runs as, then the exact command that will run. A setting left at the harness default is dim; one you changed is bright. Enter on a setting changes it, `s` or Enter on start launches, `d` puts every setting back to the default, Esc cancels. Starting changes this launch only. `a` saves what the sheet shows as a new harness instead, with its own New Session row and `cowbell <id>`: a copy of this agent with the sheet's model, effort, permissions and tools as its defaults. The sheet stays open, and nothing launches until you start. If you start from `n` without saving, `n` offers to save afterwards. A resume sheet has no `a`, because a session is not a shape. **`o` on a New Session row** opens that harness's sheet straight away, on the settings it was last started with in this directory (else its defaults); `d` there means the harness defaults. **`o` on a Resume row** opens the sheet over that session as it was recorded, so you can resume it with another model, effort, permissions or tools; `d` puts the recording back, and the roster keeps what you resumed with. New Session lists as many harnesses as the window can hold, and ten when the height is unknown. Active and Resume show five, then a more row.
+- **Enter on New Session** opens the agent at once with an automatic name, `claude` or `claude-2`, and the default permissions. `[defaults] ask_name = true` asks for the name first. **`e` on a New Session row** opens a menu of that harness. The first line is its name. Then description, models, default model, permissions, tools, provider, model cycle, and system prompt. A field with a known set of values offers those, plus none, and a line to type another. A launcher script also lists its command. Empty fields stay on the menu. Pick a row to change that field. Esc inside a field cancels it. Esc on the menu returns to the list. `+` adds a harness, a herdr kind or a launcher script.
+- **`n`** asks for the agent, then opens its **launch sheet**: one screen with start at the top, then every setting that harness takes (name, model, effort, permissions, tools, other directories it may work in, seat file) and the account it runs as, then the exact command that will run. A setting left at the harness default is dim; one you changed is bright. Enter on a setting changes it, `s` or Enter on start launches, `d` puts every setting back to the default, Esc cancels. Starting changes this launch only. `a` saves what the sheet shows as a new harness instead, with its own New Session row and `cowbell <id>`: a copy of this agent with the sheet's model, effort, permissions and tools as its defaults. The sheet stays open, and nothing launches until you start. If you start from `n` without saving, `n` offers to save afterwards. A resume sheet has no `a`, because a session is not a shape. **`o` on a New Session row** opens that harness's sheet straight away, on the settings it was last started with in this directory (else its defaults); `d` there means the harness defaults. **`o` on a Resume row** opens the sheet over that session as it was recorded, so you can resume it with another model, effort, permissions or tools; `d` puts the recording back, and the roster keeps what you resumed with. New Session lists as many harnesses as the window can hold, and ten when the height is unknown. Active and Resume show five, then a more row.
 - **Trust** appears only if a checker is configured and on PATH, and only as an exception: a dim `! more reach than needed` on a row the checker calls over-privileged. That is advisory and never stops a launch; blocked agents are left off.
 
 Two hooks let cowbell use tools it does not own, both set in `[defaults]`:
