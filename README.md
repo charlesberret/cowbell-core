@@ -129,21 +129,21 @@ allow_harness = ["lab"]
 default_harness = "lab"
 unix_user = "lab"
 require_uid = true
-nono_profile = "~/.config/nono/lab.json"    # the wall; see below
+nono_profile = "/usr/local/share/walls/lab.json"   # the wall; see below
 ```
 
 `cowbell new --harness claude --place lab` refuses to start, because `claude` is not in `allow_harness`. `cowbell new --place lab` starts the bash wrapper.
 
-When `unix_user` is set and the process is not already that user, cowbell prefixes `agent-run <user> --` if `agent-run` is on PATH. That helper is not part of cowbell. If it is absent, cowbell uses `sudo -u <user> --` instead. Session-history discovery uses the same identity boundary and returns only derived Resume metadata to the caller. You can also leave `unix_user` unset and drop privileges yourself with `sudo -u lab -- cowbell new --place lab`. `require_uid = true` with no `unix_user` refuses to start. `nono_profile`, when set, wraps the command as `nono run --silent --profile <path> --allow-cwd --` inside the uid drop, and `nono` must be on PATH.
+When `unix_user` is set and the process is not already that user, cowbell prefixes `agent-run <user> --`. That helper is not part of cowbell. Without `agent-run` on PATH cowbell refuses; it does not fall back to `sudo -u`, which would skip the helper's checks. Session-history discovery uses the same identity boundary and returns only derived Resume metadata to the caller. You can also leave `unix_user` unset and drop privileges yourself with `sudo -u lab -- cowbell new --place lab`. `require_uid = true` with no `unix_user` refuses to start.
 
-A drop to another account fails closed: when no wall resolves, cowbell refuses to start. The wall is a `nono_profile` (the harness's wins over the place's, which wins over `[defaults]`), or `wall = "door"` on the harness or the place when the command raises its own sandbox. nono cannot wrap such a command on macOS, where a sandboxed process cannot apply a second Seatbelt profile. `[defaults]` cannot say `door`. A lobby whose door carries its own wall:
+A drop to another account fails closed. The level that names the account names its wall: a place's `unix_user` takes the place's `nono_profile`, a harness's takes the harness's own. A wall on a harness without its own `unix_user` is refused. `nono_profile` must be an absolute path to a regular, root-owned file that group and other cannot write; it wraps the command as `nono run --silent --profile <path> -- …` inside the drop, and `nono` must be on PATH. A harness whose `command` raises its own sandbox says `wall = "door"` instead: nono cannot wrap such a command on macOS, where a sandboxed process cannot apply a second Seatbelt profile. The door command must be absolute and not writable by group or other. A door and a `nono_profile` in one launch refuse; places and `[defaults]` cannot say `door`.
 
 ```toml
-[places.lobby]
-cwd = "/srv/lobby"
-allow_harness = ["lobby"]
+[[harness]]
+id = "lobby"
+kind = "pi"
+command = "/srv/lobby/bin/lobby"
 unix_user = "stranger"
-require_uid = true
 wall = "door"
 ```
 
@@ -159,7 +159,7 @@ nono_profile = "/usr/local/share/walls/guest.json"
 cwd = "/srv/agents/guest/work"
 ```
 
-A harness with `cwd` starts there, not in the directory you called it from, so `--allow-cwd` grants its own folder. You must be able to enter that folder, because cowbell starts the process there before the drop; if you cannot, cowbell refuses. A walled launch as another account with no declared folder (no harness `cwd`, outside every place) gets no `--allow-cwd`, so the profile alone decides what it may read.
+A harness with `cwd` starts there, not in the directory you called it from. The folder must be absolute with no symlink in it, under that account's home or inside a place that account owns, and you must be able to enter it, because cowbell starts the process there before the drop. nono gets `--allow-cwd` only when the launch starts in that folder, inside a place whose own `unix_user` is the dropping account, or when no account is dropped; otherwise the profile alone decides what it may read.
 
 ## Commands
 
