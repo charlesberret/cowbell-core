@@ -2163,7 +2163,7 @@ class LaunchSheet(unittest.TestCase):
                "name_flag": "--name", "tools_allow_flag": "--allowedTools",
                "tools_deny_flag": "--disallowedTools", "effort_flag": ["--effort"],
                "efforts": ["low", "high", "max"], "add_dir_flag": "--add-dir",
-               "unix_user": "guest", "lane": "yellow"}
+               "unix_user": "guest", "wall": "door", "lane": "yellow"}
         out = hm.harness_preset(src, "reviewer", "Reviewer", "claude-opus-5", "green", "Read", "Bash", "max")
         self.assertEqual({k: out[k] for k in ("id", "title", "lane", "tools_allow", "tools_deny", "effort")},
                          {"id": "reviewer", "title": "Reviewer", "lane": "green", "tools_allow": "Read",
@@ -3153,7 +3153,7 @@ class UnixConfine(unittest.TestCase):
 
     def test_agent_run_prefixes_when_present(self):
         tmp = tempfile.mkdtemp()
-        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "lab"}}}
+        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "lab", "wall": "door"}}}
         patches = self._as_user({"agent-run": "/usr/local/bin/agent-run"})
         with patches[0], patches[1], patches[2]:
             out = hm.unix_confine(cat, tmp, ["/bin/bash"])
@@ -3161,7 +3161,7 @@ class UnixConfine(unittest.TestCase):
 
     def test_sudo_substitutes_when_agent_run_is_absent(self):
         tmp = tempfile.mkdtemp()
-        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "lab"}}}
+        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "lab", "wall": "door"}}}
         patches = self._as_user({"sudo": "/usr/bin/sudo"})
         with patches[0], patches[1], patches[2]:
             out = hm.unix_confine(cat, tmp, ["/bin/bash"])
@@ -3169,7 +3169,7 @@ class UnixConfine(unittest.TestCase):
 
     def test_neither_helper_refuses(self):
         tmp = tempfile.mkdtemp()
-        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "lab"}}}
+        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "lab", "wall": "door"}}}
         patches = self._as_user({})
         with patches[0], patches[1], patches[2]:
             with self.assertRaises(SystemExit) as e:
@@ -3178,7 +3178,7 @@ class UnixConfine(unittest.TestCase):
 
     def test_same_uid_skips_the_drop(self):
         tmp = tempfile.mkdtemp()
-        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "lab"}}}
+        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "lab", "wall": "door"}}}
         patches = self._as_user({"sudo": "/usr/bin/sudo"}, euid=4242, pw_uid=4242)
         with patches[0], patches[1], patches[2]:
             out = hm.unix_confine(cat, tmp, ["/bin/bash"])
@@ -3200,7 +3200,7 @@ class UnixConfine(unittest.TestCase):
 
     def test_spawn_here_drops_uid(self):
         tmp = tempfile.mkdtemp()
-        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "lab"}}}
+        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "lab", "wall": "door"}}}
         h = {"id": "bash", "kind": "bash", "models": [], "resume": []}
         captured = {}
 
@@ -3238,7 +3238,7 @@ class UnixConfine(unittest.TestCase):
 
     def test_harness_user_overrides_place_user(self):
         tmp = tempfile.mkdtemp()
-        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "place-user"}}}
+        cat = {**CAT, "places": {"lab": {"cwd": tmp, "unix_user": "place-user", "wall": "door"}}}
         h = {"id": "custom", "kind": "bash", "unix_user": "harness-user"}
         patches = self._as_user({"sudo": "/usr/bin/sudo"})
         with patches[0], patches[1], patches[2]:
@@ -3248,11 +3248,190 @@ class UnixConfine(unittest.TestCase):
     def test_harness_user_satisfies_require_uid(self):
         tmp = tempfile.mkdtemp()
         cat = {**CAT, "places": {"lab": {"cwd": tmp, "require_uid": True}}}
-        h = {"id": "custom", "kind": "bash", "unix_user": "harness-user"}
+        h = {"id": "custom", "kind": "bash", "unix_user": "harness-user", "wall": "door"}
         patches = self._as_user({"sudo": "/usr/bin/sudo"})
         with patches[0], patches[1], patches[2]:
             out = hm.unix_confine(cat, tmp, ["/bin/bash"], h=h)
         self.assertEqual(out, ["/usr/bin/sudo", "-u", "harness-user", "--", "/bin/bash"])
+
+
+class TierWalls(unittest.TestCase):
+    """A tier uid never launches without a wall, and starts in its own folder."""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+        self.house = os.path.join(self.tmp, "house")
+        self.work = os.path.join(self.tmp, "guest-work")
+        os.makedirs(self.house)
+        os.makedirs(self.work)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _drop(self, euid=501, pw_uid=4242, which=None):
+        which = which or {"agent-run": "/usr/local/bin/agent-run", "nono": "/usr/bin/nono"}
+        return contextlib.ExitStack(), [
+            mock.patch("pwd.getpwnam", return_value=mock.Mock(pw_uid=pw_uid)),
+            mock.patch.object(hm.os, "geteuid", return_value=euid),
+            mock.patch.object(hm.shutil, "which", side_effect=lambda name: which.get(name)),
+        ]
+
+    def _confine(self, cat, root, h=None, **kw):
+        stack, patches = self._drop(**kw)
+        with stack:
+            for p in patches:
+                stack.enter_context(p)
+            return hm.unix_confine(cat, root, ["/bin/agent"], h=h)
+
+    def test_harness_uid_outside_a_place_with_no_wall_refuses(self):
+        h = {"id": "gemini-guest", "kind": "gemini", "unix_user": "guest"}
+        with self.assertRaises(SystemExit) as e:
+            self._confine(CAT, self.house, h)
+        self.assertIn("no wall", str(e.exception))
+        self.assertIn("gemini-guest", str(e.exception))
+
+    def test_harness_nono_profile_walls_a_harness_uid_outside_a_place(self):
+        h = {"id": "gemini-guest", "kind": "gemini", "unix_user": "guest",
+             "nono_profile": "/etc/walls/house-guest.json", "cwd": self.work}
+        out = self._confine(CAT, self.house, h)
+        self.assertEqual(out, ["/usr/local/bin/agent-run", "guest", "--", "/usr/bin/nono", "run", "--silent",
+                               "--profile", "/etc/walls/house-guest.json", "--allow-cwd", "--", "/bin/agent"])
+
+    def test_harness_nono_profile_wins_over_place_and_defaults(self):
+        cat = {**CAT, "defaults": {**CAT.get("defaults", {}), "nono_profile": "/etc/walls/default.json"},
+               "places": {"lab": {"cwd": self.house, "unix_user": "lab", "nono_profile": "/etc/walls/place.json"}}}
+        h = {"id": "claude-walled", "kind": "claude", "unix_user": "claude",
+             "nono_profile": "/etc/walls/house-claude.json"}
+        out = self._confine(cat, self.house, h)
+        self.assertIn("/etc/walls/house-claude.json", out)
+        self.assertNotIn("/etc/walls/place.json", out)
+        self.assertNotIn("/etc/walls/default.json", out)
+
+    def test_place_profile_still_walls_a_place_uid(self):
+        cat = {**CAT, "places": {"lab": {"cwd": self.house, "unix_user": "lab", "nono_profile": "/etc/walls/place.json"}}}
+        out = self._confine(cat, self.house)
+        self.assertEqual(out[out.index("--profile") + 1], "/etc/walls/place.json")
+        self.assertIn("--allow-cwd", out)
+
+    def test_defaults_profile_from_an_undeclared_folder_does_not_grant_the_cwd(self):
+        cat = {**CAT, "defaults": {**CAT.get("defaults", {}), "nono_profile": "/etc/walls/default.json"}}
+        h = {"id": "claude-walled", "kind": "claude", "unix_user": "claude"}
+        out = self._confine(cat, self.house, h)
+        self.assertIn("/etc/walls/default.json", out)
+        self.assertNotIn("--allow-cwd", out)
+
+    def test_harness_profile_with_no_folder_does_not_grant_a_house_tree(self):
+        h = {"id": "claude-walled", "kind": "claude", "unix_user": "claude",
+             "nono_profile": "/etc/walls/house-claude.json"}
+        out = self._confine(CAT, self.house, h)
+        self.assertNotIn("--allow-cwd", out)
+
+    def test_same_user_with_a_profile_keeps_allow_cwd(self):
+        h = {"id": "mine", "kind": "claude", "unix_user": "me", "nono_profile": "/etc/walls/mine.json"}
+        out = self._confine(CAT, self.house, h, euid=4242, pw_uid=4242)
+        self.assertEqual(out[0], "/usr/bin/nono")
+        self.assertIn("--allow-cwd", out)
+
+    def test_same_user_with_no_wall_is_not_refused(self):
+        h = {"id": "mine", "kind": "claude", "unix_user": "me"}
+        self.assertEqual(self._confine(CAT, self.house, h, euid=4242, pw_uid=4242), ["/bin/agent"])
+
+    def test_door_on_the_place_opts_out_without_nono(self):
+        cat = {**CAT, "places": {"lobby": {"cwd": self.house, "unix_user": "stranger", "wall": "door"}}}
+        out = self._confine(cat, self.house)
+        self.assertEqual(out, ["/usr/local/bin/agent-run", "stranger", "--", "/bin/agent"])
+
+    def test_door_on_the_harness_beats_a_place_profile(self):
+        cat = {**CAT, "places": {"lab": {"cwd": self.house, "unix_user": "lab", "nono_profile": "/etc/walls/place.json"}}}
+        h = {"id": "lobby", "kind": "pi", "wall": "door"}
+        out = self._confine(cat, self.house, h)
+        self.assertEqual(out, ["/usr/local/bin/agent-run", "lab", "--", "/bin/agent"])
+
+    def test_door_in_defaults_is_not_an_opt_out(self):
+        cat = {**CAT, "defaults": {**CAT.get("defaults", {}), "wall": "door"}}
+        h = {"id": "x", "kind": "bash", "unix_user": "guest"}
+        with self.assertRaises(SystemExit) as e:
+            self._confine(cat, self.house, h)
+        self.assertIn("no wall", str(e.exception))
+
+    def test_door_and_profile_on_one_level_refuses(self):
+        h = {"id": "x", "kind": "bash", "unix_user": "guest", "wall": "door", "nono_profile": "/etc/w.json"}
+        with self.assertRaises(SystemExit) as e:
+            self._confine(CAT, self.house, h)
+        self.assertIn("pick one", str(e.exception))
+
+    def test_unknown_wall_value_refuses(self):
+        h = {"id": "x", "kind": "bash", "unix_user": "guest", "wall": "none"}
+        with self.assertRaises(SystemExit) as e:
+            self._confine(CAT, self.house, h)
+        self.assertIn('only value is "door"', str(e.exception))
+
+    def test_launch_root_is_the_harness_folder(self):
+        h = {"id": "g", "kind": "gemini", "cwd": self.work}
+        self.assertEqual(hm.launch_root(CAT, self.house, h), self.work)
+        self.assertEqual(hm.launch_root(CAT, self.house, {"id": "plain", "kind": "claude"}), self.house)
+
+    def test_launch_root_refuses_a_folder_this_user_cannot_enter(self):
+        h = {"id": "claude-walled", "kind": "claude", "cwd": self.work}
+        with mock.patch.object(hm.os, "access", return_value=False), self.assertRaises(SystemExit) as e:
+            hm.launch_root(CAT, self.house, h)
+        self.assertIn("cannot enter", str(e.exception))
+        with self.assertRaises(SystemExit):
+            hm.launch_root(CAT, self.house, {"id": "g", "kind": "gemini", "cwd": os.path.join(self.tmp, "nope")})
+
+    def test_spawn_here_starts_in_the_harness_folder_not_the_callers(self):
+        h = {"id": "gemini-guest", "kind": "bash", "models": [], "resume": [], "unix_user": "guest",
+             "nono_profile": "/etc/walls/house-guest.json", "cwd": self.work}
+        captured = {}
+
+        def fake_popen(argv, **kw):
+            captured["argv"], captured["cwd"] = argv, kw.get("cwd")
+            return mock.Mock(pid=77)
+
+        stack, patches = self._drop()
+        saved = hm.save_roster, hm.load_roster
+        hm.save_roster = lambda rows: captured.update(rows=rows)
+        hm.load_roster = lambda: []
+        try:
+            with stack:
+                for p in patches:
+                    stack.enter_context(p)
+                stack.enter_context(mock.patch.object(hm.subprocess, "Popen", side_effect=fake_popen))
+                hm.spawn_here(CAT, h, "seat", self.house, hm.Ctx(cwd=self.house))
+        finally:
+            hm.save_roster, hm.load_roster = saved
+        self.assertEqual(captured["cwd"], self.work)
+        self.assertEqual(captured["rows"][-1]["cwd"], self.work)
+        self.assertIn("--allow-cwd", captured["argv"])
+
+    def test_raise_harness_opens_the_tab_in_the_harness_folder(self):
+        h = {"id": "gemini-guest", "kind": "bash", "models": [], "resume": [], "unix_user": "guest",
+             "nono_profile": "/etc/walls/house-guest.json", "cwd": self.work}
+        seen = {}
+
+        class Stop(Exception):
+            pass
+
+        def fake_tab(wid, root, *a, **k):
+            seen["root"] = root
+            raise Stop
+
+        stack, patches = self._drop()
+        with stack:
+            for p in patches:
+                stack.enter_context(p)
+            stack.enter_context(mock.patch.object(hm, "project_workspace", return_value=None))
+            stack.enter_context(mock.patch.object(hm, "pick_workspace", return_value="w1"))
+            stack.enter_context(mock.patch.object(hm, "create_tab", side_effect=fake_tab))
+            with self.assertRaises(Stop):
+                hm.raise_harness(CAT, h, "seat", self.house, hm.Ctx(cwd=self.house))
+        self.assertEqual(seen["root"], self.work)
+
+    def test_seed_and_readme_document_the_door(self):
+        here = Path(__file__).resolve().parent.parent
+        for f in ("harnesses.toml", "README.md"):
+            text = (here / f).read_text()
+            self.assertIn('wall = "door"', text, f)
 
 
 class CatalogWriter(unittest.TestCase):

@@ -129,12 +129,37 @@ allow_harness = ["lab"]
 default_harness = "lab"
 unix_user = "lab"
 require_uid = true
-# nono_profile = "~/.config/nono/lab.json"   # optional; omit if you do not use nono
+nono_profile = "~/.config/nono/lab.json"    # the wall; see below
 ```
 
 `cowbell new --harness claude --place lab` refuses to start, because `claude` is not in `allow_harness`. `cowbell new --place lab` starts the bash wrapper.
 
 When `unix_user` is set and the process is not already that user, cowbell prefixes `agent-run <user> --` if `agent-run` is on PATH. That helper is not part of cowbell. If it is absent, cowbell uses `sudo -u <user> --` instead. Session-history discovery uses the same identity boundary and returns only derived Resume metadata to the caller. You can also leave `unix_user` unset and drop privileges yourself with `sudo -u lab -- cowbell new --place lab`. `require_uid = true` with no `unix_user` refuses to start. `nono_profile`, when set, wraps the command as `nono run --silent --profile <path> --allow-cwd --` inside the uid drop, and `nono` must be on PATH.
+
+A drop to another account fails closed: when no wall resolves, cowbell refuses to start. The wall is a `nono_profile` (the harness's wins over the place's, which wins over `[defaults]`), or `wall = "door"` on the harness or the place when the command raises its own sandbox. nono cannot wrap such a command on macOS, where a sandboxed process cannot apply a second Seatbelt profile. `[defaults]` cannot say `door`. A lobby whose door carries its own wall:
+
+```toml
+[places.lobby]
+cwd = "/srv/lobby"
+allow_harness = ["lobby"]
+unix_user = "stranger"
+require_uid = true
+wall = "door"
+```
+
+A harness can carry the account, the wall and its folder itself, so it is walled wherever it is started:
+
+```toml
+[[harness]]
+id = "gemini-guest"
+kind = "gemini"
+title = "Gemini (guest)"
+unix_user = "guest"
+nono_profile = "/usr/local/share/walls/guest.json"
+cwd = "/srv/agents/guest/work"
+```
+
+A harness with `cwd` starts there, not in the directory you called it from, so `--allow-cwd` grants its own folder. You must be able to enter that folder, because cowbell starts the process there before the drop; if you cannot, cowbell refuses. A walled launch as another account with no declared folder (no harness `cwd`, outside every place) gets no `--allow-cwd`, so the profile alone decides what it may read.
 
 ## Commands
 

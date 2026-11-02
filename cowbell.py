@@ -2077,9 +2077,52 @@ def _here_exe(h: dict, cmd: list[str]) -> str:
     return exe
 
 
+def launch_root(cat: dict, root: str, h: dict | None = None) -> str:
+    """Where a launch starts. A harness with its own `cwd` (a tier's own folder)
+    starts there, never in the caller's directory; otherwise root. The invoking user must be able
+    to enter it: cowbell starts the process there before the uid drop."""
+    fixed = str((h or {}).get("cwd") or "").strip()
+    if not fixed:
+        return root
+    d = os.path.realpath(os.path.expanduser(fixed))
+    if not os.path.isdir(d) or not os.access(d, os.X_OK):
+        raise SystemExit(
+            f"cowbell: refused — {(h or {}).get('id') or 'this harness'} starts in {tilde(d)}, "
+            "which this user cannot enter; the drop helper must change directory after the drop, "
+            "or this user needs traverse on it"
+        )
+    return d
+
+
+def wall_for(cat: dict, pl: dict | None, h: dict | None) -> tuple[str, str]:
+    """(kind, nono profile). kind is "nono", "door" (the command raises its own wall, e.g. the
+    lobby's Seatbelt, which nono cannot nest around on macOS) or "" (no wall). The harness speaks
+    first, then the place, then [defaults] nono_profile. `wall = "door"` is never read from
+    [defaults]: a blanket opt-out would undo the refusal below."""
+    for level, where in ((h or {}, "harness"), (pl or {}, "place")):
+        w = str(level.get("wall") or "").strip()
+        prof = str(level.get("nono_profile") or "").strip()
+        if w and w != "door":
+            raise SystemExit(f'cowbell: {where} wall = {w!r}: the only value is "door" (the command raises its own wall)')
+        if w and prof:
+            raise SystemExit(f'cowbell: {where} sets both wall = "door" and nono_profile; pick one')
+        if w:
+            return "door", ""
+        if prof:
+            return "nono", os.path.expanduser(prof)
+    prof = str((cat.get("defaults") or {}).get("nono_profile") or "").strip()
+    return ("nono", os.path.expanduser(prof)) if prof else ("", "")
+
+
 def unix_confine(cat: dict, root: str, cmd: list[str], h: dict | None = None) -> list[str]:
-    """Drop to the harness or place's unix_user, then optional nono. agent-run if it is on PATH, else sudo -u."""
+    """Drop to the harness or place's unix_user, then its wall. agent-run if it is on PATH, else sudo -u.
+
+    Fails closed: a uid other than the invoking user's needs a wall (a nono_profile on the harness,
+    place or defaults, or `wall = "door"` when the command raises its own). `--allow-cwd` is passed
+    only where the launch starts in a declared folder (the harness's `cwd`, or inside a place), or
+    when no uid is dropped, so a tier raised from a house tree is never granted that tree."""
     import pwd
+    root = launch_root(cat, root, h)
     pl = place_for(cat, root)
     defaults = cat.get("defaults") or {}
     uid = (((h or {}).get("unix_user") or (pl or {}).get("unix_user") or defaults.get("unix_user") or "")).strip()
@@ -2097,14 +2140,22 @@ def unix_confine(cat: dict, root: str, cmd: list[str], h: dict | None = None) ->
         pw = pwd.getpwnam(uid)
     except KeyError:
         raise SystemExit(f"cowbell: unix_user {uid!r} is not on this host")
-    profile = os.path.expanduser((pl or {}).get("nono_profile") or defaults.get("nono_profile") or "")
+    drop = os.geteuid() != pw.pw_uid
+    kind, profile = wall_for(cat, pl, h)
+    if drop and not kind:
+        raise SystemExit(
+            f"cowbell: refused — {(h or {}).get('id') or 'this launch'} runs as {uid!r} with no wall; "
+            'set nono_profile on the harness or place, or wall = "door" when the command raises its own'
+        )
     inner = list(cmd)
-    if profile:
+    if kind == "nono":
         nono = shutil.which("nono")
         if not nono:
             raise SystemExit("cowbell: nono is not on PATH (needed for this place)")
-        inner = [nono, "run", "--silent", "--profile", profile, "--allow-cwd", "--"] + inner
-    if os.geteuid() == pw.pw_uid:
+        declared = bool(str((h or {}).get("cwd") or "").strip()) or pl is not None
+        flags = ["--allow-cwd"] if declared or not drop else []
+        inner = [nono, "run", "--silent", "--profile", profile, *flags, "--"] + inner
+    if not drop:
         return inner
     helper = shutil.which("agent-run")
     if helper:
@@ -2169,6 +2220,7 @@ def exec_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", la
               seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True,
               name_source: str = "", effort: str = "", dirs: list[str] | None = None):
     """Hand this terminal to the agent. Does not return."""
+    root = launch_root(cat, root, h)
     cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra, effort=effort,
                                 dirs=dirs)
     cmd = unix_confine(cat, root, cmd, h=h)
@@ -2185,6 +2237,7 @@ def spawn_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", l
                seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True,
                name_source: str = "", effort: str = "", dirs: list[str] | None = None) -> dict:
     """Start the agent in a new session at root and return. Assemblies raise N times this way."""
+    root = launch_root(cat, root, h)
     cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra, effort=effort,
                                 dirs=dirs)
     cmd = unix_confine(cat, root, cmd, h=h)
@@ -2573,6 +2626,7 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
                   focus: bool = True, pen: bool = False, split: bool = False,
                   reuse_pane: dict | None = None, name_source: str = "", effort: str = "",
                   dirs: list[str] | None = None) -> dict:
+    root = launch_root(cat, root, h)
     argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, sitting=name, extra=extra, effort=effort,
                       dirs=dirs)
     place = place_for(cat, root)

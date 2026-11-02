@@ -49,8 +49,31 @@
 # unix_user is an account name (getpwnam). When the process is not already
 # that user, cowbell prefixes `agent-run <user> --` if agent-run is on PATH,
 # otherwise `sudo -u <user> --`. require_uid = true with no unix_user refuses
-# to start. nono_profile, when set, wraps the command in nono inside that
-# drop. Omit nono_profile if you do not use nono.
+# to start. nono_profile wraps the command in nono inside that drop.
+#
+# A drop to another account needs a wall, or cowbell refuses to start: a
+# nono_profile (on the harness, the place, or [defaults]), or wall = "door"
+# when the command raises its own sandbox (nono cannot wrap a process that
+# applies its own Seatbelt profile on macOS). A door place:
+#
+# [places.lobby]
+# cwd = "/srv/lobby"
+# allow_harness = ["lobby"]
+# unix_user = "stranger"
+# require_uid = true
+# wall = "door"
+#
+# A harness can carry unix_user, nono_profile and cwd itself, so it is walled
+# wherever it is started and always starts in its own folder (nono's
+# --allow-cwd then grants that folder, never the caller's directory):
+#
+# [[harness]]
+# id = "gemini-guest"
+# kind = "gemini"
+# title = "Gemini (guest)"
+# unix_user = "guest"
+# nono_profile = "/usr/local/share/walls/guest.json"
+# cwd = "/srv/agents/guest/work"
 
 schema = 1           # file format; a newer cowbell may raise it, an older one will not write it
 
