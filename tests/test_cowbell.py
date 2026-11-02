@@ -2098,16 +2098,16 @@ class LaunchSheet(unittest.TestCase):
         self.assertEqual((wrote[0]["models"][0], wrote[0]["effort"], wrote[0]["lane"]),
                          ("claude-opus-5", "max", "green"))
         self.assertEqual(wrote[0]["name_flag"], "--name")
-        self.assertTrue(saved and saved[0].startswith("saved reviewer"))
+        self.assertEqual(saved, ["reviewer"])
         # a resume is a session, not a shape: no save there
         evs = {ev for *_, ev in hm.sheet_hints(["start", "model"], resume=True)(1)}
         self.assertNotIn("a", evs)
         self.assertIn("a", {ev for *_, ev in hm.sheet_hints(["start", "model"])(1)})
         with mock.patch("cowbell.ask", return_value="claude"), \
              mock.patch("cowbell.harness_insert", side_effect=SystemExit("cowbell: harness 'claude' already exists")):
-            self.assertEqual(hm.sheet_save_as(self.h, s), "harness 'claude' already exists")
+            self.assertEqual(hm.sheet_save_as(self.h, s), ("", "harness 'claude' already exists"))
         with mock.patch("cowbell.ask", return_value=""), mock.patch("cowbell.harness_insert") as ins:
-            self.assertEqual(hm.sheet_save_as(self.h, s), "")
+            self.assertEqual(hm.sheet_save_as(self.h, s), ("", ""))
             ins.assert_not_called()
 
     def test_command_wraps_between_words_and_shows_new_id_bare(self):
