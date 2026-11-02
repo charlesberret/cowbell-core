@@ -1,7 +1,12 @@
 # Changelog
 
-## Unreleased (0.3.2)
+## 0.3.2 — 2026-11-02
 
+- A saved harness launches like the one it was saved from: save-as copies the source row whole and overrides only what the sheet set, so the seat file, `--name`, and a confining `unix_user` are kept.
+- A resume launches the model id it ran with. herdr's quota label ("Sonnet 5") no longer overwrites the roster's `model`; rows written before take the id from their recorded argv, and a display name with no argv resumes on the agent's own default.
+- The hint bar fits the terminal it is drawn in: a bar too wide sheds words right to left, then whole hints, keeping ⏎ first and esc last (herdr's popup is 56 columns inside its border).
+- Two sessions with one title: the row with the best name source keeps it, the rest take a session-id tail; recomputed names are written back to unpinned rows.
+- codex resumes with `codex resume <id>` first and its options after; "last launch here" counts a herdr row by its created day.
 - pi resumes outside herdr: the seed gives it `session_id_flag = "--session-id"` (pi opens or creates the session with that id; a UUID passes its id check) and `name_flag = "--name"`. A resume carries only `--session`, which pi refuses to combine with `--session-id`.
 - Other directories are a launch setting: `add_dir_flag` on a harness row, an "also in" row on the sheet, `cowbell new --add-dir a,b`; the roster keeps them and resume replays them. Seeded for claude, codex, grok, agy and omp. A refusal on the sheet shows on the sheet.
 - The seed's pi row resumes with `--session <id>`. It had `--continue`, which takes no id: pi read the session id as a prompt and continued the latest session instead.
