@@ -3988,8 +3988,20 @@ def highlight(line: str, width: int) -> str:
     return wash + line.replace(reset, reset + wash) + pad + reset
 
 
-def hint_bar(hints: list[tuple[str, str, str]]) -> tuple[str, list[tuple[int, int, str]]]:
-    """[(key label, words, event)] -> (painted line, clickable [x0, x1) spans, 1-based columns)."""
+def hint_bar(hints: list[tuple[str, str, str]], width: int | None = None) -> tuple[str, list[tuple[int, int, str]]]:
+    """[(key label, words, event)] -> (painted line, clickable [x0, x1) spans, 1-based columns).
+
+    Given a `width`, a bar that would not fit sheds words right to left (the keys stay),
+    then whole hints right to left, keeping the first and the last (esc)."""
+    hints = list(hints)
+    size = lambda hs: 2 + sum(len(l) + (1 + len(w) if w else 0) for l, w, _ in hs) + 3 * (len(hs) - 1)
+    if width:
+        for i in range(len(hints) - 1, -1, -1):
+            if size(hints) <= width:
+                break
+            hints[i] = (hints[i][0], "", hints[i][2])
+        while size(hints) > width and len(hints) > 2:
+            del hints[-2]
     parts, spans, col = [], [], 3
     for label, words, ev in hints:
         plain = label + (" " + words if words else "")
@@ -4028,8 +4040,8 @@ def menu(body: list[str], rows: list[int], hints, selected: int = 0,
     scr = (scr or Screen()).open()
     try:
         while True:
-            bar, spans = hint_bar(hints(selected) if callable(hints) else hints)
             cols, height = shutil.get_terminal_size((100, 24))
+            bar, spans = hint_bar(hints(selected) if callable(hints) else hints, cols - 1)
             pinned = ([""] + list(foot)) if foot else []
             foot_ = pinned + ["", bar] + ([paint("  " + flash, RED)] if flash else [])
             view = max(3, height - len(foot_))

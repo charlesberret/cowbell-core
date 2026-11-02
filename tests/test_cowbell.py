@@ -3531,6 +3531,20 @@ class PickerEdit(unittest.TestCase):
         _, spans = hm.hint_bar(hm.picker_hints(False, True))
         self.assertLessEqual(spans[-1][1], 80)
 
+    def test_the_hint_bar_fits_a_herdr_popup(self):
+        # herdr's popup is 64% wide: 56 columns inside the border on a 120-column terminal
+        for width in (55, 40, 24):
+            for args in ((False, True), (True, True), (True, False, True), (False, False, True)):
+                hints = hm.picker_hints(*args)
+                line, spans = hm.hint_bar(hints, width)
+                evs = [ev for *_, ev in spans]
+                self.assertLessEqual(hm.visible_len(line), width, (width, args))
+                self.assertEqual((evs[0], evs[-1]), ("enter", "esc"), (width, args))
+        full, _ = hm.hint_bar(hm.picker_hints(False, False, True), 200)
+        self.assertIn("rename", full)
+        tight, spans = hm.hint_bar(hm.picker_hints(False, False, True), 55)
+        self.assertIn("o", [ev for *_, ev in spans])  # keys stay before any hint is dropped
+
     def test_save_as_inserts_and_keeps_seed_comments(self):
         src = hm.harness_by_id(hm.load_catalog(), "claude")
         with mock.patch("cowbell.ask", return_value="lab-sonnet"):
