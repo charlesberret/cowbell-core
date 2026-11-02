@@ -2083,6 +2083,33 @@ class LaunchSheet(unittest.TestCase):
         self.assertEqual(got.model, "claude-sonnet-5")
         self.assertEqual(got.extra, ["--verbose"])
 
+    def test_sheet_a_saves_the_shape_and_keeps_the_sheet_open(self):
+        s = hm.spec_default(self.cat, self.h, self.root, "api")
+        s.model, s.effort, s.lane = "claude-opus-5", "max", "green"
+        ctx = hm.Ctx(cwd=self.root, mode="tab", live=hm.LiveSource(), launch=None)
+        wrote, saved = [], []
+        with mock.patch("cowbell.tui_ok", return_value=True), \
+             mock.patch("cowbell.menu", side_effect=[("key", "a", 0), ("pick", 0)]), \
+             mock.patch("cowbell.ask", return_value="Reviewer"), \
+             mock.patch("cowbell.harness_insert", side_effect=wrote.append):
+            got = hm.launch_sheet(ctx, self.cat, self.h, self.root, s, saved=saved)
+        self.assertEqual(got, s)  # a save launches nothing; the start after it does
+        self.assertEqual([w["id"] for w in wrote], ["reviewer"])
+        self.assertEqual((wrote[0]["models"][0], wrote[0]["effort"], wrote[0]["lane"]),
+                         ("claude-opus-5", "max", "green"))
+        self.assertEqual(wrote[0]["name_flag"], "--name")
+        self.assertTrue(saved and saved[0].startswith("saved reviewer"))
+        # a resume is a session, not a shape: no save there
+        evs = {ev for *_, ev in hm.sheet_hints(["start", "model"], resume=True)(1)}
+        self.assertNotIn("a", evs)
+        self.assertIn("a", {ev for *_, ev in hm.sheet_hints(["start", "model"])(1)})
+        with mock.patch("cowbell.ask", return_value="claude"), \
+             mock.patch("cowbell.harness_insert", side_effect=SystemExit("cowbell: harness 'claude' already exists")):
+            self.assertEqual(hm.sheet_save_as(self.h, s), "harness 'claude' already exists")
+        with mock.patch("cowbell.ask", return_value=""), mock.patch("cowbell.harness_insert") as ins:
+            self.assertEqual(hm.sheet_save_as(self.h, s), "")
+            ins.assert_not_called()
+
     def test_command_wraps_between_words_and_shows_new_id_bare(self):
         s = hm.spec_default(self.cat, self.h, self.root, "api")
         _b, _r, _k, lines = hm.sheet_body(self.cat, self.h, s, self.root, mode="here", cols=40)
