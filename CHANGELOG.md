@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `a` on a launch sheet saves its shape as a named agent (a `[[harness]]` row copied whole from this one, with the sheet's model, effort, permissions and tools as defaults); the sheet stays open and launches nothing. Not on a resume sheet.
+
 ## 0.3.2 — 2026-11-02
 
 - A saved harness launches like the one it was saved from: save-as copies the source row whole and overrides only what the sheet set, so the seat file, `--name`, and a confining `unix_user` are kept.
