@@ -361,10 +361,11 @@ def bind_sitting(row: dict, live: dict) -> None:
         if (row.get("harness") or "") in ("", old_kind):
             row["harness"] = live.get("harness") or live_kind
         row["kind"] = live_kind
-    toks = live.get("tokens") if isinstance(live.get("tokens"), dict) else {}
-    qmodel = live.get("model") or toks.get("quota_model") or ""
-    if qmodel:
-        row["model"] = qmodel
+    # `model` is what the row launches with. herdr's quota_model token is a display
+    # name ("Sonnet 5"), never a CLI's model id, so it does not land here.
+    model = str(live.get("model") or "")
+    if model and " " not in model.strip():
+        row["model"] = model
     if live.get("cwd"):
         row["cwd"] = live["cwd"]
     if live.get("pane_id"):

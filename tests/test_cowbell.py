@@ -508,13 +508,19 @@ class PickerList(unittest.TestCase):
         self.assertEqual(rows[0]["kind"], "grok")
         self.assertEqual(rows[0]["cwd"], ROOT + "/new")
 
-    def test_bind_sitting_keeps_sonnet_model_from_quota_token(self):
-        row = {"name": "blender", "kind": "claude", "harness": "claude", "model": ""}
+    def test_bind_sitting_leaves_the_launch_model_alone_on_a_quota_label(self):
+        row = {"name": "blender", "kind": "claude", "harness": "claude", "model": "claude-sonnet-5"}
         live = agent("w13:p8", "claude", ROOT)
         live["tokens"] = {"quota_model": "Sonnet 5"}
         hm.bind_sitting(row, live)
-        self.assertEqual(row["model"], "Sonnet 5")
+        self.assertEqual(row["model"], "claude-sonnet-5")
         self.assertEqual(hm.glyph_for(row["kind"], row["model"]), hm.LOBE_GLYPH["claude"])
+        live["model"] = "claude-opus-5"
+        hm.bind_sitting(row, live)
+        self.assertEqual(row["model"], "claude-opus-5")
+        live["model"] = "Opus 5.5"
+        hm.bind_sitting(row, live)
+        self.assertEqual(row["model"], "claude-opus-5")
 
     def test_a_resume_launches_the_model_id_not_the_live_display_name(self):
         h = {"id": "claude", "kind": "claude", "model_flag": ["--model"], "models": ["claude-sonnet-5"]}
