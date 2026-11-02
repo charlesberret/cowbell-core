@@ -3427,6 +3427,26 @@ class TierWalls(unittest.TestCase):
                 hm.raise_harness(CAT, h, "seat", self.house, hm.Ctx(cwd=self.house))
         self.assertEqual(seen["root"], self.work)
 
+    def test_a_rendered_tier_row_loads_with_its_wall_and_folder(self):
+        cfg = Path(self.tmp) / "cfg"
+        cfg.mkdir()
+        exe = Path(self.tmp) / "pinned-gemini"
+        exe.write_text("#!/bin/sh\n")
+        (cfg / "harnesses.toml").write_text(
+            "schema = 1\n\n[[harness]]\n"
+            'id = "gemini-guest"\nkind = "gemini"\n'
+            f'command = "{exe}"\nunix_user = "guest"\n'
+            'nono_profile = "/etc/walls/house-guest.json"\n'
+            f'cwd = "{self.work}"\n'
+            '\n[places.lobby]\ncwd = "/srv/lobby"\nunix_user = "stranger"\nwall = "door"\n')
+        with mock.patch.dict(os.environ, {"COWBELL_CONFIG_DIR": str(cfg)}):
+            cat = hm.load_catalog()
+        h = hm.harness_by_id(cat, "gemini-guest")
+        self.assertEqual((h["nono_profile"], h["cwd"], h["command"]),
+                         ("/etc/walls/house-guest.json", self.work, str(exe)))
+        self.assertTrue(hm.installed(h))  # listed by its pinned command, whatever `which gemini` says
+        self.assertEqual(cat["places"]["lobby"]["wall"], "door")
+
     def test_seed_and_readme_document_the_door(self):
         here = Path(__file__).resolve().parent.parent
         for f in ("harnesses.toml", "README.md"):
