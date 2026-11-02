@@ -9,6 +9,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
+from dataclasses import replace
 import warnings
 from pathlib import Path
 from unittest import mock
@@ -2125,6 +2126,38 @@ class LaunchSheet(unittest.TestCase):
         with mock.patch("cowbell.choose", return_value=6), mock.patch("cowbell.ask", return_value="x; rm -rf"):
             hm.sheet_edit(self.cat, self.h, s, "effort", self.root, set())
         self.assertEqual(s.effort, "")
+
+    def test_a_saved_harness_launches_like_its_source(self):
+        # the keys his own live claude row carries, legacy seat_flag and name_flag included
+        src = {"id": "claude", "kind": "claude", "title": "Claude Code", "family": "anthropic",
+               "egress": "anthropic", "trust_tool": "claude", "model_flag": ["--model"],
+               "models": ["claude-sonnet-5", "claude-opus-5"], "resume": ["--resume"],
+               "seat_flag": "--append-system-prompt-file", "session_id_flag": "--session-id",
+               "name_flag": "--name", "tools_allow_flag": "--allowedTools",
+               "tools_deny_flag": "--disallowedTools", "effort_flag": ["--effort"],
+               "efforts": ["low", "high", "max"], "add_dir_flag": "--add-dir",
+               "unix_user": "guest", "lane": "yellow"}
+        out = hm.harness_preset(src, "reviewer", "Reviewer", "claude-opus-5", "green", "Read", "Bash", "max")
+        self.assertEqual({k: out[k] for k in ("id", "title", "lane", "tools_allow", "tools_deny", "effort")},
+                         {"id": "reviewer", "title": "Reviewer", "lane": "green", "tools_allow": "Read",
+                          "tools_deny": "Bash", "effort": "max"})
+        self.assertEqual(out["models"][0], "claude-opus-5")
+        for k in set(src) - {"id", "title", "models", "lane"}:
+            self.assertEqual(out.get(k), src[k], k)
+        seat = Path(self.root) / "seat.md"
+        seat.write_text("you review")
+        cat = {"harness": [src, out], "defaults": {}, "lanes": self.cat.get("lanes", {})}
+        spec = hm.LaunchSpec(harness="x", name="rev", model="claude-opus-5", effort="max", lane="green",
+                             allow="Read", deny="Bash", seat=str(seat), dirs=[str(self.root)])
+        a = hm.spec_argv(cat, src, replace(spec, harness="claude"))
+        b = hm.spec_argv(cat, out, replace(spec, harness="reviewer"))
+        self.assertEqual(a, b)
+        self.assertIn("--append-system-prompt-file", b)
+        self.assertEqual(hm.spec_command(cat, src, replace(spec, harness="claude"), str(self.root)),
+                         hm.spec_command(cat, out, replace(spec, harness="reviewer"), str(self.root)))
+        bare = hm.harness_preset(src, "plain", "Plain", "", "", "", "", "")
+        self.assertNotIn("effort", bare)
+        self.assertNotIn("lane", bare)
 
     def test_harness_default_effort_and_save_as_keep_it(self):
         h = dict(self.h, effort="high")
