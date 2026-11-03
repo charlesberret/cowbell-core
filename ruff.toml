@@ -1,0 +1,20 @@
+# Longest Python line in this tree is 168 (cowbell.py). Ruff's formatter is
+# black-style and would rewrite the existing modules. This change does not
+# reformat them; exclude is the minimum that lets `ruff format --check` pass
+# today. New Python files are still formatted.
+line-length = 168
+target-version = "py311"
+
+[lint]
+# Syntax (E9) and pyflakes (F). F401, F811, and F541 are existing findings
+# in the tests and are ignored until a later cleanup.
+select = ["E9", "F"]
+ignore = ["F401", "F541", "F811"]
+
+[format]
+exclude = [
+  "cowbell.py",
+  "tests/test_cowbell.py",
+  "tests/test_packaging.py",
+  "tests/test_pty.py",
+]

@@ -1,0 +1,13 @@
+# One Python `re` per line. Each match is removed from a candidate line, and
+# the line is a hit only if a denylist token remains. That exempts a term
+# without hiding a different token on the same line.
+# Blank lines and lines starting with # are ignored.
+
+# Product vocabulary. These words belong to cowbell; they are not house leaks.
+(?<![A-Za-z0-9_])harness(?![A-Za-z0-9_])
+(?<![A-Za-z0-9_])sitting(?![A-Za-z0-9_])
+(?<![A-Za-z0-9_])lane(?![A-Za-z0-9_])
+
+# Author lines. pyproject.toml and LICENSE keep the author attribution.
+authors = \[\{ name = "Charles Berret" \}\]
+Copyright \(c\) 2026 Charles Berret
