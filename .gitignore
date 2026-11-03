@@ -5,7 +5,7 @@ dist/
 
 # Agent working files (kept on disk, never published)
 HANDOFF*.md
-handoff-*.md
+handoff*.md
 _Status.md
 THREADS.md
 .inbox/

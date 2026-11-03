@@ -27,7 +27,7 @@ cowbell is for people who run several coding-agent CLIs (Claude Code, Codex, Gro
 `o` on a row, or `n`, opens the **launch sheet** for that agent: every setting it takes, the account it runs as, and the command that will run. Here it is at the width of the herdr popup, with model, effort and permissions changed from the defaults:
 
 ```
-  api  claude · Claude Code  new tab in /home/you/api
+  api  claude · Claude Code  new tab in ~/api
 
   ▶  start
      name           api
