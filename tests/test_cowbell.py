@@ -3532,6 +3532,47 @@ class TierWalls(unittest.TestCase):
                 self._history([{"session_id": sid, "cwd": self.house}])
             self.assertIn("malformed session id", str(e.exception))
 
+    def test_history_refuses_a_session_id_that_reads_as_an_option(self):
+        for sid in ("--x", "-x", "..", "--dangerously-skip-permissions", ".hidden", "_x"):
+            with self.assertRaises(SystemExit) as e:
+                self._history([{"session_id": sid, "cwd": self.house}])
+            self.assertIn("malformed session id", str(e.exception), sid)
+        rows, _ = self._history([{"session_id": "0b9e1c2a-1f3e-4c7d-9a1b-2c3d4e5f6a7b", "cwd": self.house}])
+        self.assertEqual(len(rows), 1)
+
+    def test_build_argv_refuses_a_resume_id_that_reads_as_an_option(self):
+        for h in ({"id": "claude", "kind": "claude", "resume": ["--resume"]},
+                  {"id": "codex", "kind": "codex", "resume": ["resume"]}):
+            with self.assertRaises(SystemExit) as e:
+                hm.build_argv(CAT, h, "", "", "", "", None, "--dangerously-skip-permissions")
+            self.assertIn("reads as an option", str(e.exception))
+        self.assertIn("abc-1", hm.build_argv(CAT, {"id": "claude", "kind": "claude", "resume": ["--resume"]},
+                                             "", "", "", "", None, "abc-1"))
+
+    def test_door_with_a_symlink_in_its_path_refuses(self):
+        link = os.path.join(self.tmp, "door-link")
+        os.symlink(self.door, link)
+        self.assertIn("symlink", hm._door_problem({"command": link}))
+
+    def test_a_refused_launch_closes_its_new_tab(self):
+        h = {"id": "bash", "kind": "bash", "models": [], "resume": []}
+        bad = self.house + "/x\x15y"
+        cat = {**CAT, "places": {"lab": {"cwd": self.house, "unix_user": "guest", "nono_profile": "/etc/w.json"}}}
+        ran = []
+        with contextlib.ExitStack() as stack:
+            for p in self._patches():
+                stack.enter_context(p)
+            stack.enter_context(mock.patch.object(hm, "wait_shell", return_value=None))
+            stack.enter_context(mock.patch.object(hm, "project_workspace", return_value=None))
+            stack.enter_context(mock.patch.object(hm, "pick_workspace", return_value="w1"))
+            stack.enter_context(mock.patch.object(hm, "create_tab",
+                                                  return_value={"pane_id": "w1:p9", "tab_id": "w1:t9"}))
+            stack.enter_context(mock.patch.object(hm, "herdr", side_effect=lambda *a, **k: ran.append(a) or {}))
+            with self.assertRaises(SystemExit):
+                hm.raise_harness(cat, h, "seat", bad, hm.Ctx(cwd=self.house))
+        self.assertIn(("tab", "close", "w1:t9"), ran)
+        self.assertFalse(any(a[:2] == ("pane", "run") for a in ran))
+
     def test_history_strips_control_characters_from_titles(self):
         rows, _ = self._history([{"session_id": "s1", "cwd": self.house, "title": "\x1b]52;c;ZXZpbA==\x07Fix tests",
                                   "harness_title": "a\x9bb", "utterance": "u\rv", "name": "n\x15m"}])

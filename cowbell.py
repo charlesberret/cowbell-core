@@ -1931,6 +1931,10 @@ def build_argv(cat: dict, h: dict, model: str = "", lane: str = "", allow: str =
         argv += [prompt_flag(h), sys_prompt]
     argv += claim_argv(h, sitting, agents_dir=agents_dir)
     if resume_id:
+        # Ids follow a flag (`--resume <id>`) or sit before options (`codex resume <id> --model`), so
+        # `--` cannot guard them without breaking those CLIs; an id that reads as an option is refused.
+        if str(resume_id).startswith("-"):
+            raise SystemExit(f"cowbell: refused — session id {resume_id!r} reads as an option")
         spec = list(h.get("resume") or [])
         if spec == ["resume"]:
             # A subcommand goes first: `codex resume <id> --model …`. Its own options are the
@@ -1947,7 +1951,8 @@ def build_argv(cat: dict, h: dict, model: str = "", lane: str = "", allow: str =
 CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 # Display text from another account's stores also loses C1 controls (terminal escapes).
 CONTROL_WIDE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
-SESSION_ID = re.compile(r"[A-Za-z0-9._-]{1,128}")
+# Starts with a letter or digit: never an option (`--dangerously-skip-permissions`) nor `..`.
+SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
 def shell_join(parts: list[str]) -> str:
@@ -2188,6 +2193,8 @@ def _door_problem(h: dict, target_uid: int | None = None) -> str:
     command = str(h.get("command") or "")
     if not command or not os.path.isabs(command):
         return "a door needs an absolute `command` (the program that raises the wall)"
+    if not _plain_abs(command):
+        return f"door command {command} has a symlink in its path; name the real file"
     real = os.path.realpath(command)
     owners = {0, os.geteuid()} - ({target_uid} if target_uid is not None else set())
     try:
@@ -2390,6 +2397,9 @@ def spawn_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", l
             raise OSError(f"{root} resolved to {os.getcwd()}")
 
     try:
+        # preexec_fn is safe only while no other thread exists at fork (cowbell starts none on this
+        # path). If threads are added here, switch to a `sh -c 'cd -P -- "$1" && [ "$(pwd -P)" = "$1" ]
+        # && shift && exec "$@"'` wrapper like the herdr path's.
         proc = subprocess.Popen(
             [exe, *cmd[1:]], cwd=root, start_new_session=True, preexec_fn=landed,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -2812,8 +2822,8 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
         else:
             res = start_native(name, h["kind"], pid, argv)
             launched_session = ((res.get("agent") or {}).get("agent_session") or {}).get("value") or ""
-    except HerdrError:
-        if pane.get("tab_id") and not reuse_pane:  # do not leave an empty tab behind a failed launch
+    except (HerdrError, SystemExit):
+        if pane.get("tab_id") and not reuse_pane:  # do not leave an empty tab behind a failed or refused launch
             try:
                 herdr("tab", "close", pane["tab_id"])
             except HerdrError:
