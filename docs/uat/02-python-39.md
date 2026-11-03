@@ -5,7 +5,7 @@ Python 3.11. Record the line and the exit code you actually get.
 
 ## Precondition
 
-- macOS, where `/usr/bin/python3` reports 3.9.x (`/usr/bin/python3 --version`).
+- macOS system Python at `/usr/bin/python3`, measured as **3.9.6**.
 - A checkout, so `cowbell.py` and `bin/cowbell` are on disk.
 - For the launcher half: none of these is Python 3.11 or newer:
   `$HOME/.venvs/fleet/bin/python3`, `/opt/homebrew/bin/python3`,
@@ -46,27 +46,30 @@ Confirmed by running `bin/cowbell` with `HOME` empty of a fleet venv and with
 `python3` on `PATH` being a program that fails the version probe. `/usr/bin`
 stayed on `PATH`. Stdout was empty. Exit code 2.
 
-### System Python on `cowbell.py` — read, not run
+### System Python on `cowbell.py` — measured, `/usr/bin/python3` 3.9.6
 
-This pack was not executed under Python 3.9. The writing machine has
-Python 3.12 only. The following is what `cowbell.py` does.
+This is the first sign-off result for this half. `bin/cowbell` is not
+involved. `/usr/bin/python3 cowbell.py` calls `cli()` → `main()`.
 
-`bin/cowbell` is not involved. A pip-installed `cowbell` script calls
-`cli()` → `main()`, same as `python3 cowbell.py`.
+`/usr/bin/python3 cowbell.py --version` prints one line on stdout, nothing
+on stderr, and exits **0**:
 
-- `main()` handles `--version` before `load_catalog()`. A Python that can
-  parse the file prints `cowbell 0.3.2` and returns 0. It never reaches the
-  tomllib check.
-- A command that loads the catalog calls `load_catalog()`. If
-  `import tomllib` failed, that function raises
-  `SystemExit("cowbell: python >= 3.11 required (tomllib)")`. A string
-  `SystemExit` is printed on stderr and the process exits **1**.
+```
+cowbell 0.3.2
+```
 
-**UNCLEAR: what Python 3.9 actually prints.** The source has no line of the
-shape "cowbell needs Python 3.11 or newer (found …)". If 3.9 raises
-`SyntaxError` before `main` runs, that error is the result. Paste the
-stderr and the exit code. Do not substitute the launcher line or the
-`SystemExit` string above if you did not see them.
+`main()` handles `--version` before `load_catalog()`, so the missing
+`tomllib` is not reached.
+
+`/usr/bin/python3 cowbell.py status` prints nothing on stdout. Stderr is
+one line, and the exit code is **1**:
+
+```
+cowbell: python >= 3.11 required (tomllib)
+```
+
+No config directory is created. `load_catalog()` raises that `SystemExit`
+before `catalog_path()` makes the directory.
 
 ## Pass / fail
 
@@ -80,6 +83,8 @@ Date:
 
 ## Notes
 
-The launcher line and exit 2 were run against this tree. The 3.9 module
-path was read from `main()` and `load_catalog()` and was not executed.
-Passing the launcher half does not pass the system-Python half.
+The launcher line and exit 2 were run on a machine whose `python3` is 3.12,
+with the version probe forced to fail. The 3.9.6 lines above were measured
+with `/usr/bin/python3` 3.9.6: `--version` exited 0, and `status` exited 1
+with the tomllib line and no config directory. Passing one half does not
+pass the other.

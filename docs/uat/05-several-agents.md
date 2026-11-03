@@ -92,7 +92,7 @@ Lobe marks, after the padded name: claude U+F4036, grok U+F4079, codex U+F403E.
 export COWBELL_PLAIN=1 NO_COLOR=1
 cowbell status
 echo $?
-printf 'q\n' | cowbell
+printf 'q\n' | cowbell picker
 echo $?
 cowbell list
 echo $?

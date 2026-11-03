@@ -24,7 +24,7 @@ leave it.
 
 ```bash
 export COWBELL_PLAIN=1
-printf 'q\n' | cowbell
+printf 'q\n' | cowbell picker
 echo $?
 cowbell status
 echo $?

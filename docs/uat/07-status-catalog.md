@@ -34,14 +34,14 @@ Checker absent:
 ```bash
 cowbell status
 cowbell catalog
-printf 'q\n' | cowbell
+printf 'q\n' | cowbell picker
 ```
 
 Checker warning (the script above, exit 3):
 
 ```bash
 cowbell catalog
-printf 'q\n' | cowbell
+printf 'q\n' | cowbell picker
 cowbell new --harness pi --spawn --yes --name warned
 echo $?
 ```
@@ -50,7 +50,7 @@ Checker blocking: same script, but `echo T4`, `verdict: blocked (H2)`,
 `flag: H2`, `exit 4`:
 
 ```bash
-printf 'q\n' | cowbell
+printf 'q\n' | cowbell picker
 cowbell new --harness pi --spawn --yes --name blocked
 echo $?
 cowbell catalog

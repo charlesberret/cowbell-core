@@ -30,6 +30,10 @@ Scenarios 03–08 and 10 also set `COWBELL_PLAIN=1` where the steps say so.
 Scenario 09 is a real terminal: leave `COWBELL_PLAIN` unset and do not set
 `TERM=dumb`.
 
+With no arguments, `main` runs `status` when `tui_ok()` is false: stdin is
+not a terminal (a pipe), or `COWBELL_PLAIN=1` is set. The text picker in
+these scenarios is `cowbell picker`.
+
 Use a scratch catalog and roster:
 
 ```bash
@@ -42,9 +46,13 @@ Unset, those are `$XDG_CONFIG_HOME/cowbell` or `~/.config/cowbell`, and
 `$XDG_STATE_HOME/cowbell` or `~/.local/state/cowbell`.
 
 `cowbell --version` and `cowbell --help` do not create those directories.
-Any other command creates the config directory and, the first time, copies
-the shipped `harnesses.toml` into it. The state directory is created when
-the roster is touched, even if `roster.json` does not exist yet.
+On Python 3.11 or newer, a command that loads the catalog creates the config
+directory and, the first time, copies the shipped `harnesses.toml` into it.
+On Python 3.9 that copy does not happen: `cowbell.py status` prints
+`cowbell: python >= 3.11 required (tomllib)` on stderr, exits 1, and leaves
+no config directory (scenario 02). The state directory is created when the
+roster is touched on a Python that gets that far, even if `roster.json` does
+not exist yet.
 
 ## Order
 

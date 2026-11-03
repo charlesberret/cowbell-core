@@ -33,7 +33,7 @@ cowbell catalog
 echo $?
 cowbell list
 echo $?
-printf 'q\n' | cowbell
+printf 'q\n' | cowbell picker
 echo $?
 cowbell reconcile --dry-run
 echo $?
