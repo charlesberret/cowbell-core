@@ -18,6 +18,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import cowbell as hm  # noqa: E402
 
 
+def fx(*parts: str) -> str:
+    """A ~-relative fixture path, resolved the way cowbell resolves a cwd."""
+    return os.path.realpath(os.path.join(os.path.expanduser("~"), *parts))
+
+
+def _except_ids(text: str, ids: set[str]) -> str:
+    """Catalog text with the named harness blocks removed."""
+    spans = sorted((s for s in hm.harness_blocks(text) if s["id"] in ids), key=lambda s: s["start"])
+    out, cursor = [], 0
+    for span in spans:
+        out.append(text[cursor:span["start"]])
+        cursor = span["end"]
+    out.append(text[cursor:])
+    return "".join(out)
+
+
 CAT = {
     "defaults": {"lane": "yellow"},
     "lanes": {"claude": {"green": ["--permission-mode", "plan"], "yellow": ["--permission-mode", "acceptEdits"]},
@@ -48,7 +64,7 @@ CAT = {
          "models": [], "command": "/nonexistent/local-ornith", "resume": ["--continue"]},
     ],
 }
-ROOT = "/Users/x/code/projects/acme"
+ROOT = fx("code", "projects", "acme")
 
 
 def agent(pane, kind, cwd, status="idle", title="", sid="s1"):
@@ -84,17 +100,17 @@ class Scope(unittest.TestCase):
     def test_at_or_beneath(self):
         self.assertTrue(hm.at_or_beneath(ROOT, ROOT))
         self.assertTrue(hm.at_or_beneath(ROOT + "/ballots", ROOT))
-        self.assertFalse(hm.at_or_beneath("/Users/x", ROOT))            # above never counts
+        self.assertFalse(hm.at_or_beneath(fx(), ROOT))            # above never counts
         self.assertFalse(hm.at_or_beneath(ROOT + "-core", ROOT))        # sibling with prefix
-        self.assertFalse(hm.at_or_beneath("/Users/x/code/projects", ROOT))
+        self.assertFalse(hm.at_or_beneath(fx("code", "projects"), ROOT))
 
     def test_same_tree_and_occupant(self):
         self.assertTrue(hm.same_tree(ROOT, ROOT + "/src"))
         self.assertTrue(hm.same_tree(ROOT + "/src", ROOT))
-        self.assertFalse(hm.same_tree(ROOT, "/Users/x/mise"))
+        self.assertFalse(hm.same_tree(ROOT, fx("mise")))
         row = {"name": "herdr-dev", "cwd": ROOT}
         here = agent("w1A:pD", "grok", ROOT)
-        other = agent("w19:p3", "grok", "/Users/x/mise", sid="stolen")
+        other = agent("w19:p3", "grok", fx("mise"), sid="stolen")
         self.assertTrue(hm.occupant_same(row, here, "herdr-dev"))
         self.assertFalse(hm.occupant_same(row, other, "mise"))
         moved = {"name": "scholar", "cwd": ROOT + "/old"}
@@ -102,17 +118,16 @@ class Scope(unittest.TestCase):
         self.assertFalse(hm.occupant_same(moved, agent("wM:pE", "grok", ROOT + "/new"), "metawork"))
 
     def test_seat_file_walks_up_and_stops_at_home(self):
-        # Same semantics as code/bin/lib/pi-project-seat.sh: check each dir up to and
-        # including $HOME, never above it.
+        # Check each directory up to and including $HOME, never above it.
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
-            proj = home / "cloud" / "proj" / "deep"
+            proj = home / "work" / "proj" / "deep"
             proj.mkdir(parents=True)
             (Path(tmp) / "SEAT.md").write_text("above home: never")
             self.assertIsNone(hm.seat_file(str(proj), home=str(home)))
             (home / "SEAT.md").write_text("home seat")
             self.assertTrue(str(hm.seat_file(str(proj), home=str(home))).endswith("home/SEAT.md"))
-            (home / "cloud" / "proj" / "SEAT.md").write_text("nearer wins")
+            (home / "work" / "proj" / "SEAT.md").write_text("nearer wins")
             self.assertTrue(str(hm.seat_file(str(proj), home=str(home))).endswith("proj/SEAT.md"))
 
     def test_slug_and_unique(self):
@@ -158,13 +173,13 @@ class Argv(unittest.TestCase):
 
     def test_wrapper_appends_controls_the_row_sets(self):
         h = {"id": "local-ornith", "kind": "pi", "command": "/bin/local-ornith",
-             "models": ["ollama-hesiod/ornith:35b"], "model_flag": ["--model"],
+             "models": ["ollama-laptop/ornith:35b"], "model_flag": ["--model"],
              "lane": "green", "tools_allow_flag": "--tools", "tools_allow": "read,bash",
              "tools_deny_flag": "--exclude-tools", "tools_deny": "edit",
              "resume": ["--continue"]}
         self.assertEqual(
-            hm.build_argv(CAT, h, "ollama-hesiod/ornith:35b", "green", "read,bash", "edit", resume_id="s1"),
-            ["--model", "ollama-hesiod/ornith:35b", "--tools", "read",
+            hm.build_argv(CAT, h, "ollama-laptop/ornith:35b", "green", "read,bash", "edit", resume_id="s1"),
+            ["--model", "ollama-laptop/ornith:35b", "--tools", "read",
              "--tools", "read,bash", "--exclude-tools", "edit", "--continue"])
         self.assertEqual(hm.build_argv(CAT, h, "not-in-the-list", "red", "other", "nope"), [])
 
@@ -202,7 +217,7 @@ class Registry(unittest.TestCase):
     def setUp(self):
         self.agents = [
             agent("w1:p1", "claude", ROOT, "working", "planner"),
-            agent("w1:p2", "grok", "/Users/x", "idle", "sysadmin"),          # above root: excluded
+            agent("w1:p2", "grok", fx(), "idle", "sysadmin"),          # above root: excluded
             agent("w1:p3", "claude", ROOT + "/ballots", "idle", "ballots"),
         ]
         self.panes = [{"pane_id": p} for p in ("w1:p1", "w1:p2", "w1:p3", "w1:p9")]
@@ -210,7 +225,7 @@ class Registry(unittest.TestCase):
             {"name": "planner", "cwd": ROOT, "harness": "claude", "kind": "claude", "pane_id": "w1:p1", "model": "claude-opus-5"},
             {"name": "kimi-notes", "cwd": ROOT, "harness": "oll-mid", "kind": "pi", "pane_id": "w1:p9", "session_id": "k1"},
             {"name": "old-codex", "cwd": ROOT + "/sub", "harness": "codex", "kind": "codex", "pane_id": "gone", "session_id": "c1"},
-            {"name": "elsewhere", "cwd": "/Users/x/other", "harness": "claude", "kind": "claude", "pane_id": "w1:p5"},
+            {"name": "elsewhere", "cwd": fx("other"), "harness": "claude", "kind": "claude", "pane_id": "w1:p5"},
         ]
         self.matcher = lambda tool: {"verdict": "blocked" if tool == "local-ornith" else "ok", "flag": ""}
 
@@ -230,7 +245,7 @@ class Registry(unittest.TestCase):
 
     def test_render_mentions_sections(self):
         reg = hm.build_registry(CAT, ROOT, self.agents, self.panes, self.roster, matcher=self.matcher, subject="internal")
-        text = hm.render_registry(reg, git_top="/Users/x/code/projects", wider=3)
+        text = hm.render_registry(reg, git_top=fx("code", "projects"), wider=3)
         for needle in ("LIVE HERE", "COLD HERE", "ABSENT HERE", "planner", "kimi-notes", "local-ornith ⌂⊘",
                        "omp ↑ok", "[g] widen", "subject: internal"):
             self.assertIn(needle, text)
@@ -407,9 +422,9 @@ class PickerList(unittest.TestCase):
     def test_widen_only_when_it_shows_more(self):
         reg = self.reg()
         choices = hm.picker_choices(reg, [])
-        self.assertNotIn("widen", hm.render_picker(reg, choices, "/Users/x/code/projects", wider=2))
+        self.assertNotIn("widen", hm.render_picker(reg, choices, fx("code", "projects"), wider=2))
         self.assertIn("g widen to projects · 5 running",
-                      hm.render_picker(reg, choices, "/Users/x/code/projects", wider=5))
+                      hm.render_picker(reg, choices, fx("code", "projects"), wider=5))
 
     def test_fold_and_numbers_skip_more_row(self):
         reg = self.reg()
@@ -433,8 +448,8 @@ class PickerList(unittest.TestCase):
         self.assertEqual(len([c for c in tall if c["section"] == "start"]), 14)
 
     def test_rank_here_beats_elsewhere_beats_catalog_order(self):
-        roster = [{"harness": "grok", "cwd": "/Users/x/other", "last_seen": "2026-09-12"},
-                  {"harness": "grok", "cwd": "/Users/x/other2", "last_seen": "2026-09-12"},
+        roster = [{"harness": "grok", "cwd": fx("other"), "last_seen": "2026-09-12"},
+                  {"harness": "grok", "cwd": fx("other2"), "last_seen": "2026-09-12"},
                   {"harness": "pi", "cwd": ROOT + "/sub", "last_seen": "2026-09-01"}]
         self.assertEqual(hm.rank_harnesses(["claude", "grok", "pi", "agy"], roster, ROOT),
                          ["pi", "grok", "claude", "agy"])
@@ -468,7 +483,7 @@ class PickerList(unittest.TestCase):
     def test_refresh_unbinds_when_pane_holds_another_project(self):
         rows = [{"name": "herdr-dev", "cwd": ROOT, "kind": "grok", "harness": "grok",
                  "pane_id": "w19:p3", "session_id": "stolen", "tab_id": "w19:t3", "workspace_id": "w19"}]
-        agents = [agent("w19:p3", "grok", "/Users/x/mise", sid="stolen")]
+        agents = [agent("w19:p3", "grok", fx("mise"), sid="stolen")]
         saved = []
         orig, hm.save_roster = hm.save_roster, saved.append
         try:
@@ -818,7 +833,7 @@ class Places(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = os.path.realpath(self.tmp.name)
-        self.pad = os.path.join(self.home, "cloud", "git-projects", "agent-lobby")
+        self.pad = os.path.join(self.home, "work", "repos", "agent-lobby")
         os.makedirs(self.pad)
         self.cat = {**CAT, "defaults": {"lane": "yellow", "untitled_place": "lobby"},
                     "places": {"lobby": {"cwd": self.pad, "workspace_label": "lobby",
@@ -839,7 +854,7 @@ class Places(unittest.TestCase):
     def test_place_holds_its_subdirectories_only(self):
         self.assertEqual(hm.resolve_root(self.cat, os.path.join(self.pad, "visitors"), home=self.home)[1]["name"],
                          "lobby")
-        self.assertIsNone(hm.resolve_root(self.cat, os.path.join(self.home, "cloud"), home=self.home)[1])
+        self.assertIsNone(hm.resolve_root(self.cat, os.path.join(self.home, "work"), home=self.home)[1])
 
     def test_scoped_catalog_filters_harnesses_and_sets_lane(self):
         scoped = hm.scoped_catalog(self.cat, hm.places(self.cat)["lobby"])
@@ -1260,14 +1275,14 @@ class NoHerdrCalls(unittest.TestCase):
 
 
 class Standalone(unittest.TestCase):
-    PS = """\
+    PS = f"""\
     1     0 ??       /sbin/launchd
   500     1 ??       /Applications/Herdr.app/Contents/MacOS/herdr server
   510   500 ttys001  -zsh
   511   510 ttys001  claude --model claude-opus-5
-  600     1 ??       tmux -u new-session -d -s agentdeck_x
+  600     1 ??       tmux -u new-session -d -s session_x
   601   600 ttys004  pi
-  602   600 ttys005  /Users/x/.local/bin/grok --resume 019f
+  602   600 ttys005  {fx(".local", "bin", "grok")} --resume 019f
   603   602 ttys005  node /opt/mcp/server.js
   604   602 ttys005  grok helper
   700     1 ttys009  node /opt/homebrew/bin/gemini
@@ -1277,7 +1292,7 @@ class Standalone(unittest.TestCase):
 
     def test_exe_kind(self):
         self.assertEqual(hm.exe_kind(["claude", "--model", "x"]), "claude")
-        self.assertEqual(hm.exe_kind(["/Users/x/.local/bin/grok"]), "grok")
+        self.assertEqual(hm.exe_kind([fx(".local", "bin", "grok")]), "grok")
         self.assertEqual(hm.exe_kind(["node", "--no-warnings", "/opt/homebrew/bin/gemini"]), "gemini")
         self.assertEqual(hm.exe_kind(["/Applications/ChatGPT.app/Contents/Resources/codex"]), "")
         self.assertEqual(hm.exe_kind(["-zsh"]), "")
@@ -1436,10 +1451,10 @@ class SidebarTokens(unittest.TestCase):
             self.assertIn("glyph", args)
 
     def test_session_label_is_the_sitting_not_the_work_title(self):
-        self.assertEqual(hm.session_label("majordomo", "majordomo"), "majordomo")
+        self.assertEqual(hm.session_label("manager", "manager"), "manager")
         self.assertEqual(
-            hm.session_label("Mint sysadmin agent privilege UID - Grok", "majordomo"),
-            "majordomo",
+            hm.session_label("Mint sysadmin agent privilege UID - Grok", "manager"),
+            "manager",
         )
         self.assertEqual(
             hm.session_label("- Stamp live glyphs and publish", "cowbell"),
@@ -1467,9 +1482,9 @@ class SidebarTokens(unittest.TestCase):
         def fake(*a, **k):
             calls.append(a)
             if a[:2] == ("api", "snapshot"):
-                return {"snapshot": {"tabs": [{"tab_id": "t1", "label": "majordomo"}], "agents": [{
+                return {"snapshot": {"tabs": [{"tab_id": "t1", "label": "manager"}], "agents": [{
                     "pane_id": "w1:p1", "tab_id": "t1", "agent": "claude",
-                    "terminal_title_stripped": "majordomo",
+                    "terminal_title_stripped": "manager",
                     "tokens": {},
                 }]}}
             return {}
@@ -1484,8 +1499,8 @@ class SidebarTokens(unittest.TestCase):
         report = next(a for a in calls if a[:2] == ("pane", "report-metadata"))
         tokens = [report[i + 1] for i, a in enumerate(report) if a == "--token"]
         self.assertIn(f"glyph={hm.LOBE_GLYPH['claude']}", tokens)
-        self.assertIn("name=majordomo", tokens)
-        self.assertNotIn(("pane", "rename", "w1:p1", "majordomo · claude"), calls)
+        self.assertIn("name=manager", tokens)
+        self.assertNotIn(("pane", "rename", "w1:p1", "manager · claude"), calls)
 
     def test_identity_events_publish_once_per_change(self):
         seen = {}
@@ -1678,7 +1693,7 @@ class StandaloneIdentify(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = os.path.realpath(self.tmp.name)
-        self.pad = os.path.join(self.home, "cloud", "git-projects", "agent-lobby")
+        self.pad = os.path.join(self.home, "work", "repos", "agent-lobby")
         self.inner = os.path.join(self.pad, "visitors", "inner-pad")
         os.makedirs(self.inner)
         self.cat = {**CAT, "defaults": {"lane": "yellow", "untitled_place": "lobby"},
@@ -1956,7 +1971,7 @@ class Seed(unittest.TestCase):
         seed = Path(__file__).resolve().parent.parent / "harnesses.toml"
         cat = tomllib.loads(seed.read_text())
         pi = next(h for h in cat["harness"] if h["id"] == "pi")
-        sid = "/home/u/.pi/agent/sessions/--x--/2026-09-13T18-10-02-500Z_01a09bf6.jsonl"
+        sid = "~/.pi/agent/sessions/--x--/2026-09-13T18-10-02-500Z_01a09bf6.jsonl"
         self.assertEqual(hm.build_argv(cat, pi, resume_id=sid), ["--session", sid])
         cmd, session = hm.here_command(cat, pi, "probe")
         self.assertEqual(cmd[:3], ["pi", "--session-id", session])
@@ -2685,10 +2700,12 @@ class SessionHistory(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name)
-        self.root = "/Users/x/code/acme"
+        self.root = fx("code", "acme")
+        self.store_slug = re.sub(r"[/.]", "-", os.path.realpath(self.root))
         self.cat = {"defaults": {"session_history": "on"}, "harness": [{"id": "claude"}, {"id": "grok"}]}
         # a claude store: project dir is the cwd with / and . flattened to -
-        cdir = self.home / ".claude" / "projects" / "-Users-x-code-acme"
+        cdir = hm.claude_store(self.root, self.home)
+        self.claude_dir = cdir
         cdir.mkdir(parents=True)
         (cdir / "sess-a.jsonl").write_text(
             json.dumps({"type": "user", "timestamp": "2026-09-01T10:00:00Z",
@@ -2701,7 +2718,7 @@ class SessionHistory(unittest.TestCase):
                                                                  {"type": "text", "text": "ignored"}]}}) + "\n")
         (cdir / "broken.jsonl").write_text("{not json\n")
         # a grok store: session dirs under the percent-encoded cwd
-        gdir = self.home / ".grok" / "sessions" / "%2FUsers%2Fx%2Fcode%2Facme" / "01a0"
+        gdir = hm.grok_store(self.root, self.home) / "01a0"
         gdir.mkdir(parents=True)
         (gdir / "chat_history.jsonl").write_text(
             json.dumps({"type": "system", "content": "you are grok"}) + "\n" +
@@ -2732,7 +2749,7 @@ class SessionHistory(unittest.TestCase):
         self.assertIn("broken", {r["session_id"] for r in self.rows()})
 
     def test_missing_store_is_quiet(self):
-        self.assertEqual(hm.discover_sessions("/Users/x/nowhere", self.cat, home=self.home), [])
+        self.assertEqual(hm.discover_sessions(fx("nowhere"), self.cat, home=self.home), [])
 
     def test_catalog_governs_which_stores_are_read(self):
         only_grok = {"defaults": {"session_history": "on"}, "harness": [{"id": "grok"}]}
@@ -2741,7 +2758,7 @@ class SessionHistory(unittest.TestCase):
     def test_claude_config_dir_points_at_a_second_store(self):
         """$CLAUDE_CONFIG_DIR/projects is the store when set; home wins when given."""
         other = self.home / ".claude-personal"
-        cdir = other / "projects" / "-Users-x-code-acme"
+        cdir = other / "projects" / self.store_slug
         cdir.mkdir(parents=True)
         (cdir / "sess-alt.jsonl").write_text(
             json.dumps({"type": "user", "timestamp": "2026-09-01T10:00:00Z",
@@ -2760,9 +2777,9 @@ class SessionHistory(unittest.TestCase):
             store = hm.claude_store(self.root, home=self.home)
         finally:
             os.environ.pop("CLAUDE_CONFIG_DIR", None) if saved is None else os.environ.__setitem__("CLAUDE_CONFIG_DIR", saved)
-        self.assertEqual(store, self.home / ".claude" / "projects" / "-Users-x-code-acme")
+        self.assertEqual(store, self.home / ".claude" / "projects" / self.store_slug)
         self.assertEqual(hm.claude_store(self.root),
-                         Path.home() / ".claude" / "projects" / "-Users-x-code-acme")
+                         Path.home() / ".claude" / "projects" / self.store_slug)
 
     def test_place_history_uses_launch_users_home(self):
         guest_home = self.home / "guest"
@@ -2820,7 +2837,7 @@ class SessionHistory(unittest.TestCase):
         self.assertFalse({"message", "content"} & set(row))
 
     def test_duplicate_titles_stay_distinct_names(self):
-        cdir = self.home / ".claude" / "projects" / "-Users-x-code-acme"
+        cdir = self.claude_dir
         (cdir / "sess-c.jsonl").write_text(
             json.dumps({"type": "custom-title", "customTitle": "parser-work"}) + "\n")
         (cdir / "sess-d.jsonl").write_text(
@@ -2867,7 +2884,7 @@ class CanonicalNames(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name)
-        self.root = "/Users/x/code/acme"
+        self.root = fx("code", "acme")
         self.state = self.home / "state"
         self.state.mkdir()
         self._env = os.environ.get("COWBELL_STATE_DIR")
@@ -3390,37 +3407,34 @@ class CatalogWriter(unittest.TestCase):
 
     @unittest.skipUnless(
         (Path.home() / ".config" / "cowbell" / "harnesses.toml").is_file(),
-        "no user config-dir catalog on this host",
+        "no config-dir catalog on this host",
     )
     def test_round_trip_on_user_catalog_copy(self):
+        """Bytes outside the edited harness block survive, whatever the catalog says."""
         p = self._copy(self.HOUSE)
         before = p.read_text(encoding="utf-8")
         parsed = self._load(p)
-        self.assertIn("# cowbell — the constitution of the herd.", before)
-        self.assertIn("[places.lobby]", before)
-        self.assertIn("unix_user = \"guest\"", before)
-        hm.harness_set_field("local-ornith", "title", "ornith 9b — edited", path=p)
+        harnesses = parsed.get("harness") or []
+        if not harnesses or not harnesses[0].get("id"):
+            self.skipTest("config-dir catalog has no harness")
+        hid = harnesses[0]["id"]
+        title = str(harnesses[0].get("title") or hid) + " edited"
+        hm.harness_set_field(hid, "title", title, path=p)
         after = p.read_text(encoding="utf-8")
-        self.assertIn("# cowbell — the constitution of the herd.", after)
-        self.assertIn("# House wrappers", after)
-        self.assertIn("[places.lobby]", after)
-        self.assertIn("unix_user = \"guest\"", after)
-        self.assertIn("# --- aider on OpenRouter", after)
-        self.assertEqual(self._outside(before, "local-ornith"), self._outside(after, "local-ornith"))
+        self.assertEqual(self._outside(before, hid), self._outside(after, hid))
         got = self._load(p)
-        idx = next(i for i, h in enumerate(got["harness"]) if h["id"] == "local-ornith")
-        self.assertEqual(got["harness"][idx]["title"], "ornith 9b — edited")
-        parsed["harness"][idx]["title"] = "ornith 9b — edited"
+        self.assertEqual(got["harness"][0]["id"], hid)
+        self.assertEqual(got["harness"][0]["title"], title)
+        parsed["harness"][0]["title"] = title
         self.assertEqual(got, parsed)
         self.assertEqual(self._baks(p)[0].read_text(encoding="utf-8"), before)
-        hm.harness_insert({"id": "lab-probe", "kind": "bash", "title": "probe",
+        hm.harness_insert({"id": "probe-harness", "kind": "bash", "title": "probe",
                            "command": "/bin/true"}, path=p)
-        self.assertIn("[places.local-lab]", p.read_text(encoding="utf-8"))
-        hm.harness_delete("lab-probe", path=p)
-        # title edit remains; probe is gone; places comments still there
-        self.assertNotIn("lab-probe", p.read_text(encoding="utf-8"))
-        self.assertIn("[places.lobby]", p.read_text(encoding="utf-8"))
-        self.assertIn("ornith 9b — edited", p.read_text(encoding="utf-8"))
+        hm.harness_delete("probe-harness", path=p)
+        done = p.read_text(encoding="utf-8")
+        self.assertNotIn("probe-harness", done)
+        self.assertIn(title, done)
+        self.assertEqual(self._outside(before, hid), self._outside(done, hid))
 
     def test_default_catalog_write_snapshots_into_state(self):
         """a write to the config-dir catalog also lands under the state dir."""
@@ -3466,7 +3480,7 @@ class Pins(unittest.TestCase):
         self.saved = {k: os.environ.get(k) for k in self.env}
         os.environ.update(self.env)
         self.ids = ["claude", "grok", "pi", "agy"]
-        self.roster = [{"harness": "grok", "cwd": "/Users/x/other", "last_seen": "2026-09-12"},
+        self.roster = [{"harness": "grok", "cwd": fx("other"), "last_seen": "2026-09-12"},
                        {"harness": "pi", "cwd": self.a, "last_seen": "2026-09-01"}]
 
     def tearDown(self):
@@ -3668,10 +3682,10 @@ class PickerEdit(unittest.TestCase):
         hm.harness_insert({"id": "local-ornith", "kind": "pi",
                            "command": "~/.local/bin/local-ornith", "title": "ornith"})
         with mock.patch("cowbell.choose", side_effect=[3, 1, None]), \
-             mock.patch("cowbell.ask", return_value="ollama-hesiod/ornith:9b"):
+             mock.patch("cowbell.ask", return_value="ollama-laptop/ornith:9b"):
             self.assertTrue(hm.edit_harness(hm.load_catalog(), "local-ornith"))
         h = hm.harness_by_id(hm.load_catalog(), "local-ornith")
-        self.assertEqual(h["models"], ["ollama-hesiod/ornith:9b"])
+        self.assertEqual(h["models"], ["ollama-laptop/ornith:9b"])
         self.assertEqual(h["model_flag"], ["--model"])
         self.assertIn('command = "~/.local/bin/local-ornith"', self._text())
 
@@ -3891,37 +3905,32 @@ class PickerEdit(unittest.TestCase):
 
     @unittest.skipUnless(
         (Path.home() / ".config" / "cowbell" / "harnesses.toml").is_file(),
-        "no user config-dir catalog on this host",
+        "no config-dir catalog on this host",
     )
-    def test_user_catalog_save_edit_remove_keeps_comments(self):
+    def test_user_catalog_save_edit_remove_keeps_other_bytes(self):
+        """Save, edit, and remove touch only the new harness; the rest of the file stays."""
         shutil.copy2(self.HOUSE, self.catalog)
         before = self._text()
-        self.assertIn("# cowbell — the constitution of the herd.", before)
+        if not any(b["id"] == "claude" for b in hm.harness_blocks(before)):
+            self.skipTest("config-dir catalog has no claude harness")
         src = hm.harness_by_id(hm.load_catalog(), "claude")
-        with mock.patch("cowbell.ask", return_value="lab-256-probe"):
+        with mock.patch("cowbell.ask", return_value="probe-harness"):
             hm.offer_save_as(src, "claude-sonnet-5", "yellow", "", "")
         saved = self._text()
-        self.assertIn("# cowbell — the constitution of the herd.", saved)
-        self.assertIn("# House wrappers", saved)
-        self.assertIn("[places.lobby]", saved)
-        self.assertIn("unix_user = \"guest\"", saved)
+        self.assertIn('id = "probe-harness"', saved)
+        self.assertEqual(_except_ids(before, {"claude"}), _except_ids(saved, {"claude", "probe-harness"}))
         with mock.patch("cowbell.ask", return_value="probe edited"), \
              mock.patch("cowbell.choose", side_effect=[1, None]):
-            hm.edit_harness(hm.load_catalog(), "lab-256-probe")
+            hm.edit_harness(hm.load_catalog(), "probe-harness")
         edited = self._text()
-        self.assertIn("# cowbell — the constitution of the herd.", edited)
-        self.assertIn("[places.lobby]", edited)
-        self.assertIn("unix_user = \"guest\"", edited)
         self.assertIn("probe edited", edited)
+        self.assertEqual(_except_ids(before, {"claude"}), _except_ids(edited, {"claude", "probe-harness"}))
         with mock.patch("cowbell.choose", return_value=0):
-            hm.remove_harness("lab-256-probe")
+            hm.remove_harness("probe-harness")
         after = self._text()
-        self.assertNotIn("lab-256-probe", after)
+        self.assertNotIn("probe-harness", after)
         self.assertNotIn("probe edited", after)
-        self.assertIn("# cowbell — the constitution of the herd.", after)
-        self.assertIn("# House wrappers", after)
-        self.assertIn("[places.lobby]", after)
-        self.assertIn("unix_user = \"guest\"", after)
+        self.assertEqual(_except_ids(before, {"claude"}), _except_ids(after, {"claude"}))
 
     def test_edit_user_sets_field(self):
         idx = self._edit_row_index("claude", "user")
