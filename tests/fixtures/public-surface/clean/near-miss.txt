@@ -1,0 +1,15 @@
+/Users
+/tmp/home
+~/code/projects/acme
+127.0.0.1
+172.15.1.1
+172.32.1.1
+100.63.1.1
+100.128.1.1
+11.1.2.3
+FOLD-1
+sk-short
+ghp_short
+-----BEGIN PUBLIC KEY-----
+authors = [{ name = "Charles Berret" }]
+Copyright (c) 2026 Charles Berret
