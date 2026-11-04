@@ -54,15 +54,16 @@
 # A drop to another account needs a wall named at the same level as the
 # unix_user, or cowbell refuses: nono_profile (an absolute, root-owned file
 # nobody else can write), or, on a harness only, wall = "door" when the
-# harness's absolute `command` raises its own sandbox (nono cannot wrap a
+# harness's absolute, root-installed `command` (root-owned, as is every
+# directory above it) raises its own sandbox (nono cannot wrap a
 # process that applies its own Seatbelt profile on macOS). A door and a
 # nono_profile in one launch refuse. A door harness:
 #
 # [[harness]]
 # id = "lobby"
 # kind = "pi"
-# command = "/srv/lobby/bin/lobby"
-# unix_user = "stranger"
+# command = "/usr/local/libexec/agent-uids/lobby"
+# unix_user = "guest"
 # wall = "door"
 #
 # A harness can carry unix_user, nono_profile and cwd itself, so it is walled

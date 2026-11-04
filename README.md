@@ -136,14 +136,14 @@ nono_profile = "/usr/local/share/walls/lab.json"   # the wall; see below
 
 When `unix_user` is set and the process is not already that user, cowbell prefixes `agent-run <user> --`. That helper is not part of cowbell. Without `agent-run` on PATH cowbell refuses; it does not fall back to `sudo -u`, which would skip the helper's checks. Session-history discovery uses the same identity boundary and returns only derived Resume metadata to the caller. You can also leave `unix_user` unset and drop privileges yourself with `sudo -u lab -- cowbell new --place lab`. `require_uid = true` with no `unix_user` refuses to start.
 
-A drop to another account fails closed. The level that names the account names its wall: a place's `unix_user` takes the place's `nono_profile`, a harness's takes the harness's own. A wall on a harness without its own `unix_user` is refused. `nono_profile` must be an absolute path to a regular, root-owned file that group and other cannot write; it wraps the command as `nono run --silent --profile <path> -- …` inside the drop, and `nono` must be on PATH. A harness whose `command` raises its own sandbox says `wall = "door"` instead: nono cannot wrap such a command on macOS, where a sandboxed process cannot apply a second Seatbelt profile. The door command must be absolute and not writable by group or other. A door and a `nono_profile` in one launch refuse; places and `[defaults]` cannot say `door`.
+A drop to another account fails closed. The level that names the account names its wall: a place's `unix_user` takes the place's `nono_profile`, a harness's takes the harness's own. A wall on a harness without its own `unix_user` is refused. `nono_profile` must be an absolute path to a regular, root-owned file that group and other cannot write; it wraps the command as `nono run --silent --profile <path> -- …` inside the drop, and `nono` must be on PATH. A harness whose `command` raises its own sandbox says `wall = "door"` instead: nono cannot wrap such a command on macOS, where a sandboxed process cannot apply a second Seatbelt profile. The door command is root-installed, like a profile: an absolute path with no symlink in it, owned by root, and neither it nor any directory above it owned by anyone but root or writable by group or other (a root-owned sticky directory such as `/tmp` is allowed). A copy in your home or a synced tree is refused. `nono_proxy_port`, beside a `nono_profile` at the same level, adds `--proxy-port <port>` for an account whose firewall passes only that loopback port to nono's proxy. A door and a `nono_profile` in one launch refuse; places and `[defaults]` cannot say `door`.
 
 ```toml
 [[harness]]
 id = "lobby"
 kind = "pi"
-command = "/srv/lobby/bin/lobby"
-unix_user = "stranger"
+command = "/usr/local/libexec/agent-uids/lobby"
+unix_user = "guest"
 wall = "door"
 ```
 

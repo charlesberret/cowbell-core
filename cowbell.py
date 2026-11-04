@@ -2186,9 +2186,10 @@ def _wall_file_problem(path: str) -> str:
 
 def _door_problem(h: dict, target_uid: int | None = None) -> str:
     """Why a door harness's command cannot be trusted to raise its own wall, or "". The command
-    (its realpath) and every directory above it are owned by root or the invoking user, never by
-    the account it runs as, and none is writable by group or other (a root-owned sticky directory
-    such as /tmp is allowed: others cannot replace what they do not own there)."""
+    and every directory above it are owned by root (a door raises a wall for another account, so
+    like a nono_profile it is root-installed: a copy in a synced or user-writable tree is refused),
+    and none is writable by group or other (a root-owned sticky directory such as /tmp is allowed:
+    others cannot replace what they do not own there)."""
     import stat
     command = str(h.get("command") or "")
     if not command or not os.path.isabs(command):
@@ -2196,7 +2197,7 @@ def _door_problem(h: dict, target_uid: int | None = None) -> str:
     if not _plain_abs(command):
         return f"door command {command} has a symlink in its path; name the real file"
     real = os.path.realpath(command)
-    owners = {0, os.geteuid()} - ({target_uid} if target_uid is not None else set())
+    owners = {0} - ({target_uid} if target_uid is not None else set())
     try:
         st = os.stat(real)
     except OSError:
@@ -2204,7 +2205,7 @@ def _door_problem(h: dict, target_uid: int | None = None) -> str:
     if not stat.S_ISREG(st.st_mode):
         return f"door command {command} is not a regular file"
     if st.st_uid not in owners:
-        return f"door command {command} is owned by uid {st.st_uid}, not root or you"
+        return f"door command {command} is owned by uid {st.st_uid}, not root"
     if st.st_mode & 0o022:
         return f"door command {command} is writable by group or other"
     d = os.path.dirname(real)
@@ -2214,7 +2215,7 @@ def _door_problem(h: dict, target_uid: int | None = None) -> str:
         except OSError:
             return f"door directory {d} cannot be read"
         if ds.st_uid not in owners:
-            return f"door directory {d} is owned by uid {ds.st_uid}, not root or you"
+            return f"door directory {d} is owned by uid {ds.st_uid}, not root"
         if ds.st_mode & 0o022 and not (ds.st_mode & stat.S_ISVTX and ds.st_uid == 0):
             return f"door directory {d} is writable by group or other"
         if d == os.path.dirname(d):
@@ -2254,11 +2255,16 @@ def unix_confine(cat: dict, root: str, cmd: list[str], h: dict | None = None) ->
             raise SystemExit(f'cowbell: refused — wall = "door" on a {where}; it belongs on the harness '
                              "that raises its own wall, with that harness's unix_user")
     if h_uid:
-        uid, prof, door = h_uid, h_prof, h_wall == "door"
+        uid, prof, door, port = h_uid, h_prof, h_wall == "door", hh.get("nono_proxy_port")
     elif val(pp, "unix_user"):
-        uid, prof, door = val(pp, "unix_user"), val(pp, "nono_profile"), False
+        uid, prof, door, port = val(pp, "unix_user"), val(pp, "nono_profile"), False, pp.get("nono_proxy_port")
     else:
-        uid, prof, door = val(defaults, "unix_user"), val(defaults, "nono_profile"), False
+        uid, prof, door, port = (val(defaults, "unix_user"), val(defaults, "nono_profile"), False,
+                                 defaults.get("nono_proxy_port"))
+    if port is not None and (isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535):
+        raise SystemExit(f"cowbell: refused — {who}: nono_proxy_port {port!r} must be a port number 1024-65535")
+    if port is not None and not prof:
+        raise SystemExit(f"cowbell: refused — {who}: nono_proxy_port needs a nono_profile beside it")
     if door and any(val(level, "nono_profile") for level in (hh, pp, defaults)):
         raise SystemExit(f'cowbell: refused — {who}: wall = "door" and a nono_profile in the same launch; pick one')
     require = pp.get("require_uid")
@@ -2296,6 +2302,8 @@ def unix_confine(cat: dict, root: str, cmd: list[str], h: dict | None = None) ->
         own_folder = bool(h_uid and val(hh, "cwd"))
         own_place = val(pp, "unix_user") == uid
         flags = ["--allow-cwd"] if (not drop or own_folder or own_place) else []
+        if port is not None:  # the loopback port the account's firewall passes to nono's proxy
+            flags += ["--proxy-port", str(port)]
         inner = [nono, "run", "--silent", "--profile", prof, *flags, "--"] + inner
     if not drop:
         return inner

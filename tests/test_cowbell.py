@@ -3367,9 +3367,57 @@ class TierWalls(unittest.TestCase):
 
     # -- the door ---------------------------------------------------------------
 
+    def _rooted(self):
+        """os.stat reports root as owner for the test tree and its ancestors (a fake root install),
+        except under <tmp>/mine, which keeps its real owner (a user-writable or synced copy)."""
+        real = os.stat
+        mine = os.path.join(self.tmp, "mine")
+
+        def fake(path, *a, **k):
+            st = real(path, *a, **k)
+            q = os.path.realpath(path) if isinstance(path, str) else ""
+            inside = q == self.tmp or q.startswith(self.tmp + os.sep)
+            above = q == os.sep or self.tmp.startswith(q.rstrip(os.sep) + os.sep)
+            if q and (inside or above) and not (q == mine or q.startswith(mine + os.sep)):
+                f = list(st)
+                f[4] = 0
+                return os.stat_result(f)
+            return st
+        return mock.patch.object(hm.os, "stat", side_effect=fake)
+
     def test_door_harness_with_its_own_uid_drops_without_nono(self):
         h = {"id": "lobby", "kind": "pi", "command": self.door, "unix_user": "guest", "wall": "door"}
-        self.assertEqual(self._confine(CAT, self.house, h), ["/usr/local/bin/agent-run", "guest", "--", "/bin/agent"])
+        with self._rooted():
+            self.assertEqual(self._confine(CAT, self.house, h),
+                             ["/usr/local/bin/agent-run", "guest", "--", "/bin/agent"])
+
+    def test_root_installed_lobby_is_a_door_and_the_mesh_copy_is_not(self):
+        lib = os.path.join(self.tmp, "usr", "local", "libexec", "agent-uids")
+        mesh = os.path.join(self.tmp, "mine", "cloud", "sync", "code", "bin")
+        for d in (lib, mesh):
+            os.makedirs(d)
+            Path(d, "lobby").write_text("#!/bin/sh\n")
+            os.chmod(os.path.join(d, "lobby"), 0o755)
+        with self._rooted():
+            self.assertEqual(hm._door_problem({"command": os.path.join(lib, "lobby")}, target_uid=4242), "")
+            self.assertIn("not root", hm._door_problem({"command": os.path.join(mesh, "lobby")}, target_uid=4242))
+
+    def test_the_house_lobby_path_passes_when_root_installed(self):
+        import stat as st_
+        door = "/usr/local/libexec/agent-uids/lobby"
+        parents = {"/usr/local/libexec/agent-uids", "/usr/local/libexec", "/usr/local", "/usr", "/"}
+
+        def fake(path, *a, **k):
+            if path == door:
+                return os.stat_result((st_.S_IFREG | 0o755, 0, 0, 1, 0, 0, 10, 0, 0, 0))
+            if path in parents:
+                return os.stat_result((st_.S_IFDIR | 0o755, 0, 0, 1, 0, 0, 10, 0, 0, 0))
+            raise FileNotFoundError(path)
+
+        with mock.patch.object(hm, "_plain_abs", return_value=True), \
+             mock.patch.object(hm.os.path, "realpath", side_effect=lambda p: p), \
+             mock.patch.object(hm.os, "stat", side_effect=fake):
+            self.assertEqual(hm._door_problem({"command": door}, target_uid=504), "")
 
     def test_door_on_a_place_or_in_defaults_refuses(self):
         cat = {**CAT, "places": {"lobby": {"cwd": self.house, "unix_user": "guest", "wall": "door",
@@ -3389,9 +3437,11 @@ class TierWalls(unittest.TestCase):
 
     def test_door_command_must_be_absolute_and_not_writable_by_others(self):
         self.assertIn("absolute `command`", self._refused(CAT, self.house, self._guest(wall="door")))
+        self.assertIn("not root", self._refused(CAT, self.house, self._guest(wall="door", command=self.door)))
         os.chmod(self.door, 0o775)
-        self.assertIn("writable by group or other",
-                      self._refused(CAT, self.house, self._guest(wall="door", command=self.door)))
+        with self._rooted():
+            self.assertIn("writable by group or other",
+                          self._refused(CAT, self.house, self._guest(wall="door", command=self.door)))
         self.assertIn("does not exist",
                       self._refused(CAT, self.house, self._guest(wall="door", command=self.tmp + "/gone")))
 
@@ -3653,9 +3703,22 @@ class TierWalls(unittest.TestCase):
         Path(door).write_text("#!/bin/sh\n")
         os.chmod(door, 0o755)
         os.chmod(d, 0o775)
-        self.assertIn("door directory", hm._door_problem({"command": door}))
-        os.chmod(d, 0o755)
-        self.assertEqual(hm._door_problem({"command": door}), "")
+        with self._rooted():
+            self.assertIn("door directory", hm._door_problem({"command": door}))
+            os.chmod(d, 0o755)
+            self.assertEqual(hm._door_problem({"command": door}), "")
+
+    def test_proxy_port_rides_beside_the_wall(self):
+        h = {"id": "stranger-walled", "kind": "pi", "unix_user": "stranger",
+             "nono_profile": "/etc/walls/stranger.json", "nono_proxy_port": 41234}
+        out = self._confine(CAT, self.house, h)
+        self.assertEqual(out, ["/usr/local/bin/agent-run", "stranger", "--", "/usr/bin/nono", "run", "--silent",
+                               "--profile", "/etc/walls/stranger.json", "--proxy-port", "41234", "--", "/bin/agent"])
+        self.assertNotIn("--proxy-port", self._confine(CAT, self.house, self._guest(nono_profile="/etc/w.json")))
+        for bad in ("41234", 80, True, 70000):
+            self.assertIn("port number", self._refused(CAT, self.house, {**h, "nono_proxy_port": bad}))
+        no_wall = {k: v for k, v in h.items() if k != "nono_profile"}
+        self.assertIn("needs a nono_profile", self._refused(CAT, self.house, no_wall))
 
     def test_history_without_agent_run_refuses(self):
         with self.assertRaises(SystemExit) as e:
