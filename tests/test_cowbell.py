@@ -2195,8 +2195,10 @@ class LaunchSheet(unittest.TestCase):
         b = hm.spec_argv(cat, out, replace(spec, harness="reviewer"))
         self.assertEqual(a, b)
         self.assertIn("--append-system-prompt-file", b)
-        self.assertEqual(hm.spec_command(cat, src, replace(spec, harness="claude"), str(self.root)),
-                         hm.spec_command(cat, out, replace(spec, harness="reviewer"), str(self.root)))
+        pw = mock.Mock(pw_uid=os.geteuid() + 1)
+        with mock.patch("pwd.getpwnam", return_value=pw):
+            self.assertEqual(hm.spec_command(cat, src, replace(spec, harness="claude"), str(self.root)),
+                             hm.spec_command(cat, out, replace(spec, harness="reviewer"), str(self.root)))
         bare = hm.harness_preset(src, "plain", "Plain", "", "", "", "", "")
         self.assertNotIn("effort", bare)
         self.assertNotIn("lane", bare)
