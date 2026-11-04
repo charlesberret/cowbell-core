@@ -75,4 +75,7 @@ jobs:
           python-version: "3.12"
       - name: scan
         continue-on-error: false
+        env:
+          # Empty when the secret is unset, so the scan stays generic-only.
+          PUBLIC_SURFACE_TERMS: ${{ secrets.PUBLIC_SURFACE_TERMS }}
         run: sh scripts/public-surface-scan.sh

@@ -37,6 +37,9 @@ class PublicSurface(unittest.TestCase):
         for path in sorted((FIX / "dirty").iterdir()):
             if path.is_file():
                 self.assertIn(path.name, proc.stdout, proc.stdout)
+        for line in proc.stdout.splitlines():
+            if line:
+                self.assertRegex(line, r"^\./[^:]+:[0-9]+$")
 
     def test_repo_scans_clean(self) -> None:
         proc = scan(ROOT)
@@ -52,9 +55,13 @@ class PublicSurface(unittest.TestCase):
             self.assertEqual(scan(root).returncode, 0)
             secret = scan(root, {"PUBLIC_SURFACE_TERMS": "alpha-marker"})
             self.assertEqual(secret.returncode, 1, secret.stdout + secret.stderr)
-            self.assertIn("note.txt", secret.stdout)
+            self.assertEqual(secret.stdout.splitlines(), ["./note.txt:1"])
+            self.assertNotIn("alpha-marker", secret.stdout)
+            self.assertNotIn("alpha-marker", secret.stderr)
+            self.assertIn("1 hit", secret.stderr)
             terms = Path(tmp) / "terms.txt"
             terms.write_text("# comment\n\nalpha-marker\n")
             from_file = scan(root, {"PUBLIC_SURFACE_TERMS": str(terms)})
             self.assertEqual(from_file.returncode, 1, from_file.stdout + from_file.stderr)
-            self.assertIn("note.txt", from_file.stdout)
+            self.assertEqual(from_file.stdout.splitlines(), ["./note.txt:1"])
+            self.assertNotIn("alpha-marker", from_file.stdout)

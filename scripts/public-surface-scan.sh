@@ -11,7 +11,8 @@
 #
 # The default scan skips this script and tests/fixtures/public-surface so the
 # pattern list and the fixture corpus are not hits. Pass a fixture directory
-# as root to scan it.
+# as root to scan it. Hits are reported as path:line only, plus a count.
+# The matched text stays out of the log.
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
@@ -131,7 +132,10 @@ for raw in open(hits_path, encoding="utf-8"):
     for cre in exempt:
         stripped = cre.sub("", stripped)
     if forbidden.search(stripped):
-        kept.append(f"{prefix}{body}\n")
+        # path:line only. The line text can be a term supplied at run time,
+        # and a public log must not print that term back.
+        if prefix:
+            kept.append(f"{path}:{lineno}\n")
 
 sys.stdout.write("".join(sorted(kept)))
 PY
