@@ -19,8 +19,9 @@ import cowbell as hm  # noqa: E402
 
 
 def fx(*parts: str) -> str:
-    """A ~-relative fixture path, resolved the way cowbell resolves a cwd."""
-    return os.path.realpath(os.path.join(os.path.expanduser("~"), *parts))
+    """A ~-relative fixture path. Only the home is resolved (as cowbell resolves a cwd's home); the
+    parts are not, so a real symlink on this host (say ~/.local/bin/grok) cannot rename a fixture."""
+    return os.path.join(os.path.realpath(os.path.expanduser("~")), *parts)
 
 
 def _except_ids(text: str, ids: set[str]) -> str:
