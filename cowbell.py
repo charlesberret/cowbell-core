@@ -1365,24 +1365,22 @@ def launch_history(cat: dict, root: str) -> list[dict]:
     home = Path(pw.pw_dir)
     if os.geteuid() == pw.pw_uid:
         return discover_sessions(root, cat, home=home)
+    if not _home_ok(pw):
+        raise SystemExit(f"cowbell: refused — the home of {uid!r} is not a directory it owns")
     helper = shutil.which("agent-run")
-    if helper:
-        prefix = [helper, uid, "--"]
-    else:
-        sudo = shutil.which("sudo")
-        if not sudo:
-            raise SystemExit(
-                f"cowbell: cannot discover sessions as unix user {uid!r} "
-                "(agent-run is not installed and sudo is not on PATH)"
-            )
-        prefix = [sudo, "-n", "-u", uid, "--"]
+    if not helper:
+        raise SystemExit(
+            f"cowbell: cannot discover sessions as unix user {uid!r} "
+            "(agent-run is not on PATH; cowbell does not fall back to sudo -u)"
+        )
+    prefix = [helper, uid, "--"]
     history_cat = {
         "defaults": {"session_history": history_mode(cat)},
         "harness": [{"id": h["id"]} for h in cat.get("harness", []) if h.get("id")],
     }
     t0 = time.perf_counter()
     proc = subprocess.run(
-        prefix + [sys.executable, str(Path(__file__).resolve()), "_history"],
+        prefix + [sys.executable, "-I", str(Path(__file__).resolve()), "_history"],
         input=json.dumps({"root": os.path.realpath(root), "home": str(home), "cat": history_cat}),
         capture_output=True, text=True, timeout=15,
     )
@@ -1396,6 +1394,16 @@ def launch_history(cat: dict, root: str) -> list[dict]:
         raise SystemExit(f"cowbell: session discovery as {uid!r} returned invalid metadata")
     if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
         raise SystemExit(f"cowbell: session discovery as {uid!r} returned invalid metadata")
+    want = os.path.realpath(root)
+    for row in rows:  # rows come from another account's stores: their text is untrusted
+        sid, cwd = row.get("session_id"), row.get("cwd")
+        if not isinstance(sid, str) or not SESSION_ID.fullmatch(sid):
+            raise SystemExit(f"cowbell: session discovery as {uid!r} returned a malformed session id")
+        if not (isinstance(cwd, str) and cwd == want and _plain_abs(cwd) and _uid_owns(cat, cwd, pw)):
+            raise SystemExit(f"cowbell: session discovery as {uid!r} returned a folder it does not own")
+        for key in ("title", "harness_title", "utterance", "name"):
+            if isinstance(row.get(key), str):
+                row[key] = CONTROL_WIDE.sub("", row[key])
     return rows
 
 
@@ -2039,6 +2047,10 @@ def build_argv(cat: dict, h: dict, model: str = "", lane: str = "", allow: str =
         argv += [prompt_flag(h), sys_prompt]
     argv += claim_argv(h, sitting, agents_dir=agents_dir)
     if resume_id:
+        # Ids follow a flag (`--resume <id>`) or sit before options (`codex resume <id> --model`), so
+        # `--` cannot guard them without breaking those CLIs; an id that reads as an option is refused.
+        if str(resume_id).startswith("-"):
+            raise SystemExit(f"cowbell: refused — session id {resume_id!r} reads as an option")
         spec = list(h.get("resume") or [])
         if spec == ["resume"]:
             # A subcommand goes first: `codex resume <id> --model …`. Its own options are the
@@ -2051,8 +2063,21 @@ def build_argv(cat: dict, h: dict, model: str = "", lane: str = "", allow: str =
     return argv + list(extra or [])
 
 
+# C0 controls and DEL: a line typed into a pane's shell acts on them even inside quotes (^U, \r).
+CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+# Display text from another account's stores also loses C1 controls (terminal escapes).
+CONTROL_WIDE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# Starts with a letter or digit: never an option (`--dangerously-skip-permissions`) nor `..`.
+SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
 def shell_join(parts: list[str]) -> str:
+    """Quote words for a shell. A word with a control character is refused, never quoted: shlex
+    keeps the byte, and an interactive shell's line editor acts on it before quoting applies."""
     import shlex
+    for p in parts:
+        if CONTROL.search(str(p)):
+            raise SystemExit(f"cowbell: refused — a control character in a command word: {str(p)!r}")
     return " ".join(shlex.quote(p) for p in parts)
 
 
@@ -2196,13 +2221,172 @@ def _here_exe(h: dict, cmd: list[str]) -> str:
     return exe
 
 
-def unix_confine(cat: dict, root: str, cmd: list[str], h: dict | None = None) -> list[str]:
-    """Drop to the harness or place's unix_user, then optional nono. agent-run if it is on PATH, else sudo -u."""
+def _plain_abs(path: str) -> bool:
+    """Absolute, and no symlink anywhere in it (its realpath is its own normal form)."""
+    return os.path.isabs(path) and os.path.realpath(path) == os.path.normpath(path)
+
+
+def _home_ok(pw) -> bool:
+    """pw's home is an absolute directory other than /, owned by that account."""
+    home = str(getattr(pw, "pw_dir", "") or "")
+    if not os.path.isabs(home) or os.path.realpath(home) == "/":
+        return False
+    try:
+        st = os.stat(home)
+    except OSError:
+        return False
+    import stat
+    return stat.S_ISDIR(st.st_mode) and st.st_uid == getattr(pw, "pw_uid", None)
+
+
+def _uid_owns(cat: dict, d: str, pw) -> bool:
+    """d is at or under pw's home (a sound one, _home_ok), or inside a place whose own unix_user
+    is that account."""
+    home = str(getattr(pw, "pw_dir", "") or "")
+    if _home_ok(pw) and at_or_beneath(d, os.path.realpath(home)):
+        return True
+    name = str(getattr(pw, "pw_name", "") or "")
+    return bool(name) and any(str(p.get("unix_user") or "").strip() == name and at_or_beneath(d, p["cwd"])
+                              for p in places(cat).values())
+
+
+def launch_root(cat: dict, root: str, h: dict | None = None) -> str:
+    """Where a launch starts. A harness with its own `cwd` (a tier's own folder) starts there, never
+    in the caller's directory; otherwise root. The folder must be absolute with no symlink in it,
+    belong to the account the harness runs as (under its home, or inside a place that account
+    owns), and be enterable by the invoking user: cowbell starts the process there before the drop."""
     import pwd
+    hh = h or {}
+    fixed = str(hh.get("cwd") or "").strip()
+    if not fixed:
+        return root
+    who = hh.get("id") or "this harness"
+    if not _plain_abs(fixed):
+        raise SystemExit(f"cowbell: refused — {who}: cwd {fixed!r} must be an absolute path with no symlink in it")
+    d = os.path.normpath(fixed)
+    uid = str(hh.get("unix_user") or "").strip()
+    try:
+        pw = pwd.getpwnam(uid) if uid else pwd.getpwuid(os.geteuid())
+    except KeyError:
+        raise SystemExit(f"cowbell: unix_user {uid!r} is not on this host")
+    if not _home_ok(pw):
+        raise SystemExit(f"cowbell: refused — {who}: the home of {uid or 'this user'} is not a directory it owns")
+    if not _uid_owns(cat, d, pw):
+        raise SystemExit(
+            f"cowbell: refused — {who}: cwd {tilde(d)} is not under {uid or 'your'} home "
+            "nor inside a place that account owns"
+        )
+    if not os.path.isdir(d) or not os.access(d, os.X_OK):
+        raise SystemExit(
+            f"cowbell: refused — {who} starts in {tilde(d)}, which this user cannot enter; "
+            "this user needs traverse (search) on it"
+        )
+    return d
+
+
+def _wall_file_problem(path: str) -> str:
+    """Why a nono profile path cannot be trusted as a wall, or "" when it can: absolute, a regular
+    file (not a symlink), owned by root, not writable by group or other."""
+    import stat
+    if not os.path.isabs(path):
+        return "is not an absolute path"
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return "does not exist"
+    if not stat.S_ISREG(st.st_mode):
+        return "is not a regular file"
+    if st.st_uid != 0:
+        return "is not owned by root"
+    if st.st_mode & 0o022:
+        return "is writable by group or other"
+    return ""
+
+
+def _door_problem(h: dict, target_uid: int | None = None) -> str:
+    """Why a door harness's command cannot be trusted to raise its own wall, or "". The command
+    and every directory above it are owned by root (a door raises a wall for another account, so
+    like a nono_profile it is root-installed: a copy in a synced or user-writable tree is refused),
+    and none is writable by group or other (a root-owned sticky directory such as /tmp is allowed:
+    others cannot replace what they do not own there)."""
+    import stat
+    command = str(h.get("command") or "")
+    if not command or not os.path.isabs(command):
+        return "a door needs an absolute `command` (the program that raises the wall)"
+    if not _plain_abs(command):
+        return f"door command {command} has a symlink in its path; name the real file"
+    real = os.path.realpath(command)
+    owners = {0} - ({target_uid} if target_uid is not None else set())
+    try:
+        st = os.stat(real)
+    except OSError:
+        return f"door command {command} does not exist"
+    if not stat.S_ISREG(st.st_mode):
+        return f"door command {command} is not a regular file"
+    if st.st_uid not in owners:
+        return f"door command {command} is owned by uid {st.st_uid}, not root"
+    if st.st_mode & 0o022:
+        return f"door command {command} is writable by group or other"
+    d = os.path.dirname(real)
+    while True:
+        try:
+            ds = os.stat(d)
+        except OSError:
+            return f"door directory {d} cannot be read"
+        if ds.st_uid not in owners:
+            return f"door directory {d} is owned by uid {ds.st_uid}, not root"
+        if ds.st_mode & 0o022 and not (ds.st_mode & stat.S_ISVTX and ds.st_uid == 0):
+            return f"door directory {d} is writable by group or other"
+        if d == os.path.dirname(d):
+            return ""
+        d = os.path.dirname(d)
+
+
+def unix_confine(cat: dict, root: str, cmd: list[str], h: dict | None = None) -> list[str]:
+    """Drop to the harness, place or default unix_user through agent-run, inside its wall.
+
+    The level that names the uid names the wall: a harness unix_user needs that harness's own
+    nono_profile or wall = "door"; a place's, the place's nono_profile; [defaults]', its own. A
+    harness wall without a harness unix_user is refused. Fails closed: a drop to another account
+    with no wall refuses, door and nono_profile anywhere in the chain refuse, a nono_profile must
+    be an absolute root-owned file nobody else can write, and a drop needs agent-run (no sudo -u
+    fallback: that would skip agent-run-helper's checks). `--allow-cwd` is passed only when no uid
+    is dropped, the harness starts in its own cwd, or the launch is inside a place whose own
+    unix_user is the dropping account."""
+    import pwd
+    root = launch_root(cat, root, h)
     pl = place_for(cat, root)
+    hh, pp = h or {}, pl or {}
     defaults = cat.get("defaults") or {}
-    uid = (((h or {}).get("unix_user") or (pl or {}).get("unix_user") or defaults.get("unix_user") or "")).strip()
-    require = (pl or {}).get("require_uid")
+    who = hh.get("id") or "this launch"
+
+    def val(level: dict, key: str) -> str:
+        return str(level.get(key) or "").strip()
+
+    h_uid, h_prof, h_wall = val(hh, "unix_user"), val(hh, "nono_profile"), val(hh, "wall")
+    if h_wall and h_wall != "door":
+        raise SystemExit(f'cowbell: harness wall = {h_wall!r}: the only value is "door" (the command raises its own wall)')
+    if (h_prof or h_wall) and not h_uid:
+        raise SystemExit(f"cowbell: refused — {who} names a wall but no unix_user of its own; "
+                         "the level that names the account names the wall")
+    for level, where in ((pp, "place"), (defaults, "[defaults]")):
+        if val(level, "wall"):
+            raise SystemExit(f'cowbell: refused — wall = "door" on a {where}; it belongs on the harness '
+                             "that raises its own wall, with that harness's unix_user")
+    if h_uid:
+        uid, prof, door, port = h_uid, h_prof, h_wall == "door", hh.get("nono_proxy_port")
+    elif val(pp, "unix_user"):
+        uid, prof, door, port = val(pp, "unix_user"), val(pp, "nono_profile"), False, pp.get("nono_proxy_port")
+    else:
+        uid, prof, door, port = (val(defaults, "unix_user"), val(defaults, "nono_profile"), False,
+                                 defaults.get("nono_proxy_port"))
+    if port is not None and (isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535):
+        raise SystemExit(f"cowbell: refused — {who}: nono_proxy_port {port!r} must be a port number 1024-65535")
+    if port is not None and not prof:
+        raise SystemExit(f"cowbell: refused — {who}: nono_proxy_port needs a nono_profile beside it")
+    if door and any(val(level, "nono_profile") for level in (hh, pp, defaults)):
+        raise SystemExit(f'cowbell: refused — {who}: wall = "door" and a nono_profile in the same launch; pick one')
+    require = pp.get("require_uid")
     if require is None:
         require = bool(defaults.get("require_uid"))
     if require and not uid:
@@ -2216,25 +2400,39 @@ def unix_confine(cat: dict, root: str, cmd: list[str], h: dict | None = None) ->
         pw = pwd.getpwnam(uid)
     except KeyError:
         raise SystemExit(f"cowbell: unix_user {uid!r} is not on this host")
-    profile = os.path.expanduser((pl or {}).get("nono_profile") or defaults.get("nono_profile") or "")
+    drop = os.geteuid() != pw.pw_uid
+    if door:
+        why = _door_problem(hh, pw.pw_uid)
+        if why:
+            raise SystemExit(f"cowbell: refused — {who}: {why}")
+    elif drop and not prof:
+        raise SystemExit(
+            f"cowbell: refused — {who} runs as {uid!r} with no wall; set nono_profile beside that "
+            'unix_user, or wall = "door" on a harness whose command raises its own'
+        )
     inner = list(cmd)
-    if profile:
+    if prof:
+        why = _wall_file_problem(prof)
+        if why:
+            raise SystemExit(f"cowbell: refused — nono_profile {prof} {why}")
         nono = shutil.which("nono")
         if not nono:
             raise SystemExit("cowbell: nono is not on PATH (needed for this place)")
-        inner = [nono, "run", "--silent", "--profile", profile, "--allow-cwd", "--"] + inner
-    if os.geteuid() == pw.pw_uid:
+        own_folder = bool(h_uid and val(hh, "cwd"))
+        own_place = val(pp, "unix_user") == uid
+        flags = ["--allow-cwd"] if (not drop or own_folder or own_place) else []
+        if port is not None:  # the loopback port the account's firewall passes to nono's proxy
+            flags += ["--proxy-port", str(port)]
+        inner = [nono, "run", "--silent", "--profile", prof, *flags, "--"] + inner
+    if not drop:
         return inner
     helper = shutil.which("agent-run")
-    if helper:
-        return [helper, uid, "--"] + inner
-    sudo = shutil.which("sudo")
-    if not sudo:
+    if not helper:
         raise SystemExit(
-            f"cowbell: cannot drop to unix user {uid!r} "
-            "(agent-run is not installed and sudo is not on PATH)"
+            f"cowbell: refused — dropping to unix user {uid!r} needs agent-run on PATH "
+            "(cowbell does not fall back to sudo -u, which would skip agent-run's checks)"
         )
-    return [sudo, "-u", uid, "--"] + inner
+    return [helper, uid, "--"] + inner
 
 
 def _sitting_kept(rows: list[dict], name: str, session_id: str) -> tuple[list[dict], dict | None]:
@@ -2284,10 +2482,17 @@ def _record_here(h: dict, name: str, root: str, model: str, lane: str, allow: st
     save_roster(rows)
 
 
+def _expected_cwd(h: dict, root: str) -> str:
+    """The physical directory a launch must land in: a harness's own folder is checked to be
+    symlink-free (launch_root), so it must be exactly that; otherwise wherever root resolves now."""
+    return os.path.normpath(root) if str((h or {}).get("cwd") or "").strip() else os.path.realpath(root)
+
+
 def exec_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", lane="", allow="", deny="",
               seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True,
               name_source: str = "", effort: str = "", dirs: list[str] | None = None):
     """Hand this terminal to the agent. Does not return."""
+    root = launch_root(cat, root, h)
     cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra, effort=effort,
                                 dirs=dirs)
     cmd = unix_confine(cat, root, cmd, h=h)
@@ -2297,7 +2502,10 @@ def exec_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", la
     sys.stdout.write("\x1b[H\x1b[2J" if sys.stdout.isatty() else "")
     print(f"  {paint(name, INK, bold=True)}  {paint(shell_join(cmd), MUTED)}  {paint(tilde(root), FAINT)}")
     sys.stdout.flush()
+    expected = _expected_cwd(h, root)
     os.chdir(root)
+    if os.getcwd() != expected:
+        raise SystemExit(f"cowbell: refused — {tilde(root)} resolved to {tilde(os.getcwd())} after the change of directory")
     os.execv(exe, cmd)
 
 
@@ -2305,14 +2513,27 @@ def spawn_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", l
                seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True,
                name_source: str = "", effort: str = "", dirs: list[str] | None = None) -> dict:
     """Start the agent in a new session at root and return. Assemblies raise N times this way."""
+    root = launch_root(cat, root, h)
     cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra, effort=effort,
                                 dirs=dirs)
     cmd = unix_confine(cat, root, cmd, h=h)
     exe = _here_exe(h, cmd)
-    proc = subprocess.Popen(
-        [exe, *cmd[1:]], cwd=root, start_new_session=True,
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    expected = _expected_cwd(h, root)
+
+    def landed() -> None:  # runs in the child after its chdir(root), before exec
+        if os.getcwd() != expected:
+            raise OSError(f"{root} resolved to {os.getcwd()}")
+
+    try:
+        # preexec_fn is safe only while no other thread exists at fork (cowbell starts none on this
+        # path). If threads are added here, switch to a `sh -c 'cd -P -- "$1" && [ "$(pwd -P)" = "$1" ]
+        # && shift && exec "$@"'` wrapper like the herdr path's.
+        proc = subprocess.Popen(
+            [exe, *cmd[1:]], cwd=root, start_new_session=True, preexec_fn=landed,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except subprocess.SubprocessError as e:
+        raise SystemExit(f"cowbell: refused — the launch folder moved under it ({e})")
     pane_id = f"pid:{proc.pid}"
     _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, pane_id, name_source, extra, effort, dirs)
     trace.event("spawn", harness=h.get("id", ""), pid=proc.pid, cmd=shell_join(cmd))
@@ -2711,6 +2932,7 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
     t0 = time.perf_counter()
     trace.event("raise", phase="begin", harness=h.get("id", ""), agent=h.get("kind", ""),
                 name=name, resume=1 if resume_id else 0)
+    root = launch_root(cat, root, h)
     argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, sitting=name, extra=extra, effort=effort,
                       dirs=dirs)
     place = place_for(cat, root)
@@ -2739,14 +2961,20 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
     try:
         if reuse_pane or confined != base or is_wrapper(h):
             wait_shell(pid)
-            herdr("pane", "run", pid, shell_join(confined), expect_json=False)
+            if any(CONTROL.search(str(w)) for w in [*confined, root]):
+                raise SystemExit("cowbell: refused — a control character in the launch line or its folder")
+            line = shell_join(confined)
+            if confined != base:  # a reused pane may sit anywhere: start the drop in its folder, physically
+                q = shell_join([root])
+                line = f'cd -P -- {q} && [ "$(pwd -P)" = {q} ] && {line}'
+            herdr("pane", "run", pid, line, expect_json=False)
         else:
             mode = "native"
             res = start_native(name, h["kind"], pid, argv)
             launched_session = ((res.get("agent") or {}).get("agent_session") or {}).get("value") or ""
-    except HerdrError:
+    except (HerdrError, SystemExit):
         trace.event("raise", phase="fail", how=how, pane=pid, ms=_ms(t0))
-        if pane.get("tab_id") and not reuse_pane:  # do not leave an empty tab behind a failed launch
+        if pane.get("tab_id") and not reuse_pane:  # do not leave an empty tab behind a failed or refused launch
             try:
                 herdr("tab", "close", pane["tab_id"])
             except HerdrError:
