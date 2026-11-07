@@ -58,13 +58,15 @@ def agent(pane, kind, cwd, status="idle", title="", sid="s1"):
 
 _SENTINEL_DIR = None
 _SENTINEL_LOG = None
+_SAVED_DEBUG = None
 
 
 def setUpModule():
     """route every in-process herdr call through a logging stub, so a test that
     forgets to patch the adapter cannot reach the live binary or socket. ZSuiteSeam (which
     sorts last) fails if the stub was ever run."""
-    global _SENTINEL_DIR, _SENTINEL_LOG
+    global _SENTINEL_DIR, _SENTINEL_LOG, _SAVED_DEBUG
+    _SAVED_DEBUG = os.environ.pop("COWBELL_DEBUG", None)
     _SENTINEL_DIR = tempfile.TemporaryDirectory()
     base = Path(_SENTINEL_DIR.name)
     stub = base / "herdr"
@@ -76,6 +78,8 @@ def setUpModule():
 
 
 def tearDownModule():
+    if _SAVED_DEBUG is not None:
+        os.environ["COWBELL_DEBUG"] = _SAVED_DEBUG
     if _SENTINEL_DIR:
         _SENTINEL_DIR.cleanup()
 
@@ -1809,6 +1813,71 @@ class Version(unittest.TestCase):
             self.assertEqual(m.group(1), hm.__version__)
         elif not m:
             self.assertRegex(headings[0], rf"^## {re.escape(hm.__version__)}\b")
+
+
+class DebugLog(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.log = Path(self.tmp.name) / "debug.log"
+        hm.trace.reset()
+        self.addCleanup(hm.trace.reset)
+
+    def test_off_writes_nothing(self):
+        env = {k: v for k, v in os.environ.items() if k != "COWBELL_DEBUG"}
+        env["COWBELL_DEBUG_LOG"] = str(self.log)
+        with mock.patch.dict(os.environ, env, clear=True):
+            hm.trace.event("herdr", argv="api snapshot")
+        self.assertFalse(self.log.exists())
+
+    def test_on_appends_a_timed_line_and_keeps_it_private(self):
+        with mock.patch.dict(os.environ, {"COWBELL_DEBUG": "1", "COWBELL_DEBUG_LOG": str(self.log)}):
+            hm.trace.event("frame", ms=12, live=2)
+        text = self.log.read_text()
+        self.assertIn(" frame ", text)
+        self.assertIn("ms=12", text)
+        self.assertIn("live=2", text)
+        self.assertRegex(text, r"\d+\.\d{3}s")
+        self.assertEqual(self.log.stat().st_mode & 0o777, 0o600)
+
+    def test_a_full_log_rotates_once(self):
+        self.log.write_text("x" * 50)
+        with mock.patch.object(hm, "DEBUG_LOG_MAX", 40):
+            with mock.patch.dict(os.environ, {"COWBELL_DEBUG": "1", "COWBELL_DEBUG_LOG": str(self.log)}):
+                hm.trace.event("herdr", argv="pane list")
+        self.assertTrue((self.log.parent / "debug.log.1").is_file())
+        self.assertIn("pane list", self.log.read_text())
+
+    def test_herdr_call_is_timed(self):
+        ok = mock.Mock(returncode=0, stdout='{"result": {"snapshot": {}}}', stderr="")
+        bad = mock.Mock(returncode=1, stdout="", stderr="nope")
+        with mock.patch.dict(os.environ, {"COWBELL_DEBUG": "1", "COWBELL_DEBUG_LOG": str(self.log)}):
+            with mock.patch("cowbell.subprocess.run", side_effect=[ok, bad]):
+                self.assertEqual(hm.herdr("api", "snapshot"), {"snapshot": {}})
+                with self.assertRaises(hm.HerdrError):
+                    hm.herdr("pane", "list")
+        text = self.log.read_text()
+        self.assertIn("api snapshot", text)
+        self.assertIn("rc=0", text)
+        self.assertIn("pane list", text)
+        self.assertIn("rc=1", text)
+
+    def test_debug_flag_is_not_a_command(self):
+        self.assertEqual(hm.take_debug(["new", "--", "--debug"]), ["new", "--", "--debug"])
+        self.assertFalse(hm.trace.enabled())
+        self.assertEqual(hm.take_debug(["--debug", "picker"]), ["picker"])
+        self.assertTrue(hm.trace.enabled())
+
+    def test_debug_flag_still_prints_the_version(self):
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, {"COWBELL_DEBUG_LOG": str(self.log)}):
+            os.environ.pop("COWBELL_DEBUG", None)
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(hm.main(["--debug", "--version"]), 0)
+        self.assertRegex(buf.getvalue(), r"^cowbell \d+\.\d+\.\d+\n$")
+        text = self.log.read_text()
+        self.assertIn(" start ", text)
+        self.assertIn("--version", text)
 
 
 class Flags(unittest.TestCase):

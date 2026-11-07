@@ -19,6 +19,8 @@
   cowbell reconcile [--dry-run] rewrite a pane border from the sitting and the agent Herdr detects
   cowbell identity stamp        publish $glyph for every live herdr agent pane (detector kind)
   cowbell identity sync         restamp or clear one pane from a herdr occupancy event
+  COWBELL_DEBUG=1 or --debug    append a timed trace to debug.log in the state dir
+                                (override the file with COWBELL_DEBUG_LOG). Off unless set.
 
 A person running cowbell gets the session in this terminal, including inside herdr
 (`COWBELL_CALLER=person` forces that). An agent caller inside a herdr pane opens a new tab
@@ -41,6 +43,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
@@ -61,6 +64,99 @@ SHELLS = {"zsh", "bash", "fish", "sh", "dash", "ksh"}
 GLYPH = {"local": "⌂", "mesh": "⌂", "vendor": "↑"}  # ⌂ ↑
 DASH = "—"
 GROK_AGENTS_DIR = Path("~/.grok/agents").expanduser()
+
+# Timed trace for a slow launch. Off unless COWBELL_DEBUG or --debug is set, so a
+# normal start does not write a file. The picker owns the terminal, so the trace
+# goes to a file. One megabyte, then the previous file is kept as debug.log.1.
+_DEBUG_ON = frozenset({"1", "true", "yes", "on", "verbose"})
+DEBUG_LOG_MAX = 1_000_000
+
+
+def _ms(t0: float) -> int:
+    return int((time.perf_counter() - t0) * 1000)
+
+
+def _trace_field(value) -> str:
+    text = str(value).replace("\n", " ").strip()
+    text = text[:300]
+    if not text or any(ch.isspace() for ch in text):
+        return '"' + text.replace('"', "'") + '"'
+    return text
+
+
+class Trace:
+    """Append-only phase log. A write that fails is ignored: debugging must not break a launch."""
+
+    def __init__(self) -> None:
+        self._forced = False
+        self._dead = False
+        self._lock = threading.Lock()
+        self._fh = None
+        self._born = time.perf_counter()
+
+    def enabled(self) -> bool:
+        if self._dead:
+            return False
+        if self._forced:
+            return True
+        return os.environ.get("COWBELL_DEBUG", "").strip().lower() in _DEBUG_ON
+
+    def force(self) -> None:
+        self._forced = True
+        self._dead = False
+
+    def reset(self) -> None:
+        """Drop the open file. Tests use this so one case cannot write into the next."""
+        with self._lock:
+            if self._fh is not None:
+                self._fh.close()
+                self._fh = None
+            self._forced = False
+            self._dead = False
+            self._born = time.perf_counter()
+
+    def event(self, kind: str, **fields) -> None:
+        if not self.enabled():
+            return
+        parts = [f"{key}={_trace_field(val)}" for key, val in fields.items() if val is not None and val != ""]
+        stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        line = f"{stamp}  {time.perf_counter() - self._born:8.3f}s  {kind}  " + " ".join(parts)
+        try:
+            with self._lock:
+                if self._dead:
+                    return
+                fh = self._open()
+                if fh is None:
+                    return
+                fh.write(line[:2000] + "\n")
+                fh.flush()
+        except OSError:
+            self._dead = True
+
+    def path(self) -> Path | None:
+        override = os.environ.get("COWBELL_DEBUG_LOG", "").strip()
+        if override:
+            return Path(override).expanduser()
+        try:
+            return state_dir() / "debug.log"
+        except OSError:
+            return None
+
+    def _open(self):
+        if self._fh is not None:
+            return self._fh
+        path = self.path()
+        if path is None:
+            return None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_file() and path.stat().st_size > DEBUG_LOG_MAX:
+            os.replace(path, path.with_name(path.name + ".1"))
+        self._fh = open(path, "a", encoding="utf-8")
+        os.chmod(path, 0o600)
+        return self._fh
+
+
+trace = Trace()
 
 
 class HerdrError(RuntimeError):
@@ -1131,7 +1227,7 @@ def _history_row(hit: dict, harness: str) -> dict:
 
 
 def claude_sessions(root: str, cache: dict, home: Path | None = None) -> list[dict]:
-    out = []
+    t0, out, hits, misses = time.perf_counter(), [], 0, 0
     store = claude_store(root, home)
     if not store.is_dir():
         return out
@@ -1139,9 +1235,13 @@ def claude_sessions(root: str, cache: dict, home: Path | None = None) -> list[di
         key = cache_key(f)
         hit = cache.get(key)
         if not isinstance(hit, dict) or "utterance" not in hit:
+            misses += 1
             hit = _claude_hit(f)
             cache[key] = hit
+        else:
+            hits += 1
         out.append(_history_row(hit, "claude"))
+    trace.event("history", store="claude", ms=_ms(t0), files=len(out), hit=hits, miss=misses)
     return out
 
 
@@ -1202,7 +1302,7 @@ def _grok_hit(d: Path) -> dict:
 
 
 def grok_sessions(root: str, cache: dict, home: Path | None = None) -> list[dict]:
-    out = []
+    t0, out, hits, misses = time.perf_counter(), [], 0, 0
     store = grok_store(root, home)
     if not store.is_dir():
         return out
@@ -1214,9 +1314,13 @@ def grok_sessions(root: str, cache: dict, home: Path | None = None) -> list[dict
         key = cache_key(chat) + "|" + cache_key(summary)
         hit = cache.get(key)
         if not isinstance(hit, dict) or "utterance" not in hit:
+            misses += 1
             hit = _grok_hit(d)
             cache[key] = hit
+        else:
+            hits += 1
         out.append(_history_row(hit, "grok"))
+    trace.event("history", store="grok", ms=_ms(t0), files=len(out), hit=hits, miss=misses)
     return out
 
 
@@ -1276,11 +1380,13 @@ def launch_history(cat: dict, root: str) -> list[dict]:
         "defaults": {"session_history": history_mode(cat)},
         "harness": [{"id": h["id"]} for h in cat.get("harness", []) if h.get("id")],
     }
+    t0 = time.perf_counter()
     proc = subprocess.run(
         prefix + [sys.executable, str(Path(__file__).resolve()), "_history"],
         input=json.dumps({"root": os.path.realpath(root), "home": str(home), "cat": history_cat}),
         capture_output=True, text=True, timeout=15,
     )
+    trace.event("history", store="as-user", user=uid, ms=_ms(t0), rc=proc.returncode)
     if proc.returncode:
         detail = (proc.stderr.strip().splitlines() or [f"exit {proc.returncode}"])[-1]
         raise SystemExit(f"cowbell: session discovery as {uid!r} failed: {detail}")
@@ -1361,16 +1467,22 @@ def trust_note(hid: str, v: dict, root: str) -> str:
 
 
 def trust_match(tool: str, root: str) -> dict:
+    t0 = time.perf_counter()
     if not trust_available():
+        trace.event("trust", tool=tool, ms=0, verdict="unavailable")
         return {"verdict": "unknown", "flag": "?", "exit": -1}
     try:
         proc = subprocess.run([EXT["trust_command"], "match", tool, root], capture_output=True, text=True,
                               timeout=TRUST_TIMEOUT)
-    except (subprocess.TimeoutExpired, OSError):
+    except (subprocess.TimeoutExpired, OSError) as e:
+        trace.event("trust", tool=tool, ms=_ms(t0), verdict="unknown", err=type(e).__name__)
         return {"verdict": "unknown", "flag": "?", "exit": -1}
     if proc.returncode not in (0, 3, 4):
+        trace.event("trust", tool=tool, ms=_ms(t0), verdict="unknown", rc=proc.returncode)
         return {"verdict": "unknown", "flag": "?", "exit": proc.returncode}
-    return parse_match(proc.stdout, proc.returncode)
+    verdict = parse_match(proc.stdout, proc.returncode)
+    trace.event("trust", tool=tool, ms=_ms(t0), verdict=verdict.get("verdict") or "unknown")
+    return verdict
 
 
 def trust_badge(tool: str) -> str:
@@ -1414,6 +1526,7 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
         if prev != h["id"]:
             kind_id[h["kind"]] = ""
 
+    t_names, n_names = time.perf_counter(), 0
     live_rows, seen_pane = [], set()
     for a in live:
         r = by_pane.get(a["pane_id"])
@@ -1421,6 +1534,7 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
         kind = a.get("agent") or ""
         sid = (a.get("agent_session") or {}).get("value") or (r or {}).get("session_id", "") or ""
         fields = session_fields(kind, a.get("cwd") or root, sid, home)
+        n_names += 1
         pinned = ((r or {}).get("name") or "") if (r or {}).get("name_source") == "pinned" else ""
         stored = "" if pinned else ((r or {}).get("name") or "")
         name, source = canonical_name(
@@ -1466,6 +1580,7 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
         named = dict(r)
         if named.get("name_source") != "pinned":
             fields = session_fields(named.get("kind") or "", named.get("cwd") or root, sid, home)
+            n_names += 1
             name, source = canonical_name(
                 harness_title=fields.get("harness_title") or "",
                 stored=named.get("name") or "",
@@ -1476,6 +1591,7 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
             named["name"] = name
             named["name_source"] = source
         cold_rows.append({**named, "status": "unknown" if pane_alive else "cold", "pane_alive": pane_alive})
+    trace.event("names", ms=_ms(t_names), reads=n_names)
 
     # sessions the harnesses recorded themselves; a roster row wins, it knows the pane
     seen_ids = {x.get("session_id") for x in live_rows} | {x.get("session_id") for x in cold_rows}
@@ -2033,6 +2149,8 @@ def process_cwds(pids: list[int]) -> dict[int, str]:
 
 def agent_processes(table: dict[int, dict] | None = None, cwds=process_cwds) -> list[dict]:
     """Agent CLIs on a terminal, not under herdr (herdr lists its own) and not nested in another agent."""
+    t0 = time.perf_counter()
+    scanned_ps = table is None
     table = ps_table() if table is None else table
     kinds = {pid: exe_kind(p["argv"]) for pid, p in table.items()}
 
@@ -2048,6 +2166,7 @@ def agent_processes(table: dict[int, dict] | None = None, cwds=process_cwds) -> 
     found = [pid for pid, k in kinds.items()
              if k and table[pid]["tty"] not in ("??", "?", "-") and outside(pid)]
     where = cwds(found)
+    trace.event("ps", ms=_ms(t0), scanned=len(table), agents=len(found), ps=int(scanned_ps))
     return [{"pane_id": f"pid:{pid}", "pid": pid, "tty": table[pid]["tty"], "agent": kinds[pid],
              "cwd": where[pid], "agent_status": "running", "tab_id": None, "workspace_id": None,
              "terminal_title_stripped": kinds[pid], "agent_session": {}}
@@ -2174,6 +2293,7 @@ def exec_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", la
     cmd = unix_confine(cat, root, cmd, h=h)
     exe = _here_exe(h, cmd)
     _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, None, name_source, extra, effort, dirs)
+    trace.event("exec", harness=h.get("id", ""), cmd=shell_join(cmd))
     sys.stdout.write("\x1b[H\x1b[2J" if sys.stdout.isatty() else "")
     print(f"  {paint(name, INK, bold=True)}  {paint(shell_join(cmd), MUTED)}  {paint(tilde(root), FAINT)}")
     sys.stdout.flush()
@@ -2195,6 +2315,7 @@ def spawn_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", l
     )
     pane_id = f"pid:{proc.pid}"
     _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, pane_id, name_source, extra, effort, dirs)
+    trace.event("spawn", harness=h.get("id", ""), pid=proc.pid, cmd=shell_join(cmd))
     return {"pane_id": pane_id, "pid": proc.pid}
 
 
@@ -2297,27 +2418,36 @@ HERDR_TIMEOUT = 5.0  # seconds; a hung herdr server must not freeze the picker t
 
 
 def herdr(*args: str, expect_json: bool = True, timeout: float = HERDR_TIMEOUT) -> dict:
+    t0 = time.perf_counter()
     try:
         proc = subprocess.run([herdr_bin(), *args], capture_output=True, text=True, check=False, timeout=timeout)
     except subprocess.TimeoutExpired as e:
+        trace.event("herdr", ms=_ms(t0), err="timeout", argv=" ".join(args))
         raise HerdrError(f"herdr {' '.join(args[:2])} timed out after {timeout:g}s") from e
     except OSError as e:  # herdr not installed: standalone cowbell still works
+        trace.event("herdr", ms=_ms(t0), err="os", argv=" ".join(args))
         raise HerdrError(f"herdr unavailable: {e}") from e
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip()
+        trace.event("herdr", ms=_ms(t0), rc=proc.returncode, argv=" ".join(args), err=(err or "exit")[:120])
         raise HerdrError(err or f"herdr {' '.join(args)} exited {proc.returncode}")
     out = (proc.stdout or "").strip()
     if not out:
+        trace.event("herdr", ms=_ms(t0), rc=0, argv=" ".join(args))
         return {}
     try:
         payload = json.loads(out)
     except json.JSONDecodeError:
         if expect_json:
+            trace.event("herdr", ms=_ms(t0), err="json", argv=" ".join(args))
             raise HerdrError(f"herdr {' '.join(args)}: non-JSON output: {out[:120]}")
+        trace.event("herdr", ms=_ms(t0), rc=0, argv=" ".join(args))
         return {"raw": out}
     if isinstance(payload, dict) and "error" in payload:
         e = payload["error"]
+        trace.event("herdr", ms=_ms(t0), err="payload", argv=" ".join(args))
         raise HerdrError(e.get("message", str(e)) if isinstance(e, dict) else str(e))
+    trace.event("herdr", ms=_ms(t0), rc=0, argv=" ".join(args), bytes=len(out))
     if isinstance(payload, dict) and "result" in payload:
         r = payload["result"]
         return r if isinstance(r, dict) else {"value": r}
@@ -2537,14 +2667,18 @@ def shell_ready_from_process(info: dict) -> bool:
 
 def wait_shell(pane_id: str, timeout_ms: int = 10000) -> None:
     """A just-created tab is often still spawning; agent start then returns agent_pane_busy."""
+    t0, polls, ready = time.perf_counter(), 0, 0
     deadline = time.time() + timeout_ms / 1000
     while time.time() < deadline:
+        polls += 1
         try:
             if shell_ready_from_process(herdr("pane", "process-info", "--pane", pane_id)):
-                return
+                ready = 1
+                break
         except (HerdrError, OSError):
             pass
         time.sleep(0.15)
+    trace.event("shell", pane=pane_id, ms=_ms(t0), polls=polls, ready=ready)
 
 
 def start_native(name: str, kind: str, pane_id: str, argv: list[str]) -> dict:
@@ -2553,7 +2687,7 @@ def start_native(name: str, kind: str, pane_id: str, argv: list[str]) -> dict:
     if argv:
         args += ["--", *argv]
     last: HerdrError | None = None
-    for _ in range(5):
+    for attempt in range(5):
         try:
             return herdr(*args, timeout=35)  # herdr itself waits up to 30s (--timeout 30000)
         except HerdrError as e:
@@ -2562,6 +2696,7 @@ def start_native(name: str, kind: str, pane_id: str, argv: list[str]) -> dict:
             if any(k in msg for k in ("not_ready", "blocked", "agent_not_ready")):
                 return {}
             if "agent_pane_busy" in msg or "not an available shell" in msg:
+                trace.event("start", pane=pane_id, attempt=attempt + 1, busy=1)
                 time.sleep(0.4)
                 continue
             raise
@@ -2573,6 +2708,9 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
                   focus: bool = True, pen: bool = False, split: bool = False,
                   reuse_pane: dict | None = None, name_source: str = "", effort: str = "",
                   dirs: list[str] | None = None) -> dict:
+    t0 = time.perf_counter()
+    trace.event("raise", phase="begin", harness=h.get("id", ""), agent=h.get("kind", ""),
+                name=name, resume=1 if resume_id else 0)
     argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, sitting=name, extra=extra, effort=effort,
                       dirs=dirs)
     place = place_for(cat, root)
@@ -2582,27 +2720,32 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
     # Otherwise create a tab in the project workspace that already exists (proj:<dir>).
     # reuse_pane resumes into a pane that is still present — never a new tab.
     if reuse_pane:
-        pane = reuse_pane
+        pane, how = reuse_pane, "reuse"
     elif pen and place and place.get("workspace_label"):
-        pane = create_tab(workspace_by_label(place["workspace_label"]), root, name, place["workspace_label"])
+        pane, how = create_tab(workspace_by_label(place["workspace_label"]), root, name, place["workspace_label"]), "pen"
     else:
         wid = project_workspace(root, ctx)
         if split:
             pane = split_pane(wid, root) if wid else None
+            how = "split"
             if not pane:
-                pane = create_tab(pick_workspace(ctx, root), root, name)
+                pane, how = create_tab(pick_workspace(ctx, root), root, name), "tab"
         else:
-            pane = create_tab(wid or pick_workspace(ctx, root), root, name)
+            pane, how = create_tab(wid or pick_workspace(ctx, root), root, name), "tab"
     pid = pane["pane_id"]
+    trace.event("raise", phase="pane", how=how, pane=pid, ms=_ms(t0))
     launched_session = ""
+    mode = "run"
     try:
         if reuse_pane or confined != base or is_wrapper(h):
             wait_shell(pid)
             herdr("pane", "run", pid, shell_join(confined), expect_json=False)
         else:
+            mode = "native"
             res = start_native(name, h["kind"], pid, argv)
             launched_session = ((res.get("agent") or {}).get("agent_session") or {}).get("value") or ""
     except HerdrError:
+        trace.event("raise", phase="fail", how=how, pane=pid, ms=_ms(t0))
         if pane.get("tab_id") and not reuse_pane:  # do not leave an empty tab behind a failed launch
             try:
                 herdr("tab", "close", pane["tab_id"])
@@ -2635,6 +2778,7 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
             herdr("tab", "focus", pane["tab_id"])
         except HerdrError:
             pass
+    trace.event("raise", phase="done", how=how, mode=mode, pane=pid, ms=_ms(t0), cmd=shell_join(base))
     return pane
 
 
@@ -5515,6 +5659,7 @@ def picker(ctx: Ctx, cat: dict) -> int:
 
     try:
         while True:
+            t_frame = time.perf_counter()
             full_cat = load_catalog()
             place = place_for(full_cat, root)
             cat = scoped_catalog(full_cat, place)  # flows below (wizard, quick start) see only this place's harnesses
@@ -5528,8 +5673,14 @@ def picker(ctx: Ctx, cat: dict) -> int:
             wider = None
             if top and os.path.realpath(top) != os.path.realpath(root):
                 wider = sum(1 for a in agents if a.get("cwd") and at_or_beneath(a["cwd"], top))
+            t_hist = time.perf_counter()
+            history = launch_history(full_cat, root)
+            hist_ms = _ms(t_hist)
+            t_reg = time.perf_counter()
             reg = build_registry(cat, root, agents, panes, rows, matcher=matcher_for(root),
-                                 tab_label=tab_labels(snap), history=launch_history(full_cat, root))
+                                 tab_label=tab_labels(snap), history=history)
+            trace.event("frame", ms=_ms(t_frame), history_ms=hist_ms, registry_ms=_ms(t_reg),
+                        live=len(reg["live"]), cold=len(reg["cold"]), startable=len(reg["startable"]))
             if place:
                 reg["place_note"] = place["name"] + (" · from ~" if remapped and root == place["cwd"] else "")
             remember_live(reg, rows)
@@ -5710,8 +5861,11 @@ def choose_host(herdr_up: bool, env=None) -> Ctx:
     env = os.environ if env is None else env
     wants_tab = env.get("COWBELL_MODE") == "tab" or (caller_is_agent(env) and env.get("COWBELL_MODE") != "here")
     if wants_tab and herdr_up and in_herdr_pane(env):
-        return Ctx.from_env(env)
-    return Ctx(cwd=os.getcwd(), mode="here", live=CombinedLive(HerdrLive() if herdr_up else None, ProcessScan()))
+        ctx = Ctx.from_env(env)
+    else:
+        ctx = Ctx(cwd=os.getcwd(), mode="here", live=CombinedLive(HerdrLive() if herdr_up else None, ProcessScan()))
+    trace.event("host", mode=ctx.mode, herdr=int(bool(getattr(ctx.live, "herdr", False))))
+    return ctx
 
 
 NEW_OPTS = frozenset({
@@ -5759,7 +5913,23 @@ def new_unknown_flags(opts: dict, pos: list[str]) -> list[str]:
     return bad
 
 
+def take_debug(argv: list[str]) -> list[str]:
+    """`--debug` before `--` turns the trace on and is not a command or a harness flag."""
+    if "--" in argv:
+        cut = argv.index("--")
+        head, tail = argv[:cut], argv[cut:]
+    else:
+        head, tail = argv, []
+    if "--debug" in head:
+        trace.force()
+        head = [a for a in head if a != "--debug"]
+    return head + tail
+
+
 def main(argv: list[str]) -> int:
+    argv = take_debug(list(argv))
+    if trace.enabled():
+        trace.event("start", argv=" ".join(argv) or "(default)", cwd=os.getcwd())
     if argv and argv[0] in ("-h", "--help"):
         print(__doc__); return 0
     if argv and argv[0] in ("-V", "--version"):

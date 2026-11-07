@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `COWBELL_DEBUG=1` or `--debug` appends a timed trace of each herdr call, the history scan, trust checks, process scan, picker frame, shell wait, and the launch command to `debug.log` in the state directory. Off unless set.
 - `a` on a launch sheet saves its shape as a named agent (a `[[harness]]` row copied whole from this one, with the sheet's model, effort, permissions and tools as defaults); the sheet stays open and launches nothing. Not on a resume sheet.
 
 ## 0.3.2 — 2026-11-02
