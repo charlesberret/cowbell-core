@@ -19,6 +19,8 @@
   cowbell reconcile [--dry-run] rewrite a pane border from the sitting and the agent Herdr detects
   cowbell identity stamp        publish $glyph for every live herdr agent pane (detector kind)
   cowbell identity sync         restamp or clear one pane from a herdr occupancy event
+  COWBELL_DEBUG=1 or --debug    append a timed trace to debug.log in the state dir
+                                (override the file with COWBELL_DEBUG_LOG). Off unless set.
 
 A person running cowbell gets the session in this terminal, including inside herdr
 (`COWBELL_CALLER=person` forces that). An agent caller inside a herdr pane opens a new tab
@@ -41,6 +43,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
@@ -61,6 +64,99 @@ SHELLS = {"zsh", "bash", "fish", "sh", "dash", "ksh"}
 GLYPH = {"local": "⌂", "mesh": "⌂", "vendor": "↑"}  # ⌂ ↑
 DASH = "—"
 GROK_AGENTS_DIR = Path("~/.grok/agents").expanduser()
+
+# Timed trace for a slow launch. Off unless COWBELL_DEBUG or --debug is set, so a
+# normal start does not write a file. The picker owns the terminal, so the trace
+# goes to a file. One megabyte, then the previous file is kept as debug.log.1.
+_DEBUG_ON = frozenset({"1", "true", "yes", "on", "verbose"})
+DEBUG_LOG_MAX = 1_000_000
+
+
+def _ms(t0: float) -> int:
+    return int((time.perf_counter() - t0) * 1000)
+
+
+def _trace_field(value) -> str:
+    text = str(value).replace("\n", " ").strip()
+    text = text[:300]
+    if not text or any(ch.isspace() for ch in text):
+        return '"' + text.replace('"', "'") + '"'
+    return text
+
+
+class Trace:
+    """Append-only phase log. A write that fails is ignored: debugging must not break a launch."""
+
+    def __init__(self) -> None:
+        self._forced = False
+        self._dead = False
+        self._lock = threading.Lock()
+        self._fh = None
+        self._born = time.perf_counter()
+
+    def enabled(self) -> bool:
+        if self._dead:
+            return False
+        if self._forced:
+            return True
+        return os.environ.get("COWBELL_DEBUG", "").strip().lower() in _DEBUG_ON
+
+    def force(self) -> None:
+        self._forced = True
+        self._dead = False
+
+    def reset(self) -> None:
+        """Drop the open file. Tests use this so one case cannot write into the next."""
+        with self._lock:
+            if self._fh is not None:
+                self._fh.close()
+                self._fh = None
+            self._forced = False
+            self._dead = False
+            self._born = time.perf_counter()
+
+    def event(self, kind: str, **fields) -> None:
+        if not self.enabled():
+            return
+        parts = [f"{key}={_trace_field(val)}" for key, val in fields.items() if val is not None and val != ""]
+        stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        line = f"{stamp}  {time.perf_counter() - self._born:8.3f}s  {kind}  " + " ".join(parts)
+        try:
+            with self._lock:
+                if self._dead:
+                    return
+                fh = self._open()
+                if fh is None:
+                    return
+                fh.write(line[:2000] + "\n")
+                fh.flush()
+        except OSError:
+            self._dead = True
+
+    def path(self) -> Path | None:
+        override = os.environ.get("COWBELL_DEBUG_LOG", "").strip()
+        if override:
+            return Path(override).expanduser()
+        try:
+            return state_dir() / "debug.log"
+        except OSError:
+            return None
+
+    def _open(self):
+        if self._fh is not None:
+            return self._fh
+        path = self.path()
+        if path is None:
+            return None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_file() and path.stat().st_size > DEBUG_LOG_MAX:
+            os.replace(path, path.with_name(path.name + ".1"))
+        self._fh = open(path, "a", encoding="utf-8")
+        os.chmod(path, 0o600)
+        return self._fh
+
+
+trace = Trace()
 
 
 class HerdrError(RuntimeError):
@@ -1131,7 +1227,7 @@ def _history_row(hit: dict, harness: str) -> dict:
 
 
 def claude_sessions(root: str, cache: dict, home: Path | None = None) -> list[dict]:
-    out = []
+    t0, out, hits, misses = time.perf_counter(), [], 0, 0
     store = claude_store(root, home)
     if not store.is_dir():
         return out
@@ -1139,9 +1235,13 @@ def claude_sessions(root: str, cache: dict, home: Path | None = None) -> list[di
         key = cache_key(f)
         hit = cache.get(key)
         if not isinstance(hit, dict) or "utterance" not in hit:
+            misses += 1
             hit = _claude_hit(f)
             cache[key] = hit
+        else:
+            hits += 1
         out.append(_history_row(hit, "claude"))
+    trace.event("history", store="claude", ms=_ms(t0), files=len(out), hit=hits, miss=misses)
     return out
 
 
@@ -1202,7 +1302,7 @@ def _grok_hit(d: Path) -> dict:
 
 
 def grok_sessions(root: str, cache: dict, home: Path | None = None) -> list[dict]:
-    out = []
+    t0, out, hits, misses = time.perf_counter(), [], 0, 0
     store = grok_store(root, home)
     if not store.is_dir():
         return out
@@ -1214,9 +1314,13 @@ def grok_sessions(root: str, cache: dict, home: Path | None = None) -> list[dict
         key = cache_key(chat) + "|" + cache_key(summary)
         hit = cache.get(key)
         if not isinstance(hit, dict) or "utterance" not in hit:
+            misses += 1
             hit = _grok_hit(d)
             cache[key] = hit
+        else:
+            hits += 1
         out.append(_history_row(hit, "grok"))
+    trace.event("history", store="grok", ms=_ms(t0), files=len(out), hit=hits, miss=misses)
     return out
 
 
@@ -1261,26 +1365,26 @@ def launch_history(cat: dict, root: str) -> list[dict]:
     home = Path(pw.pw_dir)
     if os.geteuid() == pw.pw_uid:
         return discover_sessions(root, cat, home=home)
+    if not _home_ok(pw):
+        raise SystemExit(f"cowbell: refused — the home of {uid!r} is not a directory it owns")
     helper = shutil.which("agent-run")
-    if helper:
-        prefix = [helper, uid, "--"]
-    else:
-        sudo = shutil.which("sudo")
-        if not sudo:
-            raise SystemExit(
-                f"cowbell: cannot discover sessions as unix user {uid!r} "
-                "(agent-run is not installed and sudo is not on PATH)"
-            )
-        prefix = [sudo, "-n", "-u", uid, "--"]
+    if not helper:
+        raise SystemExit(
+            f"cowbell: cannot discover sessions as unix user {uid!r} "
+            "(agent-run is not on PATH; cowbell does not fall back to sudo -u)"
+        )
+    prefix = [helper, uid, "--"]
     history_cat = {
         "defaults": {"session_history": history_mode(cat)},
         "harness": [{"id": h["id"]} for h in cat.get("harness", []) if h.get("id")],
     }
+    t0 = time.perf_counter()
     proc = subprocess.run(
-        prefix + [sys.executable, str(Path(__file__).resolve()), "_history"],
+        prefix + [sys.executable, "-I", str(Path(__file__).resolve()), "_history"],
         input=json.dumps({"root": os.path.realpath(root), "home": str(home), "cat": history_cat}),
         capture_output=True, text=True, timeout=15,
     )
+    trace.event("history", store="as-user", user=uid, ms=_ms(t0), rc=proc.returncode)
     if proc.returncode:
         detail = (proc.stderr.strip().splitlines() or [f"exit {proc.returncode}"])[-1]
         raise SystemExit(f"cowbell: session discovery as {uid!r} failed: {detail}")
@@ -1290,6 +1394,16 @@ def launch_history(cat: dict, root: str) -> list[dict]:
         raise SystemExit(f"cowbell: session discovery as {uid!r} returned invalid metadata")
     if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
         raise SystemExit(f"cowbell: session discovery as {uid!r} returned invalid metadata")
+    want = os.path.realpath(root)
+    for row in rows:  # rows come from another account's stores: their text is untrusted
+        sid, cwd = row.get("session_id"), row.get("cwd")
+        if not isinstance(sid, str) or not SESSION_ID.fullmatch(sid):
+            raise SystemExit(f"cowbell: session discovery as {uid!r} returned a malformed session id")
+        if not (isinstance(cwd, str) and cwd == want and _plain_abs(cwd) and _uid_owns(cat, cwd, pw)):
+            raise SystemExit(f"cowbell: session discovery as {uid!r} returned a folder it does not own")
+        for key in ("title", "harness_title", "utterance", "name"):
+            if isinstance(row.get(key), str):
+                row[key] = CONTROL_WIDE.sub("", row[key])
     return rows
 
 
@@ -1361,16 +1475,22 @@ def trust_note(hid: str, v: dict, root: str) -> str:
 
 
 def trust_match(tool: str, root: str) -> dict:
+    t0 = time.perf_counter()
     if not trust_available():
+        trace.event("trust", tool=tool, ms=0, verdict="unavailable")
         return {"verdict": "unknown", "flag": "?", "exit": -1}
     try:
         proc = subprocess.run([EXT["trust_command"], "match", tool, root], capture_output=True, text=True,
                               timeout=TRUST_TIMEOUT)
-    except (subprocess.TimeoutExpired, OSError):
+    except (subprocess.TimeoutExpired, OSError) as e:
+        trace.event("trust", tool=tool, ms=_ms(t0), verdict="unknown", err=type(e).__name__)
         return {"verdict": "unknown", "flag": "?", "exit": -1}
     if proc.returncode not in (0, 3, 4):
+        trace.event("trust", tool=tool, ms=_ms(t0), verdict="unknown", rc=proc.returncode)
         return {"verdict": "unknown", "flag": "?", "exit": proc.returncode}
-    return parse_match(proc.stdout, proc.returncode)
+    verdict = parse_match(proc.stdout, proc.returncode)
+    trace.event("trust", tool=tool, ms=_ms(t0), verdict=verdict.get("verdict") or "unknown")
+    return verdict
 
 
 def trust_badge(tool: str) -> str:
@@ -1414,6 +1534,7 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
         if prev != h["id"]:
             kind_id[h["kind"]] = ""
 
+    t_names, n_names = time.perf_counter(), 0
     live_rows, seen_pane = [], set()
     for a in live:
         r = by_pane.get(a["pane_id"])
@@ -1421,6 +1542,7 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
         kind = a.get("agent") or ""
         sid = (a.get("agent_session") or {}).get("value") or (r or {}).get("session_id", "") or ""
         fields = session_fields(kind, a.get("cwd") or root, sid, home)
+        n_names += 1
         pinned = ((r or {}).get("name") or "") if (r or {}).get("name_source") == "pinned" else ""
         stored = "" if pinned else ((r or {}).get("name") or "")
         name, source = canonical_name(
@@ -1466,6 +1588,7 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
         named = dict(r)
         if named.get("name_source") != "pinned":
             fields = session_fields(named.get("kind") or "", named.get("cwd") or root, sid, home)
+            n_names += 1
             name, source = canonical_name(
                 harness_title=fields.get("harness_title") or "",
                 stored=named.get("name") or "",
@@ -1476,6 +1599,7 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
             named["name"] = name
             named["name_source"] = source
         cold_rows.append({**named, "status": "unknown" if pane_alive else "cold", "pane_alive": pane_alive})
+    trace.event("names", ms=_ms(t_names), reads=n_names)
 
     # sessions the harnesses recorded themselves; a roster row wins, it knows the pane
     seen_ids = {x.get("session_id") for x in live_rows} | {x.get("session_id") for x in cold_rows}
@@ -1923,6 +2047,10 @@ def build_argv(cat: dict, h: dict, model: str = "", lane: str = "", allow: str =
         argv += [prompt_flag(h), sys_prompt]
     argv += claim_argv(h, sitting, agents_dir=agents_dir)
     if resume_id:
+        # Ids follow a flag (`--resume <id>`) or sit before options (`codex resume <id> --model`), so
+        # `--` cannot guard them without breaking those CLIs; an id that reads as an option is refused.
+        if str(resume_id).startswith("-"):
+            raise SystemExit(f"cowbell: refused — session id {resume_id!r} reads as an option")
         spec = list(h.get("resume") or [])
         if spec == ["resume"]:
             # A subcommand goes first: `codex resume <id> --model …`. Its own options are the
@@ -1935,8 +2063,21 @@ def build_argv(cat: dict, h: dict, model: str = "", lane: str = "", allow: str =
     return argv + list(extra or [])
 
 
+# C0 controls and DEL: a line typed into a pane's shell acts on them even inside quotes (^U, \r).
+CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+# Display text from another account's stores also loses C1 controls (terminal escapes).
+CONTROL_WIDE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# Starts with a letter or digit: never an option (`--dangerously-skip-permissions`) nor `..`.
+SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
 def shell_join(parts: list[str]) -> str:
+    """Quote words for a shell. A word with a control character is refused, never quoted: shlex
+    keeps the byte, and an interactive shell's line editor acts on it before quoting applies."""
     import shlex
+    for p in parts:
+        if CONTROL.search(str(p)):
+            raise SystemExit(f"cowbell: refused — a control character in a command word: {str(p)!r}")
     return " ".join(shlex.quote(p) for p in parts)
 
 
@@ -2033,6 +2174,8 @@ def process_cwds(pids: list[int]) -> dict[int, str]:
 
 def agent_processes(table: dict[int, dict] | None = None, cwds=process_cwds) -> list[dict]:
     """Agent CLIs on a terminal, not under herdr (herdr lists its own) and not nested in another agent."""
+    t0 = time.perf_counter()
+    scanned_ps = table is None
     table = ps_table() if table is None else table
     kinds = {pid: exe_kind(p["argv"]) for pid, p in table.items()}
 
@@ -2048,6 +2191,7 @@ def agent_processes(table: dict[int, dict] | None = None, cwds=process_cwds) -> 
     found = [pid for pid, k in kinds.items()
              if k and table[pid]["tty"] not in ("??", "?", "-") and outside(pid)]
     where = cwds(found)
+    trace.event("ps", ms=_ms(t0), scanned=len(table), agents=len(found), ps=int(scanned_ps))
     return [{"pane_id": f"pid:{pid}", "pid": pid, "tty": table[pid]["tty"], "agent": kinds[pid],
              "cwd": where[pid], "agent_status": "running", "tab_id": None, "workspace_id": None,
              "terminal_title_stripped": kinds[pid], "agent_session": {}}
@@ -2077,13 +2221,172 @@ def _here_exe(h: dict, cmd: list[str]) -> str:
     return exe
 
 
-def unix_confine(cat: dict, root: str, cmd: list[str], h: dict | None = None) -> list[str]:
-    """Drop to the harness or place's unix_user, then optional nono. agent-run if it is on PATH, else sudo -u."""
+def _plain_abs(path: str) -> bool:
+    """Absolute, and no symlink anywhere in it (its realpath is its own normal form)."""
+    return os.path.isabs(path) and os.path.realpath(path) == os.path.normpath(path)
+
+
+def _home_ok(pw) -> bool:
+    """pw's home is an absolute directory other than /, owned by that account."""
+    home = str(getattr(pw, "pw_dir", "") or "")
+    if not os.path.isabs(home) or os.path.realpath(home) == "/":
+        return False
+    try:
+        st = os.stat(home)
+    except OSError:
+        return False
+    import stat
+    return stat.S_ISDIR(st.st_mode) and st.st_uid == getattr(pw, "pw_uid", None)
+
+
+def _uid_owns(cat: dict, d: str, pw) -> bool:
+    """d is at or under pw's home (a sound one, _home_ok), or inside a place whose own unix_user
+    is that account."""
+    home = str(getattr(pw, "pw_dir", "") or "")
+    if _home_ok(pw) and at_or_beneath(d, os.path.realpath(home)):
+        return True
+    name = str(getattr(pw, "pw_name", "") or "")
+    return bool(name) and any(str(p.get("unix_user") or "").strip() == name and at_or_beneath(d, p["cwd"])
+                              for p in places(cat).values())
+
+
+def launch_root(cat: dict, root: str, h: dict | None = None) -> str:
+    """Where a launch starts. A harness with its own `cwd` (a tier's own folder) starts there, never
+    in the caller's directory; otherwise root. The folder must be absolute with no symlink in it,
+    belong to the account the harness runs as (under its home, or inside a place that account
+    owns), and be enterable by the invoking user: cowbell starts the process there before the drop."""
     import pwd
+    hh = h or {}
+    fixed = str(hh.get("cwd") or "").strip()
+    if not fixed:
+        return root
+    who = hh.get("id") or "this harness"
+    if not _plain_abs(fixed):
+        raise SystemExit(f"cowbell: refused — {who}: cwd {fixed!r} must be an absolute path with no symlink in it")
+    d = os.path.normpath(fixed)
+    uid = str(hh.get("unix_user") or "").strip()
+    try:
+        pw = pwd.getpwnam(uid) if uid else pwd.getpwuid(os.geteuid())
+    except KeyError:
+        raise SystemExit(f"cowbell: unix_user {uid!r} is not on this host")
+    if not _home_ok(pw):
+        raise SystemExit(f"cowbell: refused — {who}: the home of {uid or 'this user'} is not a directory it owns")
+    if not _uid_owns(cat, d, pw):
+        raise SystemExit(
+            f"cowbell: refused — {who}: cwd {tilde(d)} is not under {uid or 'your'} home "
+            "nor inside a place that account owns"
+        )
+    if not os.path.isdir(d) or not os.access(d, os.X_OK):
+        raise SystemExit(
+            f"cowbell: refused — {who} starts in {tilde(d)}, which this user cannot enter; "
+            "this user needs traverse (search) on it"
+        )
+    return d
+
+
+def _wall_file_problem(path: str) -> str:
+    """Why a nono profile path cannot be trusted as a wall, or "" when it can: absolute, a regular
+    file (not a symlink), owned by root, not writable by group or other."""
+    import stat
+    if not os.path.isabs(path):
+        return "is not an absolute path"
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return "does not exist"
+    if not stat.S_ISREG(st.st_mode):
+        return "is not a regular file"
+    if st.st_uid != 0:
+        return "is not owned by root"
+    if st.st_mode & 0o022:
+        return "is writable by group or other"
+    return ""
+
+
+def _door_problem(h: dict, target_uid: int | None = None) -> str:
+    """Why a door harness's command cannot be trusted to raise its own wall, or "". The command
+    and every directory above it are owned by root (a door raises a wall for another account, so
+    like a nono_profile it is root-installed: a copy in a synced or user-writable tree is refused),
+    and none is writable by group or other (a root-owned sticky directory such as /tmp is allowed:
+    others cannot replace what they do not own there)."""
+    import stat
+    command = str(h.get("command") or "")
+    if not command or not os.path.isabs(command):
+        return "a door needs an absolute `command` (the program that raises the wall)"
+    if not _plain_abs(command):
+        return f"door command {command} has a symlink in its path; name the real file"
+    real = os.path.realpath(command)
+    owners = {0} - ({target_uid} if target_uid is not None else set())
+    try:
+        st = os.stat(real)
+    except OSError:
+        return f"door command {command} does not exist"
+    if not stat.S_ISREG(st.st_mode):
+        return f"door command {command} is not a regular file"
+    if st.st_uid not in owners:
+        return f"door command {command} is owned by uid {st.st_uid}, not root"
+    if st.st_mode & 0o022:
+        return f"door command {command} is writable by group or other"
+    d = os.path.dirname(real)
+    while True:
+        try:
+            ds = os.stat(d)
+        except OSError:
+            return f"door directory {d} cannot be read"
+        if ds.st_uid not in owners:
+            return f"door directory {d} is owned by uid {ds.st_uid}, not root"
+        if ds.st_mode & 0o022 and not (ds.st_mode & stat.S_ISVTX and ds.st_uid == 0):
+            return f"door directory {d} is writable by group or other"
+        if d == os.path.dirname(d):
+            return ""
+        d = os.path.dirname(d)
+
+
+def unix_confine(cat: dict, root: str, cmd: list[str], h: dict | None = None) -> list[str]:
+    """Drop to the harness, place or default unix_user through agent-run, inside its wall.
+
+    The level that names the uid names the wall: a harness unix_user needs that harness's own
+    nono_profile or wall = "door"; a place's, the place's nono_profile; [defaults]', its own. A
+    harness wall without a harness unix_user is refused. Fails closed: a drop to another account
+    with no wall refuses, door and nono_profile anywhere in the chain refuse, a nono_profile must
+    be an absolute root-owned file nobody else can write, and a drop needs agent-run (no sudo -u
+    fallback: that would skip agent-run-helper's checks). `--allow-cwd` is passed only when no uid
+    is dropped, the harness starts in its own cwd, or the launch is inside a place whose own
+    unix_user is the dropping account."""
+    import pwd
+    root = launch_root(cat, root, h)
     pl = place_for(cat, root)
+    hh, pp = h or {}, pl or {}
     defaults = cat.get("defaults") or {}
-    uid = (((h or {}).get("unix_user") or (pl or {}).get("unix_user") or defaults.get("unix_user") or "")).strip()
-    require = (pl or {}).get("require_uid")
+    who = hh.get("id") or "this launch"
+
+    def val(level: dict, key: str) -> str:
+        return str(level.get(key) or "").strip()
+
+    h_uid, h_prof, h_wall = val(hh, "unix_user"), val(hh, "nono_profile"), val(hh, "wall")
+    if h_wall and h_wall != "door":
+        raise SystemExit(f'cowbell: harness wall = {h_wall!r}: the only value is "door" (the command raises its own wall)')
+    if (h_prof or h_wall) and not h_uid:
+        raise SystemExit(f"cowbell: refused — {who} names a wall but no unix_user of its own; "
+                         "the level that names the account names the wall")
+    for level, where in ((pp, "place"), (defaults, "[defaults]")):
+        if val(level, "wall"):
+            raise SystemExit(f'cowbell: refused — wall = "door" on a {where}; it belongs on the harness '
+                             "that raises its own wall, with that harness's unix_user")
+    if h_uid:
+        uid, prof, door, port = h_uid, h_prof, h_wall == "door", hh.get("nono_proxy_port")
+    elif val(pp, "unix_user"):
+        uid, prof, door, port = val(pp, "unix_user"), val(pp, "nono_profile"), False, pp.get("nono_proxy_port")
+    else:
+        uid, prof, door, port = (val(defaults, "unix_user"), val(defaults, "nono_profile"), False,
+                                 defaults.get("nono_proxy_port"))
+    if port is not None and (isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535):
+        raise SystemExit(f"cowbell: refused — {who}: nono_proxy_port {port!r} must be a port number 1024-65535")
+    if port is not None and not prof:
+        raise SystemExit(f"cowbell: refused — {who}: nono_proxy_port needs a nono_profile beside it")
+    if door and any(val(level, "nono_profile") for level in (hh, pp, defaults)):
+        raise SystemExit(f'cowbell: refused — {who}: wall = "door" and a nono_profile in the same launch; pick one')
+    require = pp.get("require_uid")
     if require is None:
         require = bool(defaults.get("require_uid"))
     if require and not uid:
@@ -2097,25 +2400,39 @@ def unix_confine(cat: dict, root: str, cmd: list[str], h: dict | None = None) ->
         pw = pwd.getpwnam(uid)
     except KeyError:
         raise SystemExit(f"cowbell: unix_user {uid!r} is not on this host")
-    profile = os.path.expanduser((pl or {}).get("nono_profile") or defaults.get("nono_profile") or "")
+    drop = os.geteuid() != pw.pw_uid
+    if door:
+        why = _door_problem(hh, pw.pw_uid)
+        if why:
+            raise SystemExit(f"cowbell: refused — {who}: {why}")
+    elif drop and not prof:
+        raise SystemExit(
+            f"cowbell: refused — {who} runs as {uid!r} with no wall; set nono_profile beside that "
+            'unix_user, or wall = "door" on a harness whose command raises its own'
+        )
     inner = list(cmd)
-    if profile:
+    if prof:
+        why = _wall_file_problem(prof)
+        if why:
+            raise SystemExit(f"cowbell: refused — nono_profile {prof} {why}")
         nono = shutil.which("nono")
         if not nono:
             raise SystemExit("cowbell: nono is not on PATH (needed for this place)")
-        inner = [nono, "run", "--silent", "--profile", profile, "--allow-cwd", "--"] + inner
-    if os.geteuid() == pw.pw_uid:
+        own_folder = bool(h_uid and val(hh, "cwd"))
+        own_place = val(pp, "unix_user") == uid
+        flags = ["--allow-cwd"] if (not drop or own_folder or own_place) else []
+        if port is not None:  # the loopback port the account's firewall passes to nono's proxy
+            flags += ["--proxy-port", str(port)]
+        inner = [nono, "run", "--silent", "--profile", prof, *flags, "--"] + inner
+    if not drop:
         return inner
     helper = shutil.which("agent-run")
-    if helper:
-        return [helper, uid, "--"] + inner
-    sudo = shutil.which("sudo")
-    if not sudo:
+    if not helper:
         raise SystemExit(
-            f"cowbell: cannot drop to unix user {uid!r} "
-            "(agent-run is not installed and sudo is not on PATH)"
+            f"cowbell: refused — dropping to unix user {uid!r} needs agent-run on PATH "
+            "(cowbell does not fall back to sudo -u, which would skip agent-run's checks)"
         )
-    return [sudo, "-u", uid, "--"] + inner
+    return [helper, uid, "--"] + inner
 
 
 def _sitting_kept(rows: list[dict], name: str, session_id: str) -> tuple[list[dict], dict | None]:
@@ -2165,19 +2482,30 @@ def _record_here(h: dict, name: str, root: str, model: str, lane: str, allow: st
     save_roster(rows)
 
 
+def _expected_cwd(h: dict, root: str) -> str:
+    """The physical directory a launch must land in: a harness's own folder is checked to be
+    symlink-free (launch_root), so it must be exactly that; otherwise wherever root resolves now."""
+    return os.path.normpath(root) if str((h or {}).get("cwd") or "").strip() else os.path.realpath(root)
+
+
 def exec_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", lane="", allow="", deny="",
               seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True,
               name_source: str = "", effort: str = "", dirs: list[str] | None = None):
     """Hand this terminal to the agent. Does not return."""
+    root = launch_root(cat, root, h)
     cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra, effort=effort,
                                 dirs=dirs)
     cmd = unix_confine(cat, root, cmd, h=h)
     exe = _here_exe(h, cmd)
     _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, None, name_source, extra, effort, dirs)
+    trace.event("exec", harness=h.get("id", ""), cmd=shell_join(cmd))
     sys.stdout.write("\x1b[H\x1b[2J" if sys.stdout.isatty() else "")
     print(f"  {paint(name, INK, bold=True)}  {paint(shell_join(cmd), MUTED)}  {paint(tilde(root), FAINT)}")
     sys.stdout.flush()
+    expected = _expected_cwd(h, root)
     os.chdir(root)
+    if os.getcwd() != expected:
+        raise SystemExit(f"cowbell: refused — {tilde(root)} resolved to {tilde(os.getcwd())} after the change of directory")
     os.execv(exe, cmd)
 
 
@@ -2185,16 +2513,30 @@ def spawn_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", l
                seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True,
                name_source: str = "", effort: str = "", dirs: list[str] | None = None) -> dict:
     """Start the agent in a new session at root and return. Assemblies raise N times this way."""
+    root = launch_root(cat, root, h)
     cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra, effort=effort,
                                 dirs=dirs)
     cmd = unix_confine(cat, root, cmd, h=h)
     exe = _here_exe(h, cmd)
-    proc = subprocess.Popen(
-        [exe, *cmd[1:]], cwd=root, start_new_session=True,
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    expected = _expected_cwd(h, root)
+
+    def landed() -> None:  # runs in the child after its chdir(root), before exec
+        if os.getcwd() != expected:
+            raise OSError(f"{root} resolved to {os.getcwd()}")
+
+    try:
+        # preexec_fn is safe only while no other thread exists at fork (cowbell starts none on this
+        # path). If threads are added here, switch to a `sh -c 'cd -P -- "$1" && [ "$(pwd -P)" = "$1" ]
+        # && shift && exec "$@"'` wrapper like the herdr path's.
+        proc = subprocess.Popen(
+            [exe, *cmd[1:]], cwd=root, start_new_session=True, preexec_fn=landed,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except subprocess.SubprocessError as e:
+        raise SystemExit(f"cowbell: refused — the launch folder moved under it ({e})")
     pane_id = f"pid:{proc.pid}"
     _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, pane_id, name_source, extra, effort, dirs)
+    trace.event("spawn", harness=h.get("id", ""), pid=proc.pid, cmd=shell_join(cmd))
     return {"pane_id": pane_id, "pid": proc.pid}
 
 
@@ -2297,27 +2639,36 @@ HERDR_TIMEOUT = 5.0  # seconds; a hung herdr server must not freeze the picker t
 
 
 def herdr(*args: str, expect_json: bool = True, timeout: float = HERDR_TIMEOUT) -> dict:
+    t0 = time.perf_counter()
     try:
         proc = subprocess.run([herdr_bin(), *args], capture_output=True, text=True, check=False, timeout=timeout)
     except subprocess.TimeoutExpired as e:
+        trace.event("herdr", ms=_ms(t0), err="timeout", argv=" ".join(args))
         raise HerdrError(f"herdr {' '.join(args[:2])} timed out after {timeout:g}s") from e
     except OSError as e:  # herdr not installed: standalone cowbell still works
+        trace.event("herdr", ms=_ms(t0), err="os", argv=" ".join(args))
         raise HerdrError(f"herdr unavailable: {e}") from e
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip()
+        trace.event("herdr", ms=_ms(t0), rc=proc.returncode, argv=" ".join(args), err=(err or "exit")[:120])
         raise HerdrError(err or f"herdr {' '.join(args)} exited {proc.returncode}")
     out = (proc.stdout or "").strip()
     if not out:
+        trace.event("herdr", ms=_ms(t0), rc=0, argv=" ".join(args))
         return {}
     try:
         payload = json.loads(out)
     except json.JSONDecodeError:
         if expect_json:
+            trace.event("herdr", ms=_ms(t0), err="json", argv=" ".join(args))
             raise HerdrError(f"herdr {' '.join(args)}: non-JSON output: {out[:120]}")
+        trace.event("herdr", ms=_ms(t0), rc=0, argv=" ".join(args))
         return {"raw": out}
     if isinstance(payload, dict) and "error" in payload:
         e = payload["error"]
+        trace.event("herdr", ms=_ms(t0), err="payload", argv=" ".join(args))
         raise HerdrError(e.get("message", str(e)) if isinstance(e, dict) else str(e))
+    trace.event("herdr", ms=_ms(t0), rc=0, argv=" ".join(args), bytes=len(out))
     if isinstance(payload, dict) and "result" in payload:
         r = payload["result"]
         return r if isinstance(r, dict) else {"value": r}
@@ -2537,14 +2888,18 @@ def shell_ready_from_process(info: dict) -> bool:
 
 def wait_shell(pane_id: str, timeout_ms: int = 10000) -> None:
     """A just-created tab is often still spawning; agent start then returns agent_pane_busy."""
+    t0, polls, ready = time.perf_counter(), 0, 0
     deadline = time.time() + timeout_ms / 1000
     while time.time() < deadline:
+        polls += 1
         try:
             if shell_ready_from_process(herdr("pane", "process-info", "--pane", pane_id)):
-                return
+                ready = 1
+                break
         except (HerdrError, OSError):
             pass
         time.sleep(0.15)
+    trace.event("shell", pane=pane_id, ms=_ms(t0), polls=polls, ready=ready)
 
 
 def start_native(name: str, kind: str, pane_id: str, argv: list[str]) -> dict:
@@ -2553,7 +2908,7 @@ def start_native(name: str, kind: str, pane_id: str, argv: list[str]) -> dict:
     if argv:
         args += ["--", *argv]
     last: HerdrError | None = None
-    for _ in range(5):
+    for attempt in range(5):
         try:
             return herdr(*args, timeout=35)  # herdr itself waits up to 30s (--timeout 30000)
         except HerdrError as e:
@@ -2562,6 +2917,7 @@ def start_native(name: str, kind: str, pane_id: str, argv: list[str]) -> dict:
             if any(k in msg for k in ("not_ready", "blocked", "agent_not_ready")):
                 return {}
             if "agent_pane_busy" in msg or "not an available shell" in msg:
+                trace.event("start", pane=pane_id, attempt=attempt + 1, busy=1)
                 time.sleep(0.4)
                 continue
             raise
@@ -2573,6 +2929,10 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
                   focus: bool = True, pen: bool = False, split: bool = False,
                   reuse_pane: dict | None = None, name_source: str = "", effort: str = "",
                   dirs: list[str] | None = None) -> dict:
+    t0 = time.perf_counter()
+    trace.event("raise", phase="begin", harness=h.get("id", ""), agent=h.get("kind", ""),
+                name=name, resume=1 if resume_id else 0)
+    root = launch_root(cat, root, h)
     argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, sitting=name, extra=extra, effort=effort,
                       dirs=dirs)
     place = place_for(cat, root)
@@ -2582,28 +2942,39 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
     # Otherwise create a tab in the project workspace that already exists (proj:<dir>).
     # reuse_pane resumes into a pane that is still present — never a new tab.
     if reuse_pane:
-        pane = reuse_pane
+        pane, how = reuse_pane, "reuse"
     elif pen and place and place.get("workspace_label"):
-        pane = create_tab(workspace_by_label(place["workspace_label"]), root, name, place["workspace_label"])
+        pane, how = create_tab(workspace_by_label(place["workspace_label"]), root, name, place["workspace_label"]), "pen"
     else:
         wid = project_workspace(root, ctx)
         if split:
             pane = split_pane(wid, root) if wid else None
+            how = "split"
             if not pane:
-                pane = create_tab(pick_workspace(ctx, root), root, name)
+                pane, how = create_tab(pick_workspace(ctx, root), root, name), "tab"
         else:
-            pane = create_tab(wid or pick_workspace(ctx, root), root, name)
+            pane, how = create_tab(wid or pick_workspace(ctx, root), root, name), "tab"
     pid = pane["pane_id"]
+    trace.event("raise", phase="pane", how=how, pane=pid, ms=_ms(t0))
     launched_session = ""
+    mode = "run"
     try:
         if reuse_pane or confined != base or is_wrapper(h):
             wait_shell(pid)
-            herdr("pane", "run", pid, shell_join(confined), expect_json=False)
+            if any(CONTROL.search(str(w)) for w in [*confined, root]):
+                raise SystemExit("cowbell: refused — a control character in the launch line or its folder")
+            line = shell_join(confined)
+            if confined != base:  # a reused pane may sit anywhere: start the drop in its folder, physically
+                q = shell_join([root])
+                line = f'cd -P -- {q} && [ "$(pwd -P)" = {q} ] && {line}'
+            herdr("pane", "run", pid, line, expect_json=False)
         else:
+            mode = "native"
             res = start_native(name, h["kind"], pid, argv)
             launched_session = ((res.get("agent") or {}).get("agent_session") or {}).get("value") or ""
-    except HerdrError:
-        if pane.get("tab_id") and not reuse_pane:  # do not leave an empty tab behind a failed launch
+    except (HerdrError, SystemExit):
+        trace.event("raise", phase="fail", how=how, pane=pid, ms=_ms(t0))
+        if pane.get("tab_id") and not reuse_pane:  # do not leave an empty tab behind a failed or refused launch
             try:
                 herdr("tab", "close", pane["tab_id"])
             except HerdrError:
@@ -2635,6 +3006,7 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
             herdr("tab", "focus", pane["tab_id"])
         except HerdrError:
             pass
+    trace.event("raise", phase="done", how=how, mode=mode, pane=pid, ms=_ms(t0), cmd=shell_join(base))
     return pane
 
 
@@ -5515,6 +5887,7 @@ def picker(ctx: Ctx, cat: dict) -> int:
 
     try:
         while True:
+            t_frame = time.perf_counter()
             full_cat = load_catalog()
             place = place_for(full_cat, root)
             cat = scoped_catalog(full_cat, place)  # flows below (wizard, quick start) see only this place's harnesses
@@ -5528,8 +5901,14 @@ def picker(ctx: Ctx, cat: dict) -> int:
             wider = None
             if top and os.path.realpath(top) != os.path.realpath(root):
                 wider = sum(1 for a in agents if a.get("cwd") and at_or_beneath(a["cwd"], top))
+            t_hist = time.perf_counter()
+            history = launch_history(full_cat, root)
+            hist_ms = _ms(t_hist)
+            t_reg = time.perf_counter()
             reg = build_registry(cat, root, agents, panes, rows, matcher=matcher_for(root),
-                                 tab_label=tab_labels(snap), history=launch_history(full_cat, root))
+                                 tab_label=tab_labels(snap), history=history)
+            trace.event("frame", ms=_ms(t_frame), history_ms=hist_ms, registry_ms=_ms(t_reg),
+                        live=len(reg["live"]), cold=len(reg["cold"]), startable=len(reg["startable"]))
             if place:
                 reg["place_note"] = place["name"] + (" · from ~" if remapped and root == place["cwd"] else "")
             remember_live(reg, rows)
@@ -5710,8 +6089,11 @@ def choose_host(herdr_up: bool, env=None) -> Ctx:
     env = os.environ if env is None else env
     wants_tab = env.get("COWBELL_MODE") == "tab" or (caller_is_agent(env) and env.get("COWBELL_MODE") != "here")
     if wants_tab and herdr_up and in_herdr_pane(env):
-        return Ctx.from_env(env)
-    return Ctx(cwd=os.getcwd(), mode="here", live=CombinedLive(HerdrLive() if herdr_up else None, ProcessScan()))
+        ctx = Ctx.from_env(env)
+    else:
+        ctx = Ctx(cwd=os.getcwd(), mode="here", live=CombinedLive(HerdrLive() if herdr_up else None, ProcessScan()))
+    trace.event("host", mode=ctx.mode, herdr=int(bool(getattr(ctx.live, "herdr", False))))
+    return ctx
 
 
 NEW_OPTS = frozenset({
@@ -5759,7 +6141,23 @@ def new_unknown_flags(opts: dict, pos: list[str]) -> list[str]:
     return bad
 
 
+def take_debug(argv: list[str]) -> list[str]:
+    """`--debug` before `--` turns the trace on and is not a command or a harness flag."""
+    if "--" in argv:
+        cut = argv.index("--")
+        head, tail = argv[:cut], argv[cut:]
+    else:
+        head, tail = argv, []
+    if "--debug" in head:
+        trace.force()
+        head = [a for a in head if a != "--debug"]
+    return head + tail
+
+
 def main(argv: list[str]) -> int:
+    argv = take_debug(list(argv))
+    if trace.enabled():
+        trace.event("start", argv=" ".join(argv) or "(default)", cwd=os.getcwd())
     if argv and argv[0] in ("-h", "--help"):
         print(__doc__); return 0
     if argv and argv[0] in ("-V", "--version"):
