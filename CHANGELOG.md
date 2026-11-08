@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Agent marks no longer depend on a font installed by hand. With the Lobe Icons Font installed, kinds show its logos; without it, one ASCII letter per kind (`C` claude, `G` grok, `X` codex, …) instead of empty boxes. `COWBELL_GLYPHS=lobe|text` forces either. `cowbell font` reports what it found; `cowbell font install` downloads the pinned v5.23.0 font, refuses it unless the sha256 matches, and writes it to the user font directory.
 - `COWBELL_DEBUG=1` or `--debug` appends a timed trace of each herdr call, the history scan, trust checks, process scan, picker frame, shell wait, and the launch command to `debug.log` in the state directory. Off unless set.
 - `a` on a launch sheet saves its shape as a named agent (a `[[harness]]` row copied whole from this one, with the sheet's model, effort, permissions and tools as defaults); the sheet stays open and launches nothing. Not on a resume sheet.
 
