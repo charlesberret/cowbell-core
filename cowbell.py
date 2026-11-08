@@ -16,6 +16,8 @@
   cowbell adopt [name] [--pane ID]  put a live sitting cowbell did not start on the roster
   cowbell list [--all]          roster rows (default: this directory)
   cowbell catalog               every harness: kind, egress, installed, trust badge
+  cowbell accept [id ...]       run each row's `check` now and record it. Launch does this itself
+                                when a row's last pass is over 7 days old, after its `requires`
   cowbell reconcile [--dry-run] rewrite a pane border from the sitting and the agent Herdr detects
   cowbell identity stamp        publish $glyph for every live herdr agent pane (detector kind)
   cowbell identity sync         restamp or clear one pane from a herdr occupancy event
@@ -831,6 +833,74 @@ def is_wrapper(h: dict) -> bool:
 
 def installed(h: dict) -> bool:
     return os.path.exists(h["command"]) if is_wrapper(h) else bool(shutil.which(h["kind"]))
+
+
+# A row may carry `requires` (argvs run before every launch, e.g. start the model server it talks
+# to) and `check` (one argv: its acceptance). A row whose check has no pass in ACCEPT_MAX_AGE runs
+# the check at launch, after `requires`, and opens only if it passes. `cowbell accept` runs it ahead.
+
+ACCEPT_MAX_AGE = 7 * 24 * 3600
+
+
+def accept_path() -> Path:
+    return state_dir() / "accept.json"
+
+
+def load_accepts() -> dict:
+    try:
+        data = json.loads(accept_path().read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def accepted(h: dict, now: float | None = None, accepts: dict | None = None) -> bool:
+    """True for a row with no check, or whose check last passed within ACCEPT_MAX_AGE."""
+    if not h.get("check"):
+        return True
+    rec = (load_accepts() if accepts is None else accepts).get(h["id"]) or {}
+    return bool(rec.get("ok")) and (now or time.time()) - float(rec.get("ts") or 0) < ACCEPT_MAX_AGE
+
+
+def unavailable_reason(h: dict) -> str:
+    """'' when the row can start; otherwise why not, in words a person can act on."""
+    if not installed(h):
+        return f"{h['id']} is not installed here ({h.get('command') or h['kind']})"
+    return ""
+
+
+def run_check(h: dict) -> tuple[bool, str]:
+    """Run the row's check; record and return (passed, last line of its output)."""
+    proc = subprocess.run(list(h["check"]), capture_output=True, text=True)
+    out = proc.stdout.strip().splitlines() or proc.stderr.strip().splitlines()  # the verdict is on stdout
+    last = out[-1] if out else f"exit {proc.returncode}"
+    accepts = load_accepts()
+    accepts[h["id"]] = {"ok": proc.returncode == 0, "ts": time.time(), "detail": last}
+    tmp = accept_path().with_suffix(".tmp")
+    tmp.write_text(json.dumps(accepts, indent=2) + "\n")
+    tmp.replace(accept_path())
+    return proc.returncode == 0, last
+
+
+def run_requires(h: dict) -> None:
+    """Run each `requires` argv in order, output to this terminal; the first failure refuses the launch."""
+    for argv in h.get("requires") or []:
+        trace.event("requires", harness=h.get("id", ""), cmd=shell_join(list(argv)))
+        rc = subprocess.run(list(argv)).returncode
+        if rc:
+            raise SystemExit(f"cowbell: refused — {h['id']} requires `{shell_join(list(argv))}`, which exited {rc}")
+
+
+def ensure_accepted(h: dict) -> None:
+    """A row with a check and no fresh pass runs it now; a failure refuses the launch."""
+    if accepted(h):
+        return
+    print(f"cowbell: checking {h['id']} (no pass in the last 7 days)", file=sys.stderr)
+    ok, last = run_check(h)
+    trace.event("check", harness=h.get("id", ""), ok=ok, detail=last)
+    if not ok:
+        raise SystemExit(f"cowbell: refused — {h['id']} failed its check: {last}")
+    print(f"cowbell: {last}", file=sys.stderr)
 
 
 # --- roster --------------------------------------------------------------------
@@ -2541,7 +2611,11 @@ def spawn_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", l
 
 
 def launch(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", *args, **kw):
-    """Start or resume through the host chosen once: a new herdr tab, or this terminal."""
+    """Start or resume through the host chosen once: a new herdr tab, or this terminal.
+    The row's `requires` run first, here, so a model server is up before the agent asks it; then a
+    stale `check` runs, so an unproven row never opens."""
+    run_requires(h)
+    ensure_accepted(h)
     return ctx.launch.start(cat, h, name, root, ctx, *args, **kw)
 
 
@@ -3736,8 +3810,8 @@ def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="",
     h = harness_by_id(cat, hid)
     if not h:
         raise SystemExit(f"cowbell: unknown harness {hid!r} (see: cowbell catalog)")
-    if not installed(h):
-        raise SystemExit(f"cowbell: {hid} is not installed here ({h.get('command') or h['kind']})")
+    if unavailable_reason(h):
+        raise SystemExit(f"cowbell: {unavailable_reason(h)}")
     lane = lane or harness_lane(h, cat)
     allow = allow or harness_tools(h)[0]
     deny = deny or harness_tools(h)[1]
@@ -3780,7 +3854,7 @@ def cmd_catalog(cat: dict) -> None:
     print(f"{'harness':<16} {'kind':<8} {'egress':<7} {'installed':<9} {'badge':<10} title")
     for h in cat.get("harness", []):
         print(f"{h['id']:<16} {h['kind']:<8} {GLYPH.get(h['egress'], '?') + ' ' + h['egress']:<7} "
-              f"{'yes' if installed(h) else 'no':<9} {trust_badge(h['trust_tool']):<10} {h.get('title', '')}")
+              f"{('yes' if accepted(h) else 'unproven') if installed(h) else 'no':<9} {trust_badge(h['trust_tool']):<10} {h.get('title', '')}")
 
 
 KIND_PROBE = {  # argv that prints usage without launching a session
@@ -3817,6 +3891,26 @@ def flag_probe(h: dict, run=subprocess.run) -> list | None:
     return [a for a in declared_flags(h) if a not in help_text]
 
 
+def cmd_accept(cat: dict, ids: list[str]) -> int:
+    """`cowbell accept [id ...]`: run each row's check (default: every row that has one) and record it."""
+    for i in ids:
+        if not harness_by_id(cat, i):
+            raise SystemExit(f"cowbell: unknown harness {i!r} (see: cowbell catalog)")
+    rows = [harness_by_id(cat, i) for i in ids] if ids else [h for h in cat.get("harness", []) if h.get("check")]
+    if not rows:
+        print("cowbell: no row has a check")
+        return 0
+    bad = 0
+    for h in rows:
+        if not h.get("check"):
+            print(f"{h['id']:<20} no check (always offered)")
+            continue
+        ok, last = run_check(h)
+        bad += not ok
+        print(f"{h['id']:<20} {'pass' if ok else 'FAIL'}  {last}")
+    return 1 if bad else 0
+
+
 def cmd_catalog_check(cat: dict) -> int:
     """`cowbell catalog --check`: reject a malformed row by name, and probe
     each installed harness's help for its declared flags. A help miss is a `warn` (help
@@ -3849,6 +3943,13 @@ def cmd_catalog_check(cat: dict) -> int:
             problems.append(f"harness {hid}: add_dir_flag must be a flag string")
         if h.get("effort") and not ef:
             problems.append(f"harness {hid}: effort {h['effort']!r} set but no effort_flag")
+        ck = h.get("check")
+        if ck is not None and not (isinstance(ck, list) and ck and all(isinstance(x, str) for x in ck)):
+            problems.append(f"harness {hid}: check must be one argv, a list of strings")
+        rq = h.get("requires")
+        if rq is not None and not (isinstance(rq, list) and all(
+                isinstance(a, list) and a and all(isinstance(x, str) for x in a) for a in rq)):
+            problems.append(f"harness {hid}: requires must be a list of argvs (lists of strings)")
         if not installed(h):
             unchecked.append(hid)
             continue
@@ -5686,8 +5787,8 @@ def edit_sitting(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
     h = harness_by_id(cat, hid)
     if not h:
         print(f"  unknown harness {hid}"); return False
-    if not installed(h):
-        print(f"  {hid} is not installed here"); return False
+    if unavailable_reason(h):
+        print(f"  {unavailable_reason(h)}"); return False
     v = trust_match(h["trust_tool"], root)
     if v["verdict"] == "blocked":
         print(f"  ⊘ refused: {hid} on {tilde(root)} is blocked {v['flag']}"); return False
@@ -5717,8 +5818,8 @@ def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
     if i is None:
         return False
     h = hs[i]
-    if not installed(h):
-        print(f"  {h['id']} is not installed here"); return False
+    if unavailable_reason(h):
+        print(f"  {unavailable_reason(h)}"); return False
     v = verdicts[h["id"]]
     if v["verdict"] == "blocked":
         print(f"  ⊘ refused: {h['id']} on {tilde(root)} is blocked {v['flag']}"); return False
@@ -5732,8 +5833,8 @@ def raise_quick(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
     h = harness_by_id(cat, hid)
     if not h:
         print(f"  unknown harness {hid}"); return False
-    if not installed(h):
-        print(f"  {hid} is not installed here"); return False
+    if unavailable_reason(h):
+        print(f"  {unavailable_reason(h)}"); return False
     v = trust_match(h["trust_tool"], root)
     if v["verdict"] == "blocked":
         print(f"  ⊘ refused: {hid} on {tilde(root)} is blocked {v['flag']}"); return False
@@ -6219,6 +6320,8 @@ def main(argv: list[str]) -> int:
         if opts.get("check"):
             return cmd_catalog_check(cat)
         cmd_catalog(cat); return 0
+    if cmd == "accept":
+        return cmd_accept(cat, pos)
     if cmd == "enter":
         if not pos:
             raise SystemExit("enter <name>")
