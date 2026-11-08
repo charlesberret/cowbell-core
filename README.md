@@ -52,7 +52,7 @@ In [herdr](https://github.com/herdrdev/herdr), the plugin [`herdr-cowbell`](http
 
 ## Install
 
-cowbell is one Python file with no dependencies. It needs **Python 3.11 or newer**. macOS ships `/usr/bin/python3` at 3.9, which is too old; `brew install python` or `uv python install 3.12` is enough. It runs on macOS and Linux.
+cowbell is one Python file with no required dependencies (the icon font below is optional). It needs **Python 3.11 or newer**. macOS ships `/usr/bin/python3` at 3.9, which is too old; `brew install python` or `uv python install 3.12` is enough. It runs on macOS and Linux.
 
 From a clone:
 
@@ -70,6 +70,27 @@ ln -s "$PWD/bin/cowbell" "$HOME/.local/bin/cowbell"
 ```
 
 `$HOME/.local/bin` must be on your PATH. Then run `cowbell` in any project directory.
+
+### Icons for each agent (optional)
+
+Each row shows a mark for its agent's kind. The marks come from the [Lobe Icons Font](https://github.com/hschne/lobe-icons-font) (MIT), which is not part of macOS or any Linux distribution. Without it, cowbell shows one letter for each kind instead: `C` claude, `G` grok, `X` codex, `M` gemini, `A` antigravity, `P` pi, `D` devin, `H` copilot, `O` openai, `L` ollama, and `·` for anything else. To get the marks:
+
+```bash
+cowbell font install
+```
+
+Expected output: `installed: <font dir>/lobe-icons.ttf (v5.23.0, sha256 checked)`. It downloads one pinned release, refuses any file whose sha256 differs, and writes it to `~/Library/Fonts` on macOS or `~/.local/share/fonts` on Linux (then runs `fc-cache`). It needs no sudo. `cowbell font` reports whether the font was found and which kind of mark cowbell is using.
+
+If the marks still draw as boxes, tell your terminal to take that range from the font, then open a new window:
+
+```
+# Ghostty (~/.config/ghostty/config)
+font-codepoint-map = U+F4000-U+F47FF=lobe-icons
+# kitty (~/.config/kitty/kitty.conf)
+symbol_map U+F4000-U+F47FF lobe-icons
+```
+
+cowbell checks the machine it runs on. Over ssh the terminal that draws the screen is on another machine, so set `COWBELL_GLYPHS=lobe` (font is on your local machine) or `COWBELL_GLYPHS=text` (it is not).
 
 ## Status
 
@@ -152,6 +173,7 @@ cowbell list [--all]
 cowbell catalog              every harness: kind, egress, installed, trust badge
 cowbell catalog --check      fail named malformed rows; warn on declared flags missing from a CLI's help
 cowbell reconcile [--dry-run]   pane borders that claim a harness, matched to the agent Herdr detects
+cowbell font [install]       is the icon font here; install fetches the pinned font
 ```
 
 `bin/cowbell` picks a python ≥ 3.11, for tomllib, and follows symlinks. macOS `/usr/bin/python3` is 3.9 and must not run this. Stdlib only.

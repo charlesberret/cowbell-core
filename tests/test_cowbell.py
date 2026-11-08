@@ -15,6 +15,9 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# The suite pins Lobe marks so it reads the same with or without the font on this
+# host. GlyphFallback covers the text marks and the detection.
+os.environ["COWBELL_GLYPHS"] = "lobe"
 import cowbell as hm  # noqa: E402
 
 
@@ -1316,6 +1319,53 @@ class Standalone(unittest.TestCase):
     def test_in_herdr_pane(self):
         self.assertTrue(hm.in_herdr_pane({"HERDR_PANE_ID": "w1:p1"}))
         self.assertFalse(hm.in_herdr_pane({"TERM": "xterm"}))
+
+
+class GlyphFallback(unittest.TestCase):
+    """No icon font: one ASCII letter per kind, never a box. The font installs pinned."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        patches = [
+            mock.patch.dict(os.environ, {"COWBELL_GLYPHS": ""}),
+            mock.patch.object(hm, "_GLYPH_MODE", None),
+            mock.patch.object(hm, "font_dirs", lambda: [self.tmp / "fonts"]),
+        ]
+        for p in patches:
+            p.start(); self.addCleanup(p.stop)
+
+    def test_text_marks_without_the_font(self):
+        self.assertIsNone(hm.lobe_font_path())
+        self.assertEqual(hm.glyph_mode(), "text")
+        self.assertEqual(hm.glyph_for("claude"), "C")
+        self.assertEqual(hm.glyph_for("grok"), "G")
+        self.assertEqual(hm.glyph_for("droid"), "·")
+        self.assertEqual(set(hm.TEXT_GLYPH), set(hm.LOBE_GLYPH))
+        for ch in hm.TEXT_GLYPH.values():
+            self.assertTrue(ch.isascii() and len(ch) == 1)
+
+    def test_lobe_marks_once_the_font_is_there(self):
+        (self.tmp / "fonts").mkdir()
+        (self.tmp / "fonts" / hm.LOBE_FONT_FILE).write_bytes(b"x")
+        self.assertEqual(hm.glyph_mode(), "lobe")
+        self.assertEqual(hm.glyph_for("claude"), hm.LOBE_GLYPH["claude"])
+
+    def test_env_forces_the_mode(self):
+        with mock.patch.dict(os.environ, {"COWBELL_GLYPHS": "lobe"}):
+            self.assertEqual(hm.glyph_for("codex"), hm.LOBE_GLYPH["codex"])
+        with mock.patch.dict(os.environ, {"COWBELL_GLYPHS": "text"}):
+            self.assertEqual(hm.glyph_for("codex"), "X")
+
+    def test_install_writes_only_the_pinned_bytes(self):
+        good = b"pinned font bytes"
+        with mock.patch.object(hm, "LOBE_FONT_SHA256", hashlib.sha256(good).hexdigest()), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(hm.cmd_font_install(fetch=lambda url: b"tampered"), 1)
+            self.assertFalse((self.tmp / "fonts" / hm.LOBE_FONT_FILE).exists())
+            self.assertEqual(hm.cmd_font_install(fetch=lambda url: good), 0)
+            self.assertEqual((self.tmp / "fonts" / hm.LOBE_FONT_FILE).read_bytes(), good)
+            self.assertEqual(hm.cmd_font_install(fetch=lambda url: self.fail("refetched")), 0)
 
 
 class SidebarTokens(unittest.TestCase):
