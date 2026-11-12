@@ -1,0 +1,32 @@
+cowbell — pick an agent for this directory: running here, resume, or start new.
+
+  cowbell                       on a terminal: the picker (running here · resume · start new)
+                                piped: the long registry, same as `cowbell status`
+  cowbell --version             one line, `cowbell X.Y.Z` (the plugin shim compares it)
+  cowbell status [--json] [--place P]   what is raised here (running · resume · new)
+                                --json: machine rows (name, harness, place, cwd, host, state)
+  cowbell <harness>             attach to that harness here, or raise it with defaults
+  cowbell new --harness ID [--model M] [--lane L] [--allow T] [--deny T] [--name N] [--place P] [--spawn] [--pen] [--split]
+                                --spawn: start and return (assemblies raise N times). default: exec here
+                                --pen: a person asks for the place's own herdr pen (a new machine-list line)
+                                --split: a pane split instead of a new tab. `cowbell new -h` prints new's usage
+  cowbell enter <name>          focus if live, else resume
+  cowbell rename <name-or-id> <new>  pin a session name; refresh will not replace it
+  cowbell adopt [name] [--pane ID]  put a live sitting cowbell did not start on the roster
+  cowbell list [--all]          roster rows (default: this directory)
+  cowbell catalog               every harness: kind, egress, installed, trust badge
+  cowbell reconcile [--dry-run] rewrite a pane border from the sitting and the agent Herdr detects
+  cowbell identity stamp        publish $glyph for every live herdr agent pane (detector kind)
+  cowbell identity sync         restamp or clear one pane from a herdr occupancy event
+
+A person running cowbell gets the session in this terminal, including inside herdr
+(`COWBELL_CALLER=person` forces that). An agent caller inside a herdr pane opens a new tab
+in the project workspace (`COWBELL_MODE=here` forces this terminal; `COWBELL_MODE=tab` forces
+a tab, which is how prefix+c still opens a tab). `--split` asks for a pane split instead of a
+tab. `--pen` opens the place's own pen (a new machine-list line). Running also lists agent
+processes found by working directory.
+
+The herdr plugin (herdr-cowbell) adds prefix+c, stop and import-seats on top of this.
+
+Stdlib only; python >= 3.11 (tomllib). fzf is optional.
+
