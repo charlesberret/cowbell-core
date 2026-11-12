@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "cowbell"
 dynamic = ["version"]
 description = "pick an agent for this directory: running, resume, or new"
-readme = { text = "cowbell picks a coding agent for the directory you are in: one already running, a session to resume, or a new one. It runs in any terminal and is the engine behind the herdr plugin herdr-cowbell. Stdlib only, python 3.11 or newer.\n", content-type = "text/markdown" }
+readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -19,19 +19,25 @@ classifiers = [
   "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
 ]
 
+[project.urls]
+Homepage = "https://github.com/charlesberret/cowbell-core"
+Issues = "https://github.com/charlesberret/cowbell-core/issues"
+
 [project.scripts]
-cowbell = "cowbell:cli"
+cowbell = "cowbell_boot:cli"
 
 [tool.hatch.version]
 path = "cowbell.py"
 
 [tool.hatch.build.targets.wheel]
-only-include = ["cowbell.py"]
+only-include = ["cowbell.py", "cowbell_boot.py"]
 
 [tool.hatch.build.targets.wheel.shared-data]
 "harnesses.toml" = "share/cowbell/harnesses.toml"
 
 [tool.hatch.build.targets.sdist]
-only-include = ["cowbell.py", "harnesses.toml", "README.md", "LICENSE"]
+only-include = ["cowbell.py", "cowbell_boot.py", "harnesses.toml", "README.md", "LICENSE"]

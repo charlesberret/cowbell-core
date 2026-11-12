@@ -2,7 +2,16 @@
 
 Type `cowbell` in a directory to launch or re-launch a coding agent there with the settings you choose: model, effort, permissions, tools, other directories. You see the exact command before it runs. The same list shows who is already working here and which sessions can resume.
 
-cowbell is for people who run several coding-agent CLIs (Claude Code, Codex, Grok and similar) across many folders and want to see and reach them by place. The choices are **Resume** or **New Session**, with an **Active** census of who is already working here. Active is every coding agent whose working directory is this one or below it. You can see them. You cannot take them over from this list. Resume is the sessions cowbell can pick up again. New Session is the agents in your catalog that are installed and allowed here, most used here first.
+## Install
+
+```bash
+pipx install git+https://github.com/charlesberret/cowbell-core
+# pipx install cowbell    # after the PyPI name cowbell is reserved
+```
+
+**Requires Python 3.11 or newer.** macOS ships `/usr/bin/python3` at 3.9, which is too old; use pipx (it picks a suitable Python), `brew install python`, or `uv python install 3.12`. Runs on macOS and Linux.
+
+MIT licensed — see [LICENSE](LICENSE).
 
 ```
   ~/code/projects/acme                         g widen to projects · 4 running
@@ -23,6 +32,8 @@ cowbell is for people who run several coding-agent CLIs (Claude Code, Codex, Gro
 
   ⏎ open   n new   + add   a adopt   g widen   o shape   r rename   esc
 ```
+
+cowbell is for people who run several coding-agent CLIs (Claude Code, Codex, Grok and similar) across many folders and want to see and reach them by place. The choices are **Resume** or **New Session**, with an **Active** census of who is already working here. Active is every coding agent whose working directory is this one or below it. You can see them. You cannot take them over from this list. Resume is the sessions cowbell can pick up again. New Session is the agents in your catalog that are installed and allowed here, most used here first.
 
 `o` on a row, or `n`, opens the **launch sheet** for that agent: every setting it takes, the account it runs as, and the command that will run. Here it is at the width of the herdr popup, with model, effort and permissions changed from the defaults:
 
@@ -49,27 +60,6 @@ cowbell is for people who run several coding-agent CLIs (Claude Code, Codex, Gro
 It is mouse-first: click or arrow to a row, Enter or the ⏎ button to open it, Esc to close. A digit jumps to its row, and every hint in the bottom bar is clickable. The list refreshes every two seconds. Off a terminal, or with `COWBELL_PLAIN=1`, it falls back to a typed-number prompt; `NO_COLOR` turns colour off.
 
 In [herdr](https://github.com/herdrdev/herdr), the plugin [`herdr-cowbell`](https://github.com/charlesberret/herdr-cowbell) puts this same picker on `prefix+c` as a popup, and adds `adopt`, `stop` and `import-seats`. The plugin and this command read the same catalog and roster, so a session started in one resumes in the other.
-
-## Install
-
-cowbell is one Python file with no dependencies. It needs **Python 3.11 or newer**. macOS ships `/usr/bin/python3` at 3.9, which is too old; `brew install python` or `uv python install 3.12` is enough. It runs on macOS and Linux.
-
-From a clone:
-
-```bash
-git clone https://github.com/charlesberret/cowbell-core.git
-cd cowbell-core
-./bin/cowbell --version
-```
-
-Expected output: `cowbell X.Y.Z`. To run it from any directory, link the launcher onto your PATH. The launcher follows symlinks and picks a Python 3.11 or newer for you:
-
-```bash
-mkdir -p "$HOME/.local/bin"
-ln -s "$PWD/bin/cowbell" "$HOME/.local/bin/cowbell"
-```
-
-`$HOME/.local/bin` must be on your PATH. Then run `cowbell` in any project directory.
 
 ## Status
 
@@ -159,10 +149,15 @@ cowbell reconcile [--dry-run]   pane borders that claim a harness, matched to th
 ## Development
 
 ```bash
+git clone https://github.com/charlesberret/cowbell-core.git
+cd cowbell-core
 python3 -m unittest discover -s tests -v
+./scripts/public-surface-scan.sh
 ```
 
-`tests/test_pty.py` drives the menu, the prompt and the whole picker in a real pseudo-terminal. The code keeps two seams: `ctx.live`, what is running, and `ctx.launch`, where an agent opens. Every `herdr` CLI call lives in the `# --- herdr adapter` section of `cowbell.py`, and a test enforces it.
+From a clone, `./bin/cowbell --version` also works: the launcher follows symlinks and picks a Python 3.11 or newer for you (macOS `/usr/bin/python3` is 3.9 and must not run this module).
+
+`tests/test_pty.py` drives the menu, the prompt and the whole picker in a real pseudo-terminal. The code keeps two seams: `ctx.live`, what is running, and `ctx.launch`, where an agent opens. Every `herdr` CLI call lives in the `# --- herdr adapter` section of `cowbell.py`, and a test enforces it. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
