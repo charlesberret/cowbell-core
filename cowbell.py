@@ -33,24 +33,30 @@ Stdlib only; python >= 3.11 (tomllib). fzf is optional.
 """
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 11):
+    _v = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    print(
+        f"cowbell needs Python 3.11 or newer (found {_v} at {sys.executable}). "
+        "Install with pipx or Homebrew python.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
 import datetime as _dt
 import json
 import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
+import tomllib
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-
-try:
-    import tomllib
-except ImportError:  # pragma: no cover
-    tomllib = None
 
 __version__ = "0.3.2"
 PLUGIN_ID = "herdr-cowbell"  # only to find config and state that 0.1–0.3 kept in herdr's plugin dirs
@@ -249,7 +255,7 @@ def _seed_fill_record(ids: set[str]) -> None:
 
 def fill_missing_seed_kinds(path: Path) -> None:
     """Once: splice SEED_FILL_IDS from the seed if installed(). Not on every picker tick after the marker is complete."""
-    if not path.is_file() or tomllib is None:
+    if not path.is_file():
         return
     considered = _seed_fill_considered()
     pending = [hid for hid in SEED_FILL_IDS if hid not in considered]
@@ -651,8 +657,6 @@ def prompt_flag(h: dict) -> str | None:
 
 
 def load_catalog() -> dict:
-    if tomllib is None:
-        raise SystemExit("cowbell: python >= 3.11 required (tomllib)")
     p = catalog_path()
     if not p.exists():
         raise SystemExit(f"cowbell: no catalog at {p}")
@@ -3671,8 +3675,6 @@ def _format_harness_block(h: dict) -> str:
 
 
 def _file_schema(path: Path) -> int:
-    if tomllib is None:
-        raise SystemExit("cowbell: python >= 3.11 required (tomllib)")
     with open(path, "rb") as fh:
         data = tomllib.load(fh)
     return data.get("schema", 1) if isinstance(data, dict) else 1
