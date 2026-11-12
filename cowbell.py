@@ -5720,6 +5720,43 @@ NEW_OPTS = frozenset({
 })
 
 
+def status_usage(file=None) -> None:
+    print("cowbell status [--json] [--place P]", file=file)
+    print("  Long registry: live agents, resume rows, and catalog harnesses here.", file=file)
+
+
+def list_usage(file=None) -> None:
+    print("cowbell list [--all]", file=file)
+    print("  Roster entries cowbell tracks (default: this working directory).", file=file)
+
+
+def catalog_usage(file=None) -> None:
+    print("cowbell catalog [--check]", file=file)
+    print("  Every harness: kind, egress, installed, trust badge.", file=file)
+    print("  --check probes declared flags against each installed CLI's help.", file=file)
+
+
+def enter_usage(file=None) -> None:
+    print("cowbell enter <name>", file=file)
+    print("  Focus the sitting if it is live, otherwise resume it.", file=file)
+
+
+def identity_usage(file=None) -> None:
+    print("cowbell identity stamp|sync", file=file)
+    print("  stamp  Publish $glyph for every live herdr agent pane (detector kind).", file=file)
+    print("  sync   Restamp or clear one pane from HERDR_PLUGIN_EVENT_JSON.", file=file)
+
+
+def identity_stamp_usage(file=None) -> None:
+    print("cowbell identity stamp", file=file)
+    print("  Publish $glyph for every live herdr agent pane (detector kind).", file=file)
+
+
+def identity_sync_usage(file=None) -> None:
+    print("cowbell identity sync", file=file)
+    print("  Restamp or clear one pane from HERDR_PLUGIN_EVENT_JSON.", file=file)
+
+
 def new_usage(file=None) -> None:
     print("cowbell new [harness] [options...] [-- extra...]", file=file)
     print("  --harness ID    Harness to run (or the first positional)", file=file)
@@ -5759,6 +5796,21 @@ def new_unknown_flags(opts: dict, pos: list[str]) -> list[str]:
     return bad
 
 
+def build_parser():
+    """Argparse layout for tests and docs; mirrors user-facing subcommands."""
+    import argparse
+
+    root = argparse.ArgumentParser(prog="cowbell", add_help=False)
+    subs = root.add_subparsers(dest="_cmd")
+    for name in ("status", "new", "enter", "rename", "adopt", "list", "catalog", "reconcile"):
+        subs.add_parser(name, add_help=False)
+    ident = subs.add_parser("identity", add_help=False)
+    ident_subs = ident.add_subparsers(dest="_identity_cmd")
+    ident_subs.add_parser("stamp", add_help=False)
+    ident_subs.add_parser("sync", add_help=False)
+    return root
+
+
 def main(argv: list[str]) -> int:
     if argv and argv[0] in ("-h", "--help"):
         print(__doc__); return 0
@@ -5795,19 +5847,43 @@ def main(argv: list[str]) -> int:
                 dirs=[d for d in (opts.get("add-dir") or "").split(",") if d])
         return 0
     opts, pos = parse_flags(rest)
-    if cmd == "adopt" and (opts.get("help") or opts.get("h") or (pos and pos[0] in ("-h", "--help"))):
+    want_help = opts.get("help") or opts.get("h") or (pos and pos[0] in ("-h", "--help"))
+    if cmd == "adopt" and want_help:
         print("cowbell adopt [name] [--pane ID]")
         print("  Bind a live sitting cowbell did not start onto the roster.")
         print("  Default: this pane if it is an agent, else the focused agent pane.")
         print("  name may be a pane id or a sitting. In the picker, a adopts the")
         print("  focused agent in Active, or the only running sitting.")
         return 0
-    if cmd == "reconcile" and (opts.get("help") or opts.get("h")):
+    if cmd == "reconcile" and want_help:
         print("cowbell reconcile [--dry-run]")
         print("  Rewrite pane borders so they match the sitting and the agent Herdr detects.")
         print("  The tab label stays the sitting. A bare border that is not the sitting is stale.")
         print("  With no herdr binary: 'herdr is not installed; nothing to reconcile'.")
         return 0
+    if cmd in ("registry", "here", "status") and want_help:
+        status_usage()
+        return 0
+    if cmd == "list" and want_help:
+        list_usage()
+        return 0
+    if cmd == "catalog" and want_help:
+        catalog_usage()
+        return 0
+    if cmd == "enter" and want_help:
+        enter_usage()
+        return 0
+    if cmd == "identity" and want_help and not pos:
+        identity_usage()
+        return 0
+    if cmd == "identity" and pos:
+        if pos[0] in ("stamp", "sync") and (
+                want_help or (len(pos) > 1 and pos[1] in ("-h", "--help"))):
+            (identity_stamp_usage if pos[0] == "stamp" else identity_sync_usage)()
+            return 0
+        if pos[0] in ("-h", "--help"):
+            identity_usage()
+            return 0
     ctx = choose_host(server_up())
     cat = load_catalog()
     if cmd == "picker":
