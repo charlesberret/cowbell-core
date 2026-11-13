@@ -10,6 +10,14 @@
 - `a` on a launch sheet saves its shape as a named agent (a `[[harness]]` row copied whole from this one, with the sheet's model, effort, permissions and tools as defaults); the sheet stays open and launches nothing. Not on a resume sheet.
 - User-facing error catalog in `docs/errors.md`: documents error templates across the codebase with their cause and suggested user fix. A dedicated AST test (`tests/test_errors_catalog.py`) enforces documentation coverage by failing CI if any user-visible error string is added or modified without an entry in the catalog.
 - Seed catalog test suite in `tests/test_seed_catalog.py`: verifies `harnesses.toml` parsing, `cowbell catalog --check` validation, launch argv construction for all seed harnesses, and public-surface hygiene (detecting unexpanded tildes, private usernames, internal hostnames, and stale defaults).
+- Harness `check` subprocess now has a 5-second timeout; a hung check fails closed instead of hanging the picker.
+- `fc-cache` subprocess now has a 30-second timeout during `cowbell font install`.
+- `accept.json` is written mode 0600 explicitly before atomic replace (was umask-dependent).
+- The harness verify hint now names `agent-run` only; the stale "or sudo" wording is gone (cowbell never falls back to `sudo -u`).
+- `cowbell catalog` prints a glyph legend footer (`⌂ local  ↑ vendor · ok  ! more reach  ⊘ blocked  ? unknown`).
+- The shipped seed `harnesses.toml` documents `egress` and `family` fields in comments.
+- `CHANGELOG.md` now ships inside the sdist.
+- `docs/errors.md` corrections: the `nono` row names the real cause/fix, and both home-permission rows' fixes repair the home rather than telling users to install `agent-run`.
 
 ## 0.3.2 — 2026-11-02
 

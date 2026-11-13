@@ -48,7 +48,7 @@ cowbell is for people who run several coding-agent CLIs (Claude Code, Codex, Gro
 
 It is mouse-first: click or arrow to a row, Enter or the ⏎ button to open it, Esc to close. A digit jumps to its row, and every hint in the bottom bar is clickable. The list refreshes every two seconds. Off a terminal, or with `COWBELL_PLAIN=1`, it falls back to a typed-number prompt; `NO_COLOR` turns colour off. (verified: cowbell.py:4677-4725, 5995, 4486-4487, 183, 4783-4796)
 
-In [herdr](https://github.com/herdrdev/herdr), the plugin [`herdr-cowbell`](https://github.com/charlesberret/herdr-cowbell) puts this same picker on `prefix+c` as a popup, and adds `adopt`, `stop` and `import-seats`. The plugin and this command read the same catalog and roster, so a session started in one resumes in the other. (verified: cowbell.py:37, 57, 236-267; curl -sIL → HTTP 200 for both github.com/herdrdev/herdr and github.com/charlesberret/herdr-cowbell)
+Cowbell is the standalone engine: running `cowbell` directly in any terminal provides the full interactive picker, session resumption, launch sheets, and harness catalog without requiring Herdr. The companion plugin `herdr-cowbell` embeds this engine inside Herdr workspaces, binding the picker to `prefix+c` as a popup and adding workspace-aware actions like `adopt`, `stop`, and `import-seats`. Both standalone CLI invocations and the Herdr plugin share the exact same configuration catalog and session roster (`~/.config/cowbell` and `~/.local/state/cowbell`), so agents started in a bare terminal seamlessly surface and resume inside Herdr workspaces. (verified: cowbell.py:30-37, 236-270)
 
 ## Install
 
@@ -232,6 +232,15 @@ cowbell font [install]       is the icon font here; install fetches the pinned f
 ```
 
 `bin/cowbell` picks a python ≥ 3.11, for tomllib, and follows symlinks. macOS `/usr/bin/python3` is 3.9 and must not run this. Stdlib only. (verified: bin/cowbell:1-19; pyproject.toml:14)
+
+### Internal commands
+
+`cowbell identity stamp` and `cowbell identity sync` are internal plumbing commands for Herdr integration, marked as advanced and rarely needed in day-to-day use:
+
+- `cowbell identity stamp` scans live Herdr agent panes and publishes each pane's `$glyph` badge and sitting name from detector state. (verified: cowbell.py:22, 3412-3428, 6546-6549)
+- `cowbell identity sync` restamps or clears a single pane's badge from a Herdr occupancy event payload (`HERDR_PLUGIN_EVENT_JSON`). (verified: cowbell.py:23, 3450-3470, 6550-6552)
+
+Day-to-day users do not need these commands; they run from plugin hooks or during seed and catalog maintenance to re-synchronize pane identities. (verified: cowbell.py:3383-3470, 6553-6556)
 
 ## Development
 
