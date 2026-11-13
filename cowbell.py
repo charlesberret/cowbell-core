@@ -1922,10 +1922,72 @@ def _live_where(r: dict, here_ws: str | None, ws_labels: dict[str, str]) -> str:
     return "  ".join(bits)
 
 
+def _cut_to(text: str, room: int) -> str:
+    """Fit `text` in `room` cells. A cut ends with `…`."""
+    if len(text) <= room:
+        return text
+    if room <= 1:
+        return "…" if room == 1 else ""
+    head = text[:room - 1].rstrip()
+    return (head + "…") if head else "…"
+
+
+def _start_prefix(id_cell: str, glyph: str) -> int:
+    """Cells on a drawn New Session row before the title.
+
+    render_picker draws `  ` + a 3-wide key + `  ` + id + ` ` + glyph + `  `.
+    """
+    return 2 + 3 + 2 + len(id_cell) + 1 + len(glyph) + 2
+
+
+def _paint_reach(plain: str) -> str:
+    """Trust warn. The three leading spaces stay outside the paint when they survived the cut."""
+    if not plain:
+        return ""
+    if plain.startswith("   ") and plain[3:]:
+        return f"   {paint(plain[3:], FAINT)}"
+    return paint(plain, FAINT)
+
+
+def _fit_unproven_row(title: str, pad_to: int, warn: str, mark: str, prefix: int,
+                      width: int | None) -> tuple[str, str]:
+    """(title, warn) so a drawn row keeps `unproven` inside `width`.
+
+    Width None, or under 43, leaves the row alone. Alignment padding goes first,
+    then the title, down to `…`. The warn shrinks only after that, and only if
+    the word still sticks out.
+    """
+    shown = f"{title:<{pad_to}}" if pad_to else title
+    if width is None or width < 43 or "unproven" not in mark:
+        return shown, warn
+
+    def length(t: str, w: str) -> int:
+        return prefix + len(t) + len(w) + len(mark)
+
+    if length(shown, warn) <= width:
+        return shown, warn
+    if length(title, warn) <= width:
+        return title, warn
+    spare = width - prefix - len(mark) - len(warn)
+    fitted = _cut_to(title, max(1, spare)) if title else ""
+    if length(fitted, warn) <= width:
+        return fitted, warn
+    warn_room = width - prefix - len(mark) - len(fitted)
+    if warn_room < 0 and fitted == "…":
+        fitted = ""
+        warn_room = width - prefix - len(mark)
+    return fitted, _cut_to(warn, max(0, warn_room))
+
+
 def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | None = None,
                    ws_labels: dict[str, str] | None = None, expanded: set[str] | None = None,
-                   lines: int | None = None) -> list[dict]:
-    """Popup rows: active census, resume, start new. Only Resume and New Session are a menu."""
+                   lines: int | None = None, width: int | None = None) -> list[dict]:
+    """Popup rows: active census, resume, start new. Only Resume and New Session are a menu.
+
+    `width` is the picker width. None does not shorten. A New Session row whose
+    `unproven` would fall past that width loses title first (then the trust warn).
+    Width under 43 is left as drawn.
+    """
     expanded = expanded or set()
     ws_labels = ws_labels or {}
     live: list[dict] = []
@@ -1959,14 +2021,18 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
     accepts = load_accepts() if any(a.get("check") for a in pool.values()) else {}
     for hid in ranked:
         a = pool[hid]
-        warn = f"   {paint('! more reach than needed', FAINT)}" \
-            if a.get("trust", {}).get("verdict") == "overprivilege" else ""
-        mark = "" if accepted(a, accepts=accepts) else f"  {paint('unproven', FAINT)}"
+        over = a.get("trust", {}).get("verdict") == "overprivilege"
+        warn_plain = "   ! more reach than needed" if over else ""
+        mark_plain = "" if accepted(a, accepts=accepts) else "  unproven"
         g = glyph_for(a.get("kind") or hid)
+        id_cell = f"{hid:<22}"
+        title, warn_plain = _fit_unproven_row(
+            a.get("title") or "", title_w if over else 0, warn_plain, mark_plain,
+            _start_prefix(id_cell, g), width)
+        warn = _paint_reach(warn_plain)
+        mark = f"  {paint('unproven', FAINT)}" if mark_plain else ""
         start.append({"action": "raise", "target": a, "key": f"raise:{hid}",
-                      "line": f"{paint(f'{hid:<22}', INK, bold=True)} {g}  "
-                              + paint(f"{a.get('title') or '':<{title_w}}" if warn else a.get("title") or "", MUTED)
-                              + warn + mark})
+                      "line": f"{paint(id_cell, INK, bold=True)} {g}  {paint(title, MUTED)}{warn}{mark}"})
     out = []
     for section, rows in (("running", live), ("resume", resume), ("start", start)):
         folded = (_with_more(rows, section, expanded, start_limit) if section == "start"
@@ -6153,8 +6219,9 @@ def picker(ctx: Ctx, cat: dict) -> int:
                 report_identity(r["pane_id"], r["name"], r.get("kind") or "", r.get("model") or "")
             ws_labels = {w.get("workspace_id"): w.get("label") or "" for w in snap.get("workspaces") or []}
             term = shutil.get_terminal_size((84, 24))
-            choices = picker_choices(reg, rows, ctx.workspace_id, ws_labels, expanded, lines=term.lines)
             width = min(term.columns, 100)
+            choices = picker_choices(reg, rows, ctx.workspace_id, ws_labels, expanded,
+                                     lines=term.lines, width=width)
             text = render_picker(reg, choices, top, wider, width=width)
             can_widen = bool(top and wider is not None and wider > len(reg["live"]))
             if tui:
