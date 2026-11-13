@@ -67,6 +67,7 @@ LANES = ("green", "yellow", "red")
 READY = {"idle", "done"}
 SHELLS = {"zsh", "bash", "fish", "sh", "dash", "ksh"}
 GLYPH = {"local": "⌂", "mesh": "⌂", "vendor": "↑"}  # ⌂ ↑
+LEGEND = "⌂ local  ↑ vendor · ok  ! more reach  ⊘ blocked  ? unknown"
 DASH = "—"
 GROK_AGENTS_DIR = Path("~/.grok/agents").expanduser()
 
@@ -1797,7 +1798,7 @@ def render_registry(reg: dict, git_top: str | None = None, wider: int | None = N
         out.append(paint("  nothing raised here yet", FAINT))
     if reg["absent"]:
         out.append("")
-        out.append(section("ABSENT HERE", "⌂ local  ↑ vendor · ok  ! more reach  ⊘ blocked  ? unknown"))
+        out.append(section("ABSENT HERE", LEGEND))
         bits = []  # (plain width, painted)
         for a in reg["absent"]:
             mark = verdict_mark(a["trust"])
@@ -4058,6 +4059,7 @@ def cmd_catalog(cat: dict) -> None:
     for h in cat.get("harness", []):
         print(f"{h['id']:<16} {h['kind']:<8} {GLYPH.get(h['egress'], '?') + ' ' + h['egress']:<7} "
               f"{('yes' if accepted(h) else 'unproven') if installed(h) else 'no':<9} {trust_badge(h['trust_tool']):<10} {h.get('title', '')}")
+    print(paint(LEGEND, FAINT))
 
 
 KIND_PROBE = {  # argv that prints usage without launching a session

@@ -638,6 +638,14 @@ class Paths(unittest.TestCase):
         self.assertEqual(hm.load_roster(), [])
         self.assertFalse((self.cfg / ".migrated_from").exists())
 
+    def test_empty_config_dir_materializes_the_seed(self):
+        self.assertFalse((self.cfg / "harnesses.toml").exists())
+        p = hm.catalog_path()
+        self.assertEqual(p, self.cfg / "harnesses.toml")
+        self.assertNotEqual(p, hm.seed_path())                       # a copy, never the seed read in place
+        self.assertTrue(p.is_file())
+        self.assertEqual(p.read_bytes(), hm.seed_path().read_bytes())
+
     def test_migrates_byte_faithful_once(self):
         catalog, rows = self.legacy()
         self.assertEqual(hm.catalog_path().read_bytes(), catalog)

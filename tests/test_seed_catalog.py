@@ -7,6 +7,7 @@ import sys
 import tomllib
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import cowbell as hm  # noqa: E402
@@ -98,6 +99,13 @@ class SeedCatalog(unittest.TestCase):
             rc = hm.cmd_catalog_check(self.cat)
         self.assertEqual(rc, 0, buf.getvalue())
         self.assertIn("ok:", buf.getvalue())
+
+    def test_catalog_prints_glyph_legend(self):
+        buf = io.StringIO()
+        with mock.patch.object(hm, "trust_badge", return_value="?"):
+            with contextlib.redirect_stdout(buf):
+                hm.cmd_catalog(self.cat)
+        self.assertIn(hm.LEGEND, buf.getvalue().splitlines()[-1])
 
     def test_each_seed_row_builds_launch_argv_without_running(self):
         root = "/tmp/cowbell-seed-catalog"
