@@ -153,8 +153,8 @@ CI enforces that every template extracted from source appears below (see `tests/
 | | |
 |--|--|
 | Message | `cowbell: cannot discover sessions as unix user {!r} (agent-run is not on PATH; cowbell does not fall back to sudo -u)` |
-| Cause | The configured Unix account or privilege helper is missing or wrong. |
-| Fix | Set a valid `unix_user`, install `agent-run` or `sudo`, or fix the account name on this host. |
+| Cause | Discovering another account's sessions needs `agent-run`, which is not on PATH. |
+| Fix | Install `agent-run` and put it on PATH; cowbell does not use `sudo -u`. |
 | Source | `cowbell.py` |
 
 ### cannot write a null TOML value
@@ -378,8 +378,8 @@ CI enforces that every template extracted from source appears below (see `tests/
 | | |
 |--|--|
 | Message | `cowbell: refused — dropping to unix user {!r} needs agent-run on PATH (cowbell does not fall back to sudo -u, which would skip agent-run's checks)` |
-| Cause | The configured Unix account or privilege helper is missing or wrong. |
-| Fix | Set a valid `unix_user`, install `agent-run` or `sudo`, or fix the account name on this host. |
+| Cause | Dropping to another account for the launch needs `agent-run`, which is not on PATH. |
+| Fix | Install `agent-run` and put it on PATH; cowbell does not use `sudo -u`. |
 | Source | `cowbell.py` |
 
 ### refused — no unix_user for {}; set [places.*] unix_user or use agent-...
@@ -388,7 +388,7 @@ CI enforces that every template extracted from source appears below (see `tests/
 |--|--|
 | Message | `cowbell: refused — no unix_user for {}; set [places.*] unix_user or use agent-run <uid> -- …` |
 | Cause | The configured Unix account or privilege helper is missing or wrong. |
-| Fix | Set a valid `unix_user`, install `agent-run` or `sudo`, or fix the account name on this host. |
+| Fix | Set a valid `unix_user`, install `agent-run`, or fix the account name on this host. |
 | Source | `cowbell.py` |
 
 ### refused — nono_profile {} {}
@@ -414,8 +414,8 @@ CI enforces that every template extracted from source appears below (see `tests/
 | | |
 |--|--|
 | Message | `cowbell: refused — the home of {!r} is not a directory it owns` |
-| Cause | The configured Unix account or privilege helper is missing or wrong. |
-| Fix | Set a valid `unix_user`, install `agent-run` or `sudo`, or fix the account name on this host. |
+| Cause | The account's home cannot be trusted: it is not an absolute path, resolves to `/`, is not a directory, or is owned by another account. |
+| Fix | Set a valid `unix_user`, install `agent-run`, or fix the account name on this host. |
 | Source | `cowbell.py` |
 
 ### refused — the launch folder moved under it ({})
@@ -540,8 +540,8 @@ CI enforces that every template extracted from source appears below (see `tests/
 | | |
 |--|--|
 | Message | `cowbell: refused — {}: the home of {} is not a directory it owns` |
-| Cause | The configured Unix account or privilege helper is missing or wrong. |
-| Fix | Set a valid `unix_user`, install `agent-run` or `sudo`, or fix the account name on this host. |
+| Cause | The account's home cannot be trusted: it is not an absolute path, resolves to `/`, is not a directory, or is owned by another account. |
+| Fix | Set a valid `unix_user`, install `agent-run`, or fix the account name on this host. |
 | Source | `cowbell.py` |
 
 ### refused — {}: wall = "door" and a nono_profile in the same launch; ...
@@ -604,7 +604,7 @@ CI enforces that every template extracted from source appears below (see `tests/
 |--|--|
 | Message | `cowbell: unix_user {!r} is not on this host` |
 | Cause | The configured Unix account or privilege helper is missing or wrong. |
-| Fix | Set a valid `unix_user`, install `agent-run` or `sudo`, or fix the account name on this host. |
+| Fix | Set a valid `unix_user`, install `agent-run`, or fix the account name on this host. |
 | Source | `cowbell.py` |
 
 ### unknown command or harness {!r} (see: cowbell catalog)

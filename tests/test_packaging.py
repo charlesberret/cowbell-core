@@ -11,6 +11,7 @@ class Pack(unittest.TestCase):
         data = tomllib.loads((ROOT / "pyproject.toml").read_text())
         sdist = data["tool"]["hatch"]["build"]["targets"]["sdist"]["only-include"]
         self.assertNotIn("tests", sdist)
+        self.assertIn("CHANGELOG.md", sdist)
         self.assertEqual(data["project"]["name"], "cowbell")
         self.assertEqual(data["project"]["scripts"]["cowbell"], "cowbell:cli")
         self.assertEqual(

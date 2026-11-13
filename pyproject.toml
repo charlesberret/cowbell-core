@@ -34,4 +34,4 @@ only-include = ["cowbell.py"]
 "harnesses.toml" = "share/cowbell/harnesses.toml"
 
 [tool.hatch.build.targets.sdist]
-only-include = ["cowbell.py", "harnesses.toml", "README.md", "LICENSE"]
+only-include = ["cowbell.py", "harnesses.toml", "README.md", "CHANGELOG.md", "LICENSE"]
