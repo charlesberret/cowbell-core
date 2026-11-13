@@ -20,7 +20,7 @@
 # cowbell shows no trust verdicts at all.
 #
 # A row may name requires (argvs run before launch; the first non-zero refuses)
-# and check (one argv). A stale check shows as unproven until cowbell accept records a pass.
+# and check (one argv). A check with no pass in the last 7 days shows as unproven until cowbell accept records one.
 # [[harness]]
 # id = "example"
 # kind = "example"
