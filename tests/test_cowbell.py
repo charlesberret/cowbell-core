@@ -4766,6 +4766,156 @@ class CatalogCheck(unittest.TestCase):
         self.assertIn("place lab: allow_harness names unknown harness 'ghost'", out)
 
 
+class StrangerCatalogs(unittest.TestCase):
+    """`catalog --check` on the first files a stranger hands it: a named problem or a clean
+    ok, never a traceback. `catalog` reads the same loader, so its verdicts match."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.cfg, self.state = base / "cfg" / "cowbell", base / "state" / "cowbell"
+        self.cfg.mkdir(parents=True)
+        self.state.mkdir(parents=True)
+        self.seed_root = base / "seed"
+        self.seed_root.mkdir()
+        (self.seed_root / "harnesses.toml").write_text('schema = 1\n[[harness]]\nid = "claude"\n')
+        (self.state / "seed-fill.json").write_text(
+            json.dumps({"schema": 1, "ids": list(hm.SEED_FILL_IDS)}))
+        self.catalog = self.cfg / "harnesses.toml"
+        self.env = {
+            "COWBELL_CONFIG_DIR": str(self.cfg),
+            "COWBELL_STATE_DIR": str(self.state),
+            "HERDR_PLUGIN_ROOT": str(self.seed_root),
+            "HERDR_PLUGIN_CONFIG_DIR": str(base / "old-cfg"),
+            "HERDR_PLUGIN_STATE_DIR": str(base / "old-state"),
+            "COWBELL_MODE": "here",
+        }
+        self.saved = {k: os.environ.get(k) for k in self.env}
+        os.environ.update(self.env)
+        self._installed = mock.patch.object(hm, "installed", return_value=False)
+        self._installed.start()
+        self._trust = mock.patch.object(hm, "trust_available", return_value=False)
+        self._trust.start()
+        self._server_up = hm.server_up
+        hm.server_up = lambda: False
+
+    def tearDown(self):
+        hm.server_up = self._server_up
+        self._trust.stop()
+        self._installed.stop()
+        for k, v in self.saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        self.tmp.cleanup()
+
+    def check(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = hm.main(list(argv))
+        return rc, out.getvalue() + err.getvalue()
+
+    def refused(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit) as cm:
+                hm.main(list(argv))
+        return str(cm.exception.code), out.getvalue() + err.getvalue()
+
+    def test_empty_comments_and_defaults_only_are_clean(self):
+        for text in ("", "# just a note\n", "harness = []\n", '[defaults]\nlane = "yellow"\n'):
+            with self.subTest(text=text):
+                self.catalog.write_text(text)
+                rc, out = self.check("catalog", "--check")
+                self.assertEqual(rc, 0, out)
+                self.assertIn("ok: 0 harnesses", out)
+
+    def test_malformed_toml_is_one_clean_refusal(self):
+        self.catalog.write_text('[[harness]]\nid = \n')
+        msg, out = self.refused("catalog", "--check")
+        self.assertTrue(msg.startswith("cowbell: "), msg)
+        self.assertIn("harnesses.toml", msg)
+        self.assertNotIn("Traceback", out)
+        same, _ = self.refused("catalog")   # the same loader refuses plain `catalog`
+        self.assertEqual(msg, same)
+
+    def test_row_without_id_is_named_not_a_keyerror(self):
+        self.catalog.write_text('schema = 1\n[[harness]]\nkind = "claude"\ntitle = "No id"\n')
+        rc, out = self.check("catalog", "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("harness row with no id", out)
+        rc2, out2 = self.check("catalog")   # plain `catalog` shows the row, it does not crash
+        self.assertEqual(rc2, 0, out2)
+        self.assertIn("(missing id)", out2)
+
+    def test_duplicate_id_fails_by_name(self):
+        self.catalog.write_text('[[harness]]\nid = "a"\n[[harness]]\nid = "a"\n')
+        rc, out = self.check("catalog", "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("harness a: duplicate id", out)
+
+    def test_check_and_requires_must_be_argvs(self):
+        self.catalog.write_text(
+            '[[harness]]\nid = "a"\ncheck = "echo ok"\n'
+            '[[harness]]\nid = "b"\nrequires = "git"\n'
+            '[[harness]]\nid = "c"\nrequires = ["git", "status"]\n')
+        rc, out = self.check("catalog", "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("a: check must be one argv", out)
+        self.assertIn("b: requires must be a list of argvs", out)
+        self.assertIn("c: requires must be a list of argvs", out)
+
+    def test_wrong_shapes_are_named_not_tracebacks(self):
+        cases = [
+            ('[harness]\nid = "x"\n', "must be a list"),       # [harness] typo'd for [[harness]]
+            ('harness = "x"\n', "must be a list"),
+            ('harness = 5\n', "must be a list"),
+            ('harness = ["x"]\n', "must be a table"),        # a non-table row
+            ('defaults = "x"\n', "must be a table"),
+            ('places = "x"\n', "must be a table"),
+            ('[places.p]\nallow_harness = "x"\n', "must be a list"),
+            ('[[harness]]\nid = 5\n', "must be a string"),
+            ('[[harness]]\ncommand = 5\n', "must be a string"),
+        ]
+        for text, want in cases:
+            with self.subTest(text=text):
+                self.catalog.write_text(text)
+                msg, out = self.refused("catalog", "--check")
+                self.assertTrue(msg.startswith("cowbell: "), (text, msg))
+                self.assertIn("harnesses.toml", msg)
+                self.assertIn(want, msg)
+                self.assertNotIn("Traceback", out)
+
+    def test_unknown_kind_is_just_uninstalled(self):
+        self.catalog.write_text('[[harness]]\nid = "x"\nkind = "definitely-not-a-real-cli-xyz"\n')
+        rc, out = self.check("catalog", "--check")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("ok: 1 harnesses", out)
+        self.assertIn("skip x: not installed", out)
+
+    def test_unknown_top_level_keys_are_tolerated(self):
+        self.catalog.write_text('schema = 1\nbogus = 1\n[strange]\nx = 1\n[[harness]]\nid = "a"\n')
+        rc, out = self.check("catalog", "--check")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("ok: 1 harnesses", out)
+
+    def test_unreadable_catalog_is_a_clean_refusal(self):
+        self.catalog.write_text('schema = 1\n')
+        real_open = open
+
+        def deny(path, *a, **k):
+            if str(path) == str(self.catalog):
+                raise PermissionError(13, "Permission denied")
+            return real_open(path, *a, **k)
+
+        with mock.patch("builtins.open", side_effect=deny):
+            msg, out = self.refused("catalog", "--check")
+        self.assertTrue(msg.startswith("cowbell: "), msg)
+        self.assertIn("Permission denied", msg)
+        self.assertNotIn("Traceback", out)
+
+
 class FlagProbe(unittest.TestCase):
     """a harness's declared args are probed in its help, never launched."""
 

@@ -368,7 +368,8 @@ def fill_missing_seed_kinds(path: Path) -> None:
     except (OSError, tomllib.TOMLDecodeError):
         return
     by_id = {h["id"]: h for h in (seed_cat.get("harness") or []) if h.get("id")}
-    have = {h.get("id") for h in (house.get("harness") or [])}
+    rows = house.get("harness")
+    have = {h.get("id") for h in rows if isinstance(h, dict)} if isinstance(rows, list) else set()
     now = set(considered)
     for hid in pending:
         rec = by_id.get(hid)
@@ -752,23 +753,56 @@ def prompt_flag(h: dict) -> str | None:
     return h.get("system_prompt_flag") or h.get("seat_flag")
 
 
+def catalog_shape_error(cat: dict) -> str | None:
+    """The first structure no command can read, in one clause, or None. These refuse the load;
+    `catalog --check` reports the row-level problems that come after."""
+    for key in ("defaults", "lanes", "places"):
+        if key in cat and not isinstance(cat[key], dict):
+            return f"{key} must be a table"
+    for name, lane in (cat.get("lanes") or {}).items():
+        if not isinstance(lane, dict):
+            return f"lanes.{name} must be a table"
+    for name, pl in (cat.get("places") or {}).items():
+        if not isinstance(pl, dict):
+            return f"places.{name} must be a table"
+        if "allow_harness" in pl and not isinstance(pl["allow_harness"], list):
+            return f"places.{name}.allow_harness must be a list"
+    if "harness" in cat and not isinstance(cat["harness"], list):
+        return "harness must be a list of [[harness]] tables"
+    for h in cat.get("harness") or []:
+        if not isinstance(h, dict):
+            return "each [[harness]] row must be a table"
+        for key in ("id", "kind", "command", "trust_tool"):
+            if key in h and not isinstance(h[key], str):
+                return f"harness {key} must be a string"
+    return None
+
+
 def load_catalog() -> dict:
     if tomllib is None:
         raise SystemExit("cowbell: python >= 3.11 required (tomllib)")
     p = catalog_path()
     if not p.exists():
         raise SystemExit(f"cowbell: no catalog at {p}")
-    with open(p, "rb") as fh:
-        cat = tomllib.load(fh)
+    try:
+        with open(p, "rb") as fh:
+            cat = tomllib.load(fh)
+    except (OSError, ValueError) as e:  # ValueError covers TOMLDecodeError and bad UTF-8
+        detail = f"{p}: {e}"
+        raise SystemExit(f"cowbell: {detail}")
+    shape = catalog_shape_error(cat)
+    if shape:
+        detail = f"{p}: {shape}"
+        raise SystemExit(f"cowbell: {detail}")
     cat.setdefault("schema", 1)  # a catalog without the key predates it and is schema 1
     cat.setdefault("defaults", {})
     cat.setdefault("lanes", {})
     apply_ext(cat)
     for h in cat.get("harness", []):
-        h.setdefault("kind", h["id"])
+        h.setdefault("kind", h.get("id") or "")
         h.setdefault("family", h["kind"])
         h.setdefault("egress", "vendor")
-        h.setdefault("trust_tool", h["id"])
+        h.setdefault("trust_tool", h.get("id") or h["kind"])
         h.setdefault("models", [])
         h.setdefault("resume", [])
         if "command" in h:
@@ -817,16 +851,16 @@ def scoped_catalog(cat: dict, place: dict | None) -> dict:
     allow = place.get("allow_harness")
     if allow is not None:
         allowed = set(allow)
-        out["harness"] = [h for h in cat.get("harness", []) if h["id"] in allowed]
+        out["harness"] = [h for h in cat.get("harness", []) if h.get("id") in allowed]
         # keep allow_harness order so a default guest door can sit first
         order = {hid: i for i, hid in enumerate(allow)}
-        out["harness"].sort(key=lambda h: order.get(h["id"], len(order)))
+        out["harness"].sort(key=lambda h: order.get(h.get("id"), len(order)))
     return out
 
 
 def harness_by_id(cat: dict, hid: str) -> dict | None:
     for h in cat.get("harness", []):
-        if h["id"] == hid:
+        if h.get("id") == hid:
             return h
     return None
 
@@ -1494,7 +1528,7 @@ def discover_sessions(root: str, cat: dict, home: Path | None = None) -> list[di
     """Sessions this directory has seen, from the harnesses' own stores. [] when off."""
     if not history_on(cat):
         return []
-    ids = {h["id"] for h in cat.get("harness", [])}
+    ids = {h.get("id") for h in cat.get("harness", [])}
     cache, rows = history_cache(), []
     for hid, provider in HISTORY_PROVIDERS.items():
         if ids and hid not in ids:
@@ -1613,8 +1647,8 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
     # id; a kind several share (pi wrappers) stays the exe name.
     kind_id: dict[str, str] = {}
     for h in cat.get("harness", []):
-        prev = kind_id.setdefault(h["kind"], h["id"])
-        if prev != h["id"]:
+        prev = kind_id.setdefault(h["kind"], h.get("id"))
+        if prev != h.get("id"):
             kind_id[h["kind"]] = ""
 
     t_names, n_names = time.perf_counter(), 0
@@ -1655,7 +1689,7 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
         })
         seen_pane.add(a["pane_id"])
 
-    allowed = {h["id"] for h in cat.get("harness", [])}
+    allowed = {h.get("id") for h in cat.get("harness", [])}
     live_sids = {x.get("session_id") for x in live_rows if x.get("session_id")}
     cold_rows = []
     for r in rows_here:
@@ -1701,13 +1735,13 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
             for tool, v in zip(tools, pool.map(matcher, tools)):
                 verdicts[tool] = v
     for h in cat.get("harness", []):
-        row = {"harness": h["id"], "kind": h["kind"], "family": h["family"], "egress": h["egress"],
+        row = {"harness": h.get("id"), "kind": h["kind"], "family": h["family"], "egress": h["egress"],
                "title": h.get("title", ""), "installed": installed(h),
                "trust": verdicts.get(h["trust_tool"], {"verdict": "unknown"})}
         if h.get("check"):
             row["check"] = h["check"]
         startable.append(row)
-        if h["id"] not in present:
+        if h.get("id") not in present:
             absent.append(row)
     disambiguate_names(live_rows + cold_rows)
     return {"root": root, "subject": subject, "live": live_rows, "cold": cold_rows, "absent": absent,
@@ -4057,8 +4091,11 @@ def cmd_dispatch(ctx: Ctx, cat: dict, hid: str, assume_yes: bool) -> None:
 def cmd_catalog(cat: dict) -> None:
     print(f"{'harness':<16} {'kind':<8} {'egress':<7} {'installed':<9} {'badge':<10} title")
     for h in cat.get("harness", []):
-        print(f"{h['id']:<16} {h['kind']:<8} {GLYPH.get(h['egress'], '?') + ' ' + h['egress']:<7} "
-              f"{('yes' if accepted(h) else 'unproven') if installed(h) else 'no':<9} {trust_badge(h['trust_tool']):<10} {h.get('title', '')}")
+        egress = h.get("egress")
+        egress = egress if isinstance(egress, str) else repr(egress)
+        print(f"{(h.get('id') or '(missing id)'):<16} {h['kind']:<8} {GLYPH.get(egress, '?') + ' ' + egress:<7} "
+              f"{('yes' if accepted(h) else 'unproven') if installed(h) else 'no':<9} "
+              f"{trust_badge(h['trust_tool']):<10} {h.get('title', '')}")
     print(paint(LEGEND, FAINT))
 
 
@@ -4132,7 +4169,7 @@ def cmd_catalog_check(cat: dict) -> int:
         ids.add(hid)
         if not h.get("kind"):
             problems.append(f"harness {hid}: missing kind")
-        if h.get("egress") and h["egress"] not in GLYPH:
+        if h.get("egress") and (not isinstance(h["egress"], str) or h["egress"] not in GLYPH):
             problems.append(f"harness {hid}: unknown egress {h['egress']!r}")
         if h.get("lane") and h["lane"] not in ("green", "yellow", "red"):
             problems.append(f"harness {hid}: unknown lane {h['lane']!r}")
