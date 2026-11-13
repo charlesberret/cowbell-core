@@ -1,12 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.3.3 — 2026-11-13
 
 - Agent marks no longer depend on a font installed by hand. With the Lobe Icons Font installed, kinds show its logos; without it, one ASCII letter per kind (`C` claude, `G` grok, `X` codex, …) instead of empty boxes. `COWBELL_GLYPHS=lobe|text` forces either. `cowbell font` reports what it found; `cowbell font install` downloads the pinned v5.23.0 font, refuses it unless the sha256 matches, and writes it to the user font directory.
 - A harness row may carry `requires` and `check`. `requires` is a list of argvs run in order before every start or resume (say, to start the model server the agent talks to); the first that exits non-zero refuses the launch. `check` is one argv, the row's acceptance: when it has no pass in the last 7 days, the launch runs it after `requires` and opens only if it passes. `cowbell accept [id ...]` runs checks ahead of time. Results are kept in `accept.json` in the state directory; the verdict recorded is the last line the check prints on stdout. `cowbell catalog` shows a row with a stale check as `unproven`, and `catalog --check` rejects a malformed `requires` or `check`.
 - The `requires` refusal quotes its argv in a form the error catalog can match.
 - `COWBELL_DEBUG=1` or `--debug` appends a timed trace of each herdr call, the history scan, trust checks, process scan, picker frame, shell wait, and the launch command to `debug.log` in the state directory. Off unless set.
+- Debug trace runbook in `docs/debug-trace.md` documents that the opt-in debug log may contain command arguments and is written mode 0600.
 - `a` on a launch sheet saves its shape as a named agent (a `[[harness]]` row copied whole from this one, with the sheet's model, effort, permissions and tools as defaults); the sheet stays open and launches nothing. Not on a resume sheet.
+- User-facing error catalog in `docs/errors.md`: documents error templates across the codebase with their cause and suggested user fix. A dedicated AST test (`tests/test_errors_catalog.py`) enforces documentation coverage by failing CI if any user-visible error string is added or modified without an entry in the catalog.
+- Seed catalog test suite in `tests/test_seed_catalog.py`: verifies `harnesses.toml` parsing, `cowbell catalog --check` validation, launch argv construction for all seed harnesses, and public-surface hygiene (detecting unexpanded tildes, private usernames, internal hostnames, and stale defaults).
 
 ## 0.3.2 — 2026-11-02
 
