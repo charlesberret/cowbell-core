@@ -4958,6 +4958,25 @@ class RequiresCheck(unittest.TestCase):
             self._launch(failing)
         self.assertIn("failed its check", str(cm.exception))
 
+    def test_a_fresh_pass_clears_the_picker_mark(self):
+        hm.run_check(self.row)
+        startable = {"harness": "local-x", "kind": "sh", "title": "local", "installed": True,
+                     "trust": {"verdict": "ok"}, "check": self.row["check"]}
+        reg = {"root": ROOT, "subject": "internal", "live": [], "cold": [],
+               "startable": [startable], "absent": []}
+
+        def visible():
+            choices = hm.picker_choices(reg, [])
+            row = next(c for c in choices if c["target"].get("harness") == "local-x")
+            self.assertEqual(row["section"], "start")
+            return hm.ANSI_RE.sub("", row["line"])
+
+        self.assertNotIn("unproven", visible())
+        stored = hm.load_accepts()
+        stored["local-x"]["ts"] = time.time() - hm.ACCEPT_MAX_AGE - 1
+        hm.accept_path().write_text(json.dumps(stored) + "\n")
+        self.assertIn("unproven", visible())
+
 
 if __name__ == "__main__":
     unittest.main()
