@@ -94,6 +94,15 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Fix | Pass `--pane` with a pane id from Active, or focus the agent in herdr first. |
 | Source | `cowbell.py` |
 
+### cowbell font [status|install]
+
+| | |
+|--|--|
+| Message | `cowbell font [status|install]` |
+| Cause | Cowbell rejected the command with the message shown. |
+| Fix | Read the message, fix arguments or environment, and consult `cowbell catalog` / `cowbell sessions`. |
+| Source | `cowbell.py` |
+
 ### cowbell identity stamp|sync
 
 | | |
@@ -139,20 +148,11 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Fix | Read the message, fix arguments or environment, and consult `cowbell catalog` / `cowbell sessions`. |
 | Source | `cowbell.py` |
 
-### cannot discover sessions as unix user {!r} (agent-run is not installe...
+### cannot discover sessions as unix user {!r} (agent-run is not on PATH;...
 
 | | |
 |--|--|
-| Message | `cowbell: cannot discover sessions as unix user {!r} (agent-run is not installed and sudo is not on PATH)` |
-| Cause | The configured Unix account or privilege helper is missing or wrong. |
-| Fix | Set a valid `unix_user`, install `agent-run` or `sudo`, or fix the account name on this host. |
-| Source | `cowbell.py` |
-
-### cannot drop to unix user {!r} (agent-run is not installed and sudo is...
-
-| | |
-|--|--|
-| Message | `cowbell: cannot drop to unix user {!r} (agent-run is not installed and sudo is not on PATH)` |
+| Message | `cowbell: cannot discover sessions as unix user {!r} (agent-run is not on PATH; cowbell does not fall back to sudo -u)` |
 | Cause | The configured Unix account or privilege helper is missing or wrong. |
 | Fix | Set a valid `unix_user`, install `agent-run` or `sudo`, or fix the account name on this host. |
 | Source | `cowbell.py` |
@@ -175,6 +175,24 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Fix | Read the message, fix arguments or environment, and consult `cowbell catalog` / `cowbell sessions`. |
 | Source | `cowbell.py` |
 
+### checking {} (no pass in the last 7 days)
+
+| | |
+|--|--|
+| Message | `cowbell: checking {} (no pass in the last 7 days)` |
+| Cause | The harness row's `check` has no recorded pass in the last 7 days, so it runs now before the launch. |
+| Fix | No action needed when the check passes; when it fails the launch is refused with `cowbell: refused — {} failed its check`. |
+| Source | `cowbell.py` |
+
+### could not download {}: {}
+
+| | |
+|--|--|
+| Message | `cowbell: could not download {}: {}` |
+| Cause | `cowbell font install` could not fetch the pinned icon font. |
+| Fix | Check connectivity and retry `cowbell font install`; the URL and sha256 are pinned in source. |
+| Source | `cowbell.py` |
+
 ### harness needs an id
 
 | | |
@@ -191,6 +209,15 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Message | `cowbell: harness {!r} already exists` |
 | Cause | Harness id, install, or catalog field does not match what you asked for. |
 | Fix | Run `cowbell catalog`, install the agent CLI, or adjust harness/place settings. |
+| Source | `cowbell.py` |
+
+### harness wall = {!r}: the only value is "door" (the command raises i...
+
+| | |
+|--|--|
+| Message | `cowbell: harness wall = {!r}: the only value is "door" (the command raises its own wall)` |
+| Cause | The harness sets a `wall` value other than `door`. |
+| Fix | Use `wall = "door"` (the command raises its own wall) or remove `wall`. |
 | Source | `cowbell.py` |
 
 ### invalid harness field {!r}
@@ -319,6 +346,42 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Fix | Read the message, fix arguments or environment, and consult `cowbell catalog` / `cowbell sessions`. |
 | Source | `cowbell.py` |
 
+### refused {}: sha256 {}, expected {}
+
+| | |
+|--|--|
+| Message | `cowbell: refused {}: sha256 {}, expected {}` |
+| Cause | The downloaded icon font's sha256 does not match the value pinned in source, so it was not installed. |
+| Fix | Do not trust the fetched file; retry `cowbell font install`, and update the pinned hash only deliberately. |
+| Source | `cowbell.py` |
+
+### refused — a control character in a command word: {!r}
+
+| | |
+|--|--|
+| Message | `cowbell: refused — a control character in a command word: {!r}` |
+| Cause | A launch argument contains a control byte a shell line editor would act on before quoting applies. |
+| Fix | Remove the control byte — or rename the file, folder, or name carrying it — and launch again. |
+| Source | `cowbell.py` |
+
+### refused — a control character in the launch line or its folder
+
+| | |
+|--|--|
+| Message | `cowbell: refused — a control character in the launch line or its folder` |
+| Cause | A launch argument contains a control byte a shell line editor would act on before quoting applies. |
+| Fix | Remove the control byte — or rename the file, folder, or name carrying it — and launch again. |
+| Source | `cowbell.py` |
+
+### refused — dropping to unix user {!r} needs agent-run on PATH (cowbel...
+
+| | |
+|--|--|
+| Message | `cowbell: refused — dropping to unix user {!r} needs agent-run on PATH (cowbell does not fall back to sudo -u, which would skip agent-run's checks)` |
+| Cause | The configured Unix account or privilege helper is missing or wrong. |
+| Fix | Set a valid `unix_user`, install `agent-run` or `sudo`, or fix the account name on this host. |
+| Source | `cowbell.py` |
+
 ### refused — no unix_user for {}; set [places.*] unix_user or use agent-...
 
 | | |
@@ -328,6 +391,69 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Fix | Set a valid `unix_user`, install `agent-run` or `sudo`, or fix the account name on this host. |
 | Source | `cowbell.py` |
 
+### refused — nono_profile {} {}
+
+| | |
+|--|--|
+| Message | `cowbell: refused — nono_profile {} {}` |
+| Cause | The named `nono_profile` cannot be trusted as a wall: it is not absolute, not a regular file, not owned by root, or is writable by group or other. |
+| Fix | Point `nono_profile` at an absolute, root-owned file nobody else can write. |
+| Source | `cowbell.py` |
+
+### refused — session id {!r} reads as an option
+
+| | |
+|--|--|
+| Message | `cowbell: refused — session id {!r} reads as an option` |
+| Cause | A resume id starting with `-` would be parsed as a flag by the agent CLI, and `--` cannot guard every shape. |
+| Fix | Resume a different session from `cowbell sessions`, or rename the session so its id starts with a letter or digit. |
+| Source | `cowbell.py` |
+
+### refused — the home of {!r} is not a directory it owns
+
+| | |
+|--|--|
+| Message | `cowbell: refused — the home of {!r} is not a directory it owns` |
+| Cause | The configured Unix account or privilege helper is missing or wrong. |
+| Fix | Set a valid `unix_user`, install `agent-run` or `sudo`, or fix the account name on this host. |
+| Source | `cowbell.py` |
+
+### refused — the launch folder moved under it ({})
+
+| | |
+|--|--|
+| Message | `cowbell: refused — the launch folder moved under it ({})` |
+| Cause | The launch directory resolved somewhere else between the checks and the chdir — a symlink or mount moved under it. |
+| Fix | Launch from a stable, symlink-free path. |
+| Source | `cowbell.py` |
+
+### refused — wall = "door" on a {}; it belongs on the harness that rai...
+
+| | |
+|--|--|
+| Message | `cowbell: refused — wall = "door" on a {}; it belongs on the harness that raises its own wall, with that harness's unix_user` |
+| Cause | `wall = "door"` is set on a place or `[defaults]` — levels that cannot raise a wall. |
+| Fix | Move `wall = "door"` onto the harness whose command raises the wall, beside that harness's `unix_user`. |
+| Source | `cowbell.py` |
+
+### refused — {} failed its check: {}
+
+| | |
+|--|--|
+| Message | `cowbell: refused — {} failed its check: {}` |
+| Cause | The harness row's `check` argv exited non-zero; the detail is the check's last output line. |
+| Fix | Fix what the check verifies, or adjust `check` in `harnesses.toml`; a pass is recorded for 7 days. |
+| Source | `cowbell.py` |
+
+### refused — {} names a wall but no unix_user of its own; the level tha...
+
+| | |
+|--|--|
+| Message | `cowbell: refused — {} names a wall but no unix_user of its own; the level that names the account names the wall` |
+| Cause | The harness sets `nono_profile` or `wall` without a `unix_user` of its own. |
+| Fix | Set `unix_user` on the same harness row, or remove its wall fields. |
+| Source | `cowbell.py` |
+
 ### refused — {} on {}: blocked {} (T4 under-clearance)
 
 | | |
@@ -335,6 +461,123 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Message | `cowbell: refused — {} on {}: blocked {} (T4 under-clearance)` |
 | Cause | Trust clearance blocked launching the harness in this directory. |
 | Fix | Use a lower-privilege lane, a different directory, or adjust trust/policy for this tree. |
+| Source | `cowbell.py` |
+
+### refused — {} requires {!r}, which exited {}
+
+| | |
+|--|--|
+| Message | `cowbell: refused — {} requires {!r}, which exited {}` |
+| Cause | A `requires` argv on the harness exited non-zero, so the launch was refused before it began. |
+| Fix | Make the named command succeed, or remove it from `requires` in `harnesses.toml`. |
+| Source | `cowbell.py` |
+
+### refused — {} resolved to {} after the change of directory
+
+| | |
+|--|--|
+| Message | `cowbell: refused — {} resolved to {} after the change of directory` |
+| Cause | The launch directory resolved somewhere else between the checks and the chdir — a symlink or mount moved under it. |
+| Fix | Launch from a stable, symlink-free path. |
+| Source | `cowbell.py` |
+
+### refused — {} runs as {!r} with no wall; set nono_profile beside tha...
+
+| | |
+|--|--|
+| Message | `cowbell: refused — {} runs as {!r} with no wall; set nono_profile beside that unix_user, or wall = "door" on a harness whose command raises its own` |
+| Cause | A drop to another account was requested with no wall around it; cowbell fails closed. |
+| Fix | Set `nono_profile` beside that `unix_user`, or `wall = "door"` on a harness whose command raises its own wall. |
+| Source | `cowbell.py` |
+
+### refused — {} starts in {}, which this user cannot enter; this user ...
+
+| | |
+|--|--|
+| Message | `cowbell: refused — {} starts in {}, which this user cannot enter; this user needs traverse (search) on it` |
+| Cause | The invoking user lacks traverse (search) permission on the harness's launch folder. |
+| Fix | Grant execute on the folder and its parents for this user, or choose a folder it can enter. |
+| Source | `cowbell.py` |
+
+### refused — {}: cwd {!r} must be an absolute path with no symlink in it
+
+| | |
+|--|--|
+| Message | `cowbell: refused — {}: cwd {!r} must be an absolute path with no symlink in it` |
+| Cause | A harness `cwd` is not an absolute, symlink-free path. |
+| Fix | Set `cwd` to a real absolute path with no symlink component. |
+| Source | `cowbell.py` |
+
+### refused — {}: cwd {} is not under {} home nor inside a place that a...
+
+| | |
+|--|--|
+| Message | `cowbell: refused — {}: cwd {} is not under {} home nor inside a place that account owns` |
+| Cause | A harness `cwd` lies outside the home — and outside any place — of the account it runs as. |
+| Fix | Move `cwd` under that account's home or inside a place the account owns. |
+| Source | `cowbell.py` |
+
+### refused — {}: nono_proxy_port needs a nono_profile beside it
+
+| | |
+|--|--|
+| Message | `cowbell: refused — {}: nono_proxy_port needs a nono_profile beside it` |
+| Cause | `nono_proxy_port` is set with no `nono_profile` on the same level. |
+| Fix | Add a `nono_profile`, or remove `nono_proxy_port`. |
+| Source | `cowbell.py` |
+
+### refused — {}: nono_proxy_port {!r} must be a port number 1024-65535
+
+| | |
+|--|--|
+| Message | `cowbell: refused — {}: nono_proxy_port {!r} must be a port number 1024-65535` |
+| Cause | `nono_proxy_port` is not an integer TCP port in 1024–65535. |
+| Fix | Set an integer port in that range, or remove the field. |
+| Source | `cowbell.py` |
+
+### refused — {}: the home of {} is not a directory it owns
+
+| | |
+|--|--|
+| Message | `cowbell: refused — {}: the home of {} is not a directory it owns` |
+| Cause | The configured Unix account or privilege helper is missing or wrong. |
+| Fix | Set a valid `unix_user`, install `agent-run` or `sudo`, or fix the account name on this host. |
+| Source | `cowbell.py` |
+
+### refused — {}: wall = "door" and a nono_profile in the same launch; ...
+
+| | |
+|--|--|
+| Message | `cowbell: refused — {}: wall = "door" and a nono_profile in the same launch; pick one` |
+| Cause | The launch names both `wall = "door"` and a `nono_profile`; only one wall may apply. |
+| Fix | Keep either `wall = "door"` or the `nono_profile`, not both. |
+| Source | `cowbell.py` |
+
+### refused — {}: {}
+
+| | |
+|--|--|
+| Message | `cowbell: refused — {}: {}` |
+| Cause | A door harness's command — or a directory above it — cannot be trusted to raise the wall: the detail names why. |
+| Fix | Install the door command root-owned under root-owned, non-group/other-writable directories, exactly as the reason states. |
+| Source | `cowbell.py` |
+
+### session discovery as {!r} returned a folder it does not own
+
+| | |
+|--|--|
+| Message | `cowbell: session discovery as {!r} returned a folder it does not own` |
+| Cause | Resume, rename, or history lookup could not resolve the session. |
+| Fix | Pick a name from `cowbell sessions`, refresh history, or pass an unambiguous id. |
+| Source | `cowbell.py` |
+
+### session discovery as {!r} returned a malformed session id
+
+| | |
+|--|--|
+| Message | `cowbell: session discovery as {!r} returned a malformed session id` |
+| Cause | Resume, rename, or history lookup could not resolve the session. |
+| Fix | Pick a name from `cowbell sessions`, refresh history, or pass an unambiguous id. |
 | Source | `cowbell.py` |
 
 ### session discovery as {!r} failed: {}
@@ -445,15 +688,6 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Fix | Read the message, fix arguments or environment, and consult `cowbell catalog` / `cowbell sessions`. |
 | Source | `cowbell.py` |
 
-### {} is not installed here ({})
-
-| | |
-|--|--|
-| Message | `cowbell: {} is not installed here ({})` |
-| Cause | Cowbell rejected the command with the message shown. |
-| Fix | Read the message, fix arguments or environment, and consult `cowbell catalog` / `cowbell sessions`. |
-| Source | `cowbell.py` |
-
 ### {} is not on PATH
 
 | | |
@@ -526,6 +760,15 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Fix | Edit `harnesses.toml` to satisfy the constraint named in the message. |
 | Source | `cowbell.py` |
 
+### harness {}: check must be one argv, a list of strings
+
+| | |
+|--|--|
+| Message | `harness {}: check must be one argv, a list of strings` |
+| Cause | The harness catalog fails `cowbell catalog --check` validation. |
+| Fix | Edit `harnesses.toml` to satisfy the constraint named in the message. |
+| Source | `cowbell.py` |
+
 ### harness {}: duplicate id
 
 | | |
@@ -576,6 +819,15 @@ CI enforces that every template extracted from source appears below (see `tests/
 | | |
 |--|--|
 | Message | `harness {}: models must be a list` |
+| Cause | The harness catalog fails `cowbell catalog --check` validation. |
+| Fix | Edit `harnesses.toml` to satisfy the constraint named in the message. |
+| Source | `cowbell.py` |
+
+### harness {}: requires must be a list of argvs (lists of strings)
+
+| | |
+|--|--|
+| Message | `harness {}: requires must be a list of argvs (lists of strings)` |
 | Cause | The harness catalog fails `cowbell catalog --check` validation. |
 | Fix | Edit `harnesses.toml` to satisfy the constraint named in the message. |
 | Source | `cowbell.py` |

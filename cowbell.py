@@ -895,7 +895,7 @@ def run_requires(h: dict) -> None:
         trace.event("requires", harness=h.get("id", ""), cmd=shell_join(list(argv)))
         rc = subprocess.run(list(argv)).returncode
         if rc:
-            raise SystemExit(f"cowbell: refused — {h['id']} requires `{shell_join(list(argv))}`, which exited {rc}")
+            raise SystemExit(f"cowbell: refused — {h['id']} requires {shell_join(list(argv))!r}, which exited {rc}")
 
 
 def ensure_accepted(h: dict) -> None:
