@@ -115,6 +115,8 @@ Two hooks let cowbell use tools it does not own, both set in `[defaults]`:
 
 The catalog is `~/.config/cowbell/harnesses.toml`, or the same file under `COWBELL_CONFIG_DIR` or `$XDG_CONFIG_HOME/cowbell`, seeded from [`harnesses.toml`](harnesses.toml) on first run with the standard agents, shown only when installed. An existing copy that is missing `droid` or `devin` is filled once from the seed when that binary is on PATH. A later delete stays deleted. Add your own launchers, models and permission presets there. The roster is `~/.local/state/cowbell/roster.json`, or the same file under `COWBELL_STATE_DIR` or `$XDG_STATE_HOME/cowbell`. Both carry `schema = 1`. A cowbell that finds a newer schema reads the file but will not overwrite it. Versions up to 0.3 kept both in herdr's plugin directories. The first run copies them over once. A harness may set `provider`, a model cycle, and a `system_prompt`, and cowbell passes them on the launch line when the row sets the matching `provider_flag`, `cycle_flag`, and `system_prompt_flag`. Effort works the same way: `effort_flag` is how the CLI takes a reasoning level (`["--effort"]` for claude, `["--thinking"]` for pi and omp, `["-c", "model_reasoning_effort={}"]` for codex, where `{}` is the level), `efforts` lists the levels the sheet offers, and `effort` sets a default. `add_dir_flag` is how a CLI takes another directory (`--add-dir` for claude, codex, grok, agy and omp); it is passed once per directory, and a directory that does not exist is refused.
 
+A row may set requires, a list of argvs run in order before every start or resume. The first that exits non-zero refuses the launch. check is one argv. When that check has no pass in the last 7 days, the launch runs it after requires and opens only if it passes. cowbell accept [id ...] runs those checks ahead of time. Results are kept in accept.json in the state directory (the same directory as roster.json). The verdict recorded is the last line the check prints on stdout. cowbell catalog shows a row with a stale check as unproven. This check is the row's own acceptance. It is not the trust checker.
+
 Permission presets are called lanes: `green` reads and plans, `yellow` allows edits, `red` bypasses approvals. Each agent kind maps the three names to its own CLI flags under `[lanes.<kind>]` in the catalog, and `--lane` picks one at launch.
 
 A directory can have its own rules:
@@ -197,6 +199,7 @@ cowbell enter <name>         focus if live, else resume
 cowbell list [--all]
 cowbell catalog              every harness: kind, egress, installed, trust badge
 cowbell catalog --check      fail named malformed rows; warn on declared flags missing from a CLI's help
+cowbell accept [id ...]      run each named row's check now, or every row that has one, and record it
 cowbell reconcile [--dry-run]   pane borders that claim a harness, matched to the agent Herdr detects
 cowbell font [install]       is the icon font here; install fetches the pinned font
 ```
@@ -208,6 +211,8 @@ cowbell font [install]       is the icon font here; install fetches the pinned f
 ```bash
 python3 -m unittest discover -s tests -v
 ```
+
+The GitHub workflow at `.github/workflows/test.yml` runs `python3 -m unittest discover -s tests` on Python 3.11.
 
 `tests/test_pty.py` drives the menu, the prompt and the whole picker in a real pseudo-terminal. The code keeps two seams: `ctx.live`, what is running, and `ctx.launch`, where an agent opens. Every `herdr` CLI call lives in the `# --- herdr adapter` section of `cowbell.py`, and a test enforces it.
 

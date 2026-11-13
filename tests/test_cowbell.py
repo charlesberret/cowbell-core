@@ -7,6 +7,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import tomllib
 import unittest
 from dataclasses import replace
@@ -4843,6 +4844,119 @@ class ZSuiteSeam(unittest.TestCase):
         self.assertEqual(os.environ.get("HERDR_SOCKET_PATH"), str(Path(_SENTINEL_DIR.name) / "no.sock"))
         if _SENTINEL_LOG.exists():
             self.fail("tests invoked the sentinel herdr: " + _SENTINEL_LOG.read_text())
+
+
+
+class RequiresCheck(unittest.TestCase):
+    """`requires` runs before launch; a stale `check` runs at launch after it; either failing refuses."""
+
+    def setUp(self):
+        os.environ["COWBELL_STATE_DIR"] = tempfile.mkdtemp()
+        self.row = {"id": "local-x", "kind": "sh", "check": ["sh", "-c", "echo PASS x"],
+                    "requires": [["true"]], "models": [], "family": "sh", "egress": "local", "trust_tool": "x"}
+
+    def tearDown(self):
+        os.environ.pop("COWBELL_STATE_DIR", None)
+
+    def test_no_check_is_always_accepted(self):
+        self.assertTrue(hm.accepted({"id": "plain"}))
+
+    def test_check_without_a_pass_is_not_accepted_but_still_startable(self):
+        self.assertFalse(hm.accepted(self.row))
+        self.assertEqual(hm.unavailable_reason({**self.row, "kind": "sh"}), "")
+
+    def test_pass_is_recorded_and_expires(self):
+        ok, last = hm.run_check(self.row)
+        self.assertTrue(ok)
+        self.assertEqual(last, "PASS x")
+        self.assertTrue(hm.accepted(self.row))
+        later = time.time() + hm.ACCEPT_MAX_AGE + 1
+        self.assertFalse(hm.accepted(self.row, now=later))
+
+    def test_detail_is_the_stdout_verdict_not_stderr_chatter(self):
+        row = {**self.row, "check": ["sh", "-c", "echo PASS y; echo loading >&2"]}
+        self.assertEqual(hm.run_check(row)[1], "PASS y")
+
+    def test_failed_check_does_not_accept(self):
+        row = {**self.row, "check": ["sh", "-c", "echo FAIL x; exit 1"]}
+        ok, last = hm.run_check(row)
+        self.assertFalse(ok)
+        self.assertEqual(last, "FAIL x")
+        self.assertFalse(hm.accepted(row))
+
+    def test_requires_failure_refuses_launch(self):
+        row = {**self.row, "requires": [["true"], ["sh", "-c", "exit 75"]]}
+        with self.assertRaises(SystemExit) as cm:
+            hm.run_requires(row)
+        self.assertIn("exited 75", str(cm.exception))
+
+    def test_requires_success_passes(self):
+        hm.run_requires(self.row)  # does not raise
+
+    def test_registry_offers_unaccepted_row(self):
+        cat = {"harness": [self.row], "defaults": {}}
+        reg = hm.build_registry(cat, os.getcwd(), [], [], [], matcher=lambda _t: {"verdict": "unknown"})
+        self.assertEqual([r["harness"] for r in reg["startable"]], ["local-x"])
+
+    def _launch(self, row):
+        started = []
+        ctx = mock.Mock()
+        ctx.launch.start.side_effect = lambda *a, **k: started.append(a[1]["id"]) or {"pane_id": "p"}
+        with contextlib.redirect_stderr(io.StringIO()):
+            hm.launch({}, row, "n", os.getcwd(), ctx)
+        return started
+
+    def test_launch_runs_stale_check_then_starts(self):
+        self.assertEqual(self._launch(self.row), ["local-x"])
+        self.assertTrue(hm.accepted(self.row))
+
+    def test_launch_refuses_when_check_fails(self):
+        row = {**self.row, "check": ["sh", "-c", "echo FAIL z; exit 1"]}
+        with self.assertRaises(SystemExit) as cm:
+            self._launch(row)
+        self.assertIn("failed its check: FAIL z", str(cm.exception))
+
+    def test_launch_skips_fresh_check(self):
+        hm.run_check(self.row)
+        row = {**self.row, "check": ["sh", "-c", "exit 1"]}  # would fail if it ran
+        self.assertEqual(self._launch(row), ["local-x"])
+
+    def test_requires_run_before_check(self):
+        log = os.path.join(os.environ["COWBELL_STATE_DIR"], "order")
+        row = {**self.row, "requires": [["sh", "-c", f"echo requires >> {log}"]],
+               "check": ["sh", "-c", f"echo check >> {log}"]}
+        self._launch(row)
+        self.assertEqual(Path(log).read_text().split(), ["requires", "check"])
+
+    def test_catalog_check_rejects_malformed_fields(self):
+        bad = {**self.row, "check": "model-server accept x", "requires": ["model-server"]}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            rc = hm.cmd_catalog_check({"harness": [bad], "defaults": {}, "lanes": {}})
+        self.assertNotEqual(rc, 0)
+        self.assertIn("check must be one argv", buf.getvalue())
+        self.assertIn("requires must be a list of argvs", buf.getvalue())
+
+    def test_picker_marks_unproven_and_a_failing_check_refuses(self):
+        marked = {"harness": "local-x", "kind": "sh", "title": "local", "installed": True,
+                  "trust": {"verdict": "ok"}, "check": ["sh", "-c", "echo FAIL x; exit 1"]}
+        plain = {"harness": "plain", "kind": "sh", "title": "plain", "installed": True,
+                 "trust": {"verdict": "ok"}}
+        reg = {"root": ROOT, "subject": "internal", "live": [], "cold": [],
+               "startable": [marked, plain], "absent": []}
+        choices = hm.picker_choices(reg, [])
+
+        def visible(hid):
+            row = next(c for c in choices if c["target"].get("harness") == hid)
+            self.assertEqual(row["section"], "start")
+            return hm.ANSI_RE.sub("", row["line"])
+
+        self.assertIn("unproven", visible("local-x"))
+        self.assertNotIn("unproven", visible("plain"))
+        failing = {**self.row, "check": ["sh", "-c", "echo FAIL z; exit 1"]}
+        with self.assertRaises(SystemExit) as cm:
+            self._launch(failing)
+        self.assertIn("failed its check", str(cm.exception))
 
 
 if __name__ == "__main__":
