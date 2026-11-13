@@ -67,6 +67,7 @@ LANES = ("green", "yellow", "red")
 READY = {"idle", "done"}
 SHELLS = {"zsh", "bash", "fish", "sh", "dash", "ksh"}
 GLYPH = {"local": "⌂", "mesh": "⌂", "vendor": "↑"}  # ⌂ ↑
+LEGEND = "⌂ local  ↑ vendor · ok  ! more reach  ⊘ blocked  ? unknown"
 DASH = "—"
 GROK_AGENTS_DIR = Path("~/.grok/agents").expanduser()
 
@@ -878,15 +879,20 @@ def unavailable_reason(h: dict) -> str:
 
 def run_check(h: dict) -> tuple[bool, str]:
     """Run the row's check; record and return (passed, last line of its output)."""
-    proc = subprocess.run(list(h["check"]), capture_output=True, text=True)
-    out = proc.stdout.strip().splitlines() or proc.stderr.strip().splitlines()  # the verdict is on stdout
-    last = out[-1] if out else f"exit {proc.returncode}"
+    try:
+        proc = subprocess.run(list(h["check"]), capture_output=True, text=True, timeout=5)
+        out = proc.stdout.strip().splitlines() or proc.stderr.strip().splitlines()  # the verdict is on stdout
+        last = out[-1] if out else f"exit {proc.returncode}"
+        ok = proc.returncode == 0
+    except subprocess.TimeoutExpired:
+        ok, last = False, "check timed out after 5s"
     accepts = load_accepts()
-    accepts[h["id"]] = {"ok": proc.returncode == 0, "ts": time.time(), "detail": last}
+    accepts[h["id"]] = {"ok": ok, "ts": time.time(), "detail": last}
     tmp = accept_path().with_suffix(".tmp")
     tmp.write_text(json.dumps(accepts, indent=2) + "\n")
+    os.chmod(tmp, 0o600)
     tmp.replace(accept_path())
-    return proc.returncode == 0, last
+    return ok, last
 
 
 def run_requires(h: dict) -> None:
@@ -1792,7 +1798,7 @@ def render_registry(reg: dict, git_top: str | None = None, wider: int | None = N
         out.append(paint("  nothing raised here yet", FAINT))
     if reg["absent"]:
         out.append("")
-        out.append(section("ABSENT HERE", "⌂ local  ↑ vendor · ok  ! more reach  ⊘ blocked  ? unknown"))
+        out.append(section("ABSENT HERE", LEGEND))
         bits = []  # (plain width, painted)
         for a in reg["absent"]:
             mark = verdict_mark(a["trust"])
@@ -3314,7 +3320,7 @@ def cmd_font_install(fetch=None) -> int:
     tmp.write_bytes(data)
     tmp.replace(dest)
     if sys.platform != "darwin" and shutil.which("fc-cache"):
-        subprocess.run(["fc-cache", "-f", str(dest_dir)], capture_output=True)
+        subprocess.run(["fc-cache", "-f", str(dest_dir)], capture_output=True, timeout=30)
     print(f"installed: {dest} ({LOBE_FONT_VERSION}, sha256 checked)")
     print("If marks still draw as boxes, map the range in your terminal:")
     print(font_terminal_lines())
@@ -4053,6 +4059,7 @@ def cmd_catalog(cat: dict) -> None:
     for h in cat.get("harness", []):
         print(f"{h['id']:<16} {h['kind']:<8} {GLYPH.get(h['egress'], '?') + ' ' + h['egress']:<7} "
               f"{('yes' if accepted(h) else 'unproven') if installed(h) else 'no':<9} {trust_badge(h['trust_tool']):<10} {h.get('title', '')}")
+    print(paint(LEGEND, FAINT))
 
 
 KIND_PROBE = {  # argv that prints usage without launching a session
@@ -5380,8 +5387,8 @@ def verify_harness_interactive(cat: dict, h: dict) -> None:
         import pwd
         try:
             pw = pwd.getpwnam(u)
-            helper = shutil.which("agent-run") or shutil.which("sudo")
-            helper_str = f"via {helper}" if helper else "no agent-run or sudo!"
+            helper = shutil.which("agent-run")
+            helper_str = f"via {helper}" if helper else "agent-run not on PATH (no sudo fallback)"
             h_color = GREEN if helper else RED
             print(f"  {paint(' OK ' if helper else 'WARN', h_color, bold=True)}  unix user: {paint(u, INK)} (uid {pw.pw_uid}, {helper_str})")
         except KeyError:

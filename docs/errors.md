@@ -315,8 +315,8 @@ CI enforces that every template extracted from source appears below (see `tests/
 | | |
 |--|--|
 | Message | `cowbell: nono is not on PATH (needed for this place)` |
-| Cause | The named place is missing or disallows the requested harness. |
-| Fix | Define the place in `harnesses.toml` or choose an allowed harness for that place. |
+| Cause | The launch uses a `nono_profile`, but the `nono` executable is not on PATH. |
+| Fix | Install `nono` and ensure it is on PATH in the environment running cowbell. |
 | Source | `cowbell.py` |
 
 ### pane {} hosts no recognized agent
@@ -415,7 +415,7 @@ CI enforces that every template extracted from source appears below (see `tests/
 |--|--|
 | Message | `cowbell: refused — the home of {!r} is not a directory it owns` |
 | Cause | The account's home cannot be trusted: it is not an absolute path, resolves to `/`, is not a directory, or is owned by another account. |
-| Fix | Set a valid `unix_user`, install `agent-run`, or fix the account name on this host. |
+| Fix | Repair the account's configured home path and ownership, or choose an account whose home is valid. |
 | Source | `cowbell.py` |
 
 ### refused — the launch folder moved under it ({})
@@ -541,7 +541,7 @@ CI enforces that every template extracted from source appears below (see `tests/
 |--|--|
 | Message | `cowbell: refused — {}: the home of {} is not a directory it owns` |
 | Cause | The account's home cannot be trusted: it is not an absolute path, resolves to `/`, is not a directory, or is owned by another account. |
-| Fix | Set a valid `unix_user`, install `agent-run`, or fix the account name on this host. |
+| Fix | Repair the account's configured home path and ownership, or choose an account whose home is valid. |
 | Source | `cowbell.py` |
 
 ### refused — {}: wall = "door" and a nono_profile in the same launch; ...
@@ -948,4 +948,3 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Cause | Cowbell rejected the command with the message shown. |
 | Fix | Read the message, fix arguments or environment, and consult `cowbell catalog` / `cowbell sessions`. |
 | Source | `cowbell.py` |
-
