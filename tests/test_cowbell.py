@@ -4992,6 +4992,31 @@ class RequiresCheck(unittest.TestCase):
         self.assertIn("local", plain)
         self.assertIn("unproven", plain)
 
+        def edge(width, verdict="ok"):
+            row = {"harness": "agy", "kind": "agy", "title": "Antigravity (Gemini)",
+                   "installed": True, "trust": {"verdict": verdict},
+                   "check": ["sh", "-c", "echo PASS x"]}
+            reg = {"root": ROOT, "subject": "internal", "live": [], "cold": [],
+                   "startable": [row], "absent": []}
+            choices = hm.picker_choices(reg, [], width=width)
+            if width is None:
+                text = hm.render_picker(reg, choices)
+            else:
+                text = hm.render_picker(reg, choices, width=width)
+            start = next(c for c in choices if c["section"] == "start")
+            line = text.splitlines()[start["row"]]
+            return line, hm.ANSI_RE.sub("", line)
+
+        _, plain = edge(None)
+        self.assertIn("Antigravity (Gemini)", plain)
+        self.assertIn("unproven", plain)
+        line, plain = edge(40)
+        self.assertIn("Antigravity (Gemini)", plain)
+        self.assertGreater(hm.visible_len(line), 40)
+        line, plain = edge(56, "overprivilege")
+        self.assertLessEqual(hm.visible_len(line), 56)
+        self.assertIn("unproven", plain)
+
     def test_a_fresh_pass_clears_the_picker_mark(self):
         hm.run_check(self.row)
         startable = {"harness": "local-x", "kind": "sh", "title": "local", "installed": True,
