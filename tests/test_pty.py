@@ -176,6 +176,7 @@ class PickerHere(unittest.TestCase):
                     os.environ.pop(k, None)
                 os.chdir(tmp)
                 hm.REFRESH_S = 3600  # no census tick mid-test (ps+lsof under load outlives the deadline)
+                hm.agent_processes = lambda table=None, cwds=None: []
                 return hm.main(["picker"])
 
             res, screen = in_pty(child, [DOWN, ESC], settle=1.0, gap=0.3)
@@ -210,6 +211,7 @@ class PickerHere(unittest.TestCase):
                 os.environ.pop(k, None)
             os.chdir(tmp)
             hm.REFRESH_S = 3600  # no census tick mid-test
+            hm.agent_processes = lambda table=None, cwds=None: []
             return hm.main(["picker"])
 
         return child, env, log
