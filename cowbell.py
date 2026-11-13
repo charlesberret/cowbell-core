@@ -5385,8 +5385,8 @@ def verify_harness_interactive(cat: dict, h: dict) -> None:
         import pwd
         try:
             pw = pwd.getpwnam(u)
-            helper = shutil.which("agent-run") or shutil.which("sudo")
-            helper_str = f"via {helper}" if helper else "no agent-run or sudo!"
+            helper = shutil.which("agent-run")
+            helper_str = f"via {helper}" if helper else "agent-run not on PATH (no sudo fallback)"
             h_color = GREEN if helper else RED
             print(f"  {paint(' OK ' if helper else 'WARN', h_color, bold=True)}  unix user: {paint(u, INK)} (uid {pw.pw_uid}, {helper_str})")
         except KeyError:
