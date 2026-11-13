@@ -855,10 +855,14 @@ def load_accepts() -> dict:
 
 
 def accepted(h: dict, now: float | None = None, accepts: dict | None = None) -> bool:
-    """True for a row with no check, or whose check last passed within ACCEPT_MAX_AGE."""
+    """True for a row with no check, or whose check last passed within ACCEPT_MAX_AGE.
+
+    A catalog row is keyed by `id`. A startable row is keyed by `harness`.
+    """
     if not h.get("check"):
         return True
-    rec = (load_accepts() if accepts is None else accepts).get(h["id"]) or {}
+    hid = h.get("id") or h.get("harness") or ""
+    rec = (load_accepts() if accepts is None else accepts).get(hid) or {}
     return bool(rec.get("ok")) and (now or time.time()) - float(rec.get("ts") or 0) < ACCEPT_MAX_AGE
 
 
@@ -1691,6 +1695,8 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
         row = {"harness": h["id"], "kind": h["kind"], "family": h["family"], "egress": h["egress"],
                "title": h.get("title", ""), "installed": installed(h),
                "trust": verdicts.get(h["trust_tool"], {"verdict": "unknown"})}
+        if h.get("check"):
+            row["check"] = h["check"]
         startable.append(row)
         if h["id"] not in present:
             absent.append(row)
@@ -1947,14 +1953,17 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
     start_limit = start_row_limit(lines, running=len(live), resume=len(cold))
     shown = ranked if "start" in expanded or len(ranked) <= start_limit else ranked[:start_limit]
     title_w = min(34, max((len(pool[h].get("title") or "") for h in shown), default=0))
+    accepts = load_accepts() if any(a.get("check") for a in pool.values()) else {}
     for hid in ranked:
         a = pool[hid]
         warn = f"   {paint('! more reach than needed', FAINT)}" \
             if a.get("trust", {}).get("verdict") == "overprivilege" else ""
+        mark = "" if accepted(a, accepts=accepts) else f"  {paint('unproven', FAINT)}"
         g = glyph_for(a.get("kind") or hid)
         start.append({"action": "raise", "target": a, "key": f"raise:{hid}",
                       "line": f"{paint(f'{hid:<22}', INK, bold=True)} {g}  "
-                              + paint(f"{a.get('title') or '':<{title_w}}" if warn else a.get("title") or "", MUTED) + warn})
+                              + paint(f"{a.get('title') or '':<{title_w}}" if warn else a.get("title") or "", MUTED)
+                              + warn + mark})
     out = []
     for section, rows in (("running", live), ("resume", resume), ("start", start)):
         folded = (_with_more(rows, section, expanded, start_limit) if section == "start"

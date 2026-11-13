@@ -4887,6 +4887,27 @@ class RequiresCheck(unittest.TestCase):
         self.assertIn("check must be one argv", buf.getvalue())
         self.assertIn("requires must be a list of argvs", buf.getvalue())
 
+    def test_picker_marks_unproven_and_a_failing_check_refuses(self):
+        marked = {"harness": "local-x", "kind": "sh", "title": "local", "installed": True,
+                  "trust": {"verdict": "ok"}, "check": ["sh", "-c", "echo FAIL x; exit 1"]}
+        plain = {"harness": "plain", "kind": "sh", "title": "plain", "installed": True,
+                 "trust": {"verdict": "ok"}}
+        reg = {"root": ROOT, "subject": "internal", "live": [], "cold": [],
+               "startable": [marked, plain], "absent": []}
+        choices = hm.picker_choices(reg, [])
+
+        def visible(hid):
+            row = next(c for c in choices if c["target"].get("harness") == hid)
+            self.assertEqual(row["section"], "start")
+            return hm.ANSI_RE.sub("", row["line"])
+
+        self.assertIn("unproven", visible("local-x"))
+        self.assertNotIn("unproven", visible("plain"))
+        failing = {**self.row, "check": ["sh", "-c", "echo FAIL z; exit 1"]}
+        with self.assertRaises(SystemExit) as cm:
+            self._launch(failing)
+        self.assertIn("failed its check", str(cm.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

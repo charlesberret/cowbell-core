@@ -19,6 +19,15 @@
 # is asked about it (see [defaults] trust_command); without such a checker on PATH,
 # cowbell shows no trust verdicts at all.
 #
+# A row may name requires (argvs run before launch; the first non-zero refuses)
+# and check (one argv). A stale check shows as unproven until cowbell accept records a pass.
+# [[harness]]
+# id = "example"
+# kind = "example"
+# title = "Example"
+# requires = [["true"]]
+# check = ["true"]
+#
 # Resuming outside herdr: a harness is resume-capable in a plain terminal only
 # when cowbell can choose its session id (`session_id_flag`), start with that id,
 # and replay it later. claude and pi are the seeded harnesses that are resume-capable
