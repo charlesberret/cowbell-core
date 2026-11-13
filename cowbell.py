@@ -36,7 +36,7 @@ processes found by working directory.
 
 The herdr plugin (herdr-cowbell) adds prefix+c, stop and import-seats on top of this.
 
-Stdlib only; python >= 3.11 (tomllib). fzf is optional.
+Stdlib only; python >= 3.11 (tomllib). The picker is raw termios/ANSI.
 """
 from __future__ import annotations
 
