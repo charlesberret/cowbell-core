@@ -4898,6 +4898,18 @@ class RequiresCheck(unittest.TestCase):
         reg = hm.build_registry(cat, os.getcwd(), [], [], [], matcher=lambda _t: {"verdict": "unknown"})
         self.assertEqual([r["harness"] for r in reg["startable"]], ["local-x"])
 
+    def test_a_catalog_row_shows_unproven_on_the_picker(self):
+        cat = {"harness": [self.row], "defaults": {}}
+        reg = hm.build_registry(cat, os.getcwd(), [], [], [], matcher=lambda _t: {"verdict": "ok"})
+        row = reg["startable"][0]
+        self.assertEqual(row["harness"], "local-x")
+        self.assertEqual(row["check"], self.row["check"])
+        self.assertNotIn("id", row)
+        choices = hm.picker_choices(reg)
+        shown = next(c for c in choices if c["target"].get("harness") == "local-x")
+        self.assertEqual(shown["section"], "start")
+        self.assertIn("unproven", hm.ANSI_RE.sub("", shown["line"]))
+
     def _launch(self, row):
         started = []
         ctx = mock.Mock()
