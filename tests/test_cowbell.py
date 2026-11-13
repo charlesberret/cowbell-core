@@ -4884,6 +4884,24 @@ class RequiresCheck(unittest.TestCase):
         self.assertEqual(last, "FAIL x")
         self.assertFalse(hm.accepted(row))
 
+    def test_check_gets_a_timeout_and_expiry_fails_closed(self):
+        import subprocess
+        proc = mock.Mock(returncode=0, stdout="PASS x\n", stderr="")
+        with mock.patch("cowbell.subprocess.run", return_value=proc) as run:
+            hm.run_check(self.row)
+        self.assertEqual(run.call_args.kwargs["timeout"], 5)
+        hung = subprocess.TimeoutExpired(self.row["check"], 5)
+        with mock.patch("cowbell.subprocess.run", side_effect=hung):
+            ok, last = hm.run_check(self.row)
+        self.assertFalse(ok)
+        self.assertIn("timed out", last)
+        self.assertFalse(hm.accepted(self.row))
+        self.assertFalse(hm.load_accepts()["local-x"]["ok"])
+
+    def test_accept_file_is_owner_only(self):
+        hm.run_check(self.row)
+        self.assertEqual(hm.accept_path().stat().st_mode & 0o777, 0o600)
+
     def test_requires_failure_refuses_launch(self):
         row = {**self.row, "requires": [["true"], ["sh", "-c", "exit 75"]]}
         with self.assertRaises(SystemExit) as cm:
