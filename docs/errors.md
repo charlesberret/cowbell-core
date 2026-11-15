@@ -985,6 +985,15 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Fix | Confirm herdr is installed, the socket is reachable, and server commands succeed outside cowbell. |
 | Source | `cowbell.py` |
 
+### herdr {} skipped: marked down after a timeout
+
+| | |
+|--|--|
+| Message | `herdr {} skipped: marked down after a timeout` |
+| Cause | A herdr call timed out, so cowbell skips further calls for about 30 seconds instead of waiting on each one. |
+| Fix | Restart or unstick the herdr server; cowbell resumes calling it after the short window. |
+| Source | `cowbell.py` |
+
 ### herdr {}: non-JSON output: {}
 
 | | |

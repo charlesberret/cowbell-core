@@ -68,6 +68,8 @@ The log may contain paths and flag names from harness configuration. It is writt
 
 **What is not masked (stated limit).** Free text is masked only where it has a credential shape: `sk-…`/`pk-…` keys, `ghp_…`-style tokens, `Bearer …`, `user:pass@` in a URL, `NAME=value` with a sensitive name, and a sensitive flag with its value. The last line a harness `check` prints (the `check` event's `detail`) and herdr's error text (`err` on a failed `herdr` event) can hold any other word a tool chose to print, and those words are written as they are. A secret with no recognizable shape in that output reaches the log. Do not point a `check` at a command that prints one, and treat the log as sensitive.
 
+The same limit applies inside command lines: sensitivity is judged by the flag's name, so the value of a single-letter flag (`-p`, `-u`, `-H`, `--cookie`) is logged as it is. Put secrets only behind flags whose names name them.
+
 ## Trace Line Format and Event Reference
 
 Every trace entry is written as a single line with space-separated columns:

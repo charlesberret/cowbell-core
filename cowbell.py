@@ -1787,11 +1787,16 @@ def launch_history(cat: dict, root: str) -> list[dict]:
         "harness": [{"id": h["id"]} for h in cat.get("harness", []) if h.get("id")],
     }
     t0 = time.perf_counter()
-    proc = subprocess.run(
-        prefix + [sys.executable, "-I", str(Path(__file__).resolve()), "_history"],
-        input=json.dumps({"root": os.path.realpath(root), "home": str(home), "cat": history_cat}),
-        capture_output=True, text=True, timeout=15,
-    )
+    try:
+        proc = subprocess.run(
+            prefix + [sys.executable, "-I", str(Path(__file__).resolve()), "_history"],
+            input=json.dumps({"root": os.path.realpath(root), "home": str(home), "cat": history_cat}),
+            capture_output=True, text=True, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        # a stalled as-user lookup must not crash a picker frame: no history for this place
+        trace.event("history", store="as-user", user=uid, ms=_ms(t0), err=type(e).__name__)
+        return []
     trace.event("history", store="as-user", user=uid, ms=_ms(t0), rc=proc.returncode)
     if proc.returncode:
         detail = (proc.stderr.strip().splitlines() or [f"exit {proc.returncode}"])[-1]
@@ -3123,15 +3128,22 @@ def herdr_bin() -> str:
 HERDR_TIMEOUT = 5.0  # seconds; a hung herdr server must not freeze the picker tick
 
 
+_HERDR_DOWN_UNTIL = 0.0  # one timeout marks herdr down briefly, so a stalled CLI costs a frame ~5s, not 5s per call
+
+
 def herdr(*args: str, expect_json: bool = True, timeout: float = HERDR_TIMEOUT,
           log_argv: list[str] | None = None) -> dict:
     """Run the herdr CLI. `log_argv` is what the trace shows instead of `args` when one arg
     packs words that only the caller can tell apart (a whole launch line to `pane run`)."""
+    global _HERDR_DOWN_UNTIL
+    if time.monotonic() < _HERDR_DOWN_UNTIL:
+        raise HerdrError(f"herdr {' '.join(args[:2])} skipped: marked down after a timeout")
     t0 = time.perf_counter()
     shown = " ".join(redact_argv(args if log_argv is None else log_argv))
     try:
         proc = subprocess.run([herdr_bin(), *args], capture_output=True, text=True, check=False, timeout=timeout)
     except subprocess.TimeoutExpired as e:
+        _HERDR_DOWN_UNTIL = time.monotonic() + 30
         trace.event("herdr", ms=_ms(t0), err="timeout", argv=shown)
         raise HerdrError(f"herdr {' '.join(args[:2])} timed out after {timeout:g}s") from e
     except OSError as e:  # herdr not installed: standalone cowbell still works
@@ -4439,7 +4451,7 @@ def cmd_accept(cat: dict, ids: list[str]) -> int:
     for i in ids:
         if not harness_by_id(cat, i):
             raise SystemExit(f"cowbell: unknown harness {i!r} (see: cowbell catalog)")
-    rows = [harness_by_id(cat, i) for i in ids] if ids else [h for h in cat.get("harness", []) if h.get("check")]
+    rows = [harness_by_id(cat, i) for i in ids] if ids else [h for h in cat.get("harness", []) if h.get("check") and h.get("id")]
     if not rows:
         print("cowbell: no row has a check")
         return 0
@@ -6365,7 +6377,7 @@ def edit_sitting(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
 
 def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
     """New with options: pick an agent, then its launch sheet, then optional save-as."""
-    hs = [h for h in cat.get("harness", [])]
+    hs = [h for h in cat.get("harness", []) if h.get("id")]  # a row with no id is named by catalog --check, never launchable
     with ThreadPoolExecutor(max_workers=8) as pool:
         verdicts = dict(zip([h["id"] for h in hs], pool.map(lambda h: trust_match(h["trust_tool"], root), hs)))
     note = {"blocked": paint("  ⊘ blocked here", RED), "overprivilege": paint("  ! more reach than needed", FAINT)}

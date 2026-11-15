@@ -3156,6 +3156,36 @@ class SessionHistory(unittest.TestCase):
             hm.launch_history(cat, self.root)
         self.assertIn("unix_user 'missing' is not on this host", str(error.exception))
 
+    def test_a_timed_out_as_user_lookup_yields_no_history_not_a_traceback(self):
+        cat = {**self.cat, "places": {"lobby": {"cwd": self.root, "unix_user": "guest"}}}
+        guest_home = os.path.join(self.root, "guest-home")
+        pw = mock.Mock(pw_dir=guest_home, pw_uid=4242, pw_name="guest")
+        with mock.patch("pwd.getpwnam", return_value=pw), \
+             mock.patch.object(hm, "_home_ok", return_value=True), \
+             mock.patch.object(hm.os, "geteuid", return_value=501), \
+             mock.patch.object(hm.shutil, "which", return_value="/usr/local/bin/agent-run"), \
+             mock.patch.object(hm.subprocess, "run",
+                               side_effect=hm.subprocess.TimeoutExpired(cmd="x", timeout=15)):
+            self.assertEqual(hm.launch_history(cat, self.root), [])
+
+    def test_a_row_with_no_id_is_skipped_not_a_keyerror(self):
+        # the load tolerates an id-less row (catalog --check names it); launch paths skip it
+        cat = {"harness": [{"kind": "true", "check": ["true"]}]}
+        self.assertEqual(hm.cmd_accept(cat, []), 0)
+        ctx = mock.Mock()
+        with mock.patch.object(hm, "choose", return_value=None):
+            self.assertFalse(hm.wizard(ctx, cat, self.root))
+
+    def test_a_herdr_timeout_marks_the_server_down(self):
+        down = hm.subprocess.TimeoutExpired(cmd="herdr", timeout=5)
+        with mock.patch.object(hm.subprocess, "run", side_effect=down) as run, \
+             mock.patch.object(hm, "_HERDR_DOWN_UNTIL", 0.0):
+            with self.assertRaises(hm.HerdrError):
+                hm.herdr("pane", "list")
+            with self.assertRaises(hm.HerdrError):
+                hm.herdr("workspace", "list")
+        self.assertEqual(run.call_count, 1)  # the second call never left the process
+
     def test_internal_history_command_emits_metadata_rows(self):
         import subprocess
         payload = {"root": self.root, "home": str(self.home), "cat": self.cat}
@@ -5271,6 +5301,9 @@ class FlagProbe(unittest.TestCase):
 
 class SubprocessTimeouts(unittest.TestCase):
     """A hung herdr or trust checker ends in a bounded wait, never an uncaught exception."""
+
+    def setUp(self):
+        hm._HERDR_DOWN_UNTIL = 0.0  # a prior test's timeout must not skip this one's calls
 
     def _hang(self, argv, **kw):
         self.kw = kw
