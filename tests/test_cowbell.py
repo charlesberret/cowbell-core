@@ -5421,12 +5421,11 @@ class BoundedSubprocess(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("No such file", last)
 
-    def test_a_str_check_is_one_argv_not_characters(self):
-        ok, _ = hm.run_check({"id": "strck", "kind": "sh", "check": "true"})
-        self.assertTrue(ok)
-        ok, last = hm.run_check({"id": "strck", "kind": "sh", "check": "no such binary"})
-        self.assertFalse(ok)
-        self.assertIn("No such file", last)
+    def test_a_str_check_is_refused_as_the_validator_refuses_it(self):
+        for bad in ("true", "no such binary", ["true", 1], []):
+            ok, last = hm.run_check({"id": "strck", "kind": "sh", "check": bad})
+            self.assertFalse(ok, bad)
+            self.assertEqual(last, "check must be one argv, a list of strings", bad)
 
     def test_a_missing_requires_binary_refuses_cleanly(self):
         row = {"id": "gone", "requires": [["/nonexistent/cowbell-no-such-bin"]]}
@@ -5434,9 +5433,22 @@ class BoundedSubprocess(unittest.TestCase):
             hm.run_requires(row)
         self.assertIn("No such file", str(e.exception))
 
-    def test_a_str_requires_entry_is_one_argv(self):
-        hm.run_requires({"id": "x", "requires": "true"})    # a bare str, wrapped: does not raise
-        hm.run_requires({"id": "x", "requires": ["true"]})  # a str entry, wrapped: does not raise
+    def test_a_str_requires_is_refused_as_the_validator_refuses_it(self):
+        want = "cowbell: refused — x: requires must be a list of argvs (lists of strings)"
+        for bad in ("true", ["true"], [["true"], "true"], [["true", 1]], [[]], 3):
+            with self.assertRaises(SystemExit) as e:
+                hm.run_requires({"id": "x", "requires": bad})
+            self.assertEqual(str(e.exception), want, bad)
+
+    def test_requires_is_checked_whole_before_any_entry_runs(self):
+        with tempfile.TemporaryDirectory() as d:
+            mark = os.path.join(d, "ran")
+            with self.assertRaises(SystemExit):
+                hm.run_requires({"id": "x", "requires": [["touch", mark], "true"]})
+            self.assertFalse(os.path.exists(mark))
+        hm.run_requires({"id": "x", "requires": [["true"]]})
+        hm.run_requires({"id": "x", "requires": []})
+        hm.run_requires({"id": "x"})
 
     def test_a_nul_byte_in_argv_is_a_clean_failure(self):
         proc = hm.run_bounded(["true\0x"], 5)

@@ -477,8 +477,8 @@ CI enforces that every template extracted from source appears below (see `tests/
 | | |
 |--|--|
 | Message | `cowbell: refused — {} failed its check: {}` |
-| Cause | The harness row's `check` argv exited non-zero; the detail is the check's last output line. |
-| Fix | Fix what the check verifies, or adjust `check` in `harnesses.toml`; a pass is recorded for 7 days. |
+| Cause | The harness row's `check` argv exited non-zero; the detail is the check's last output line. A `check` that is not one argv (a bare string, an empty list, or a list holding non-strings) is refused here too, with the detail `check must be one argv, a list of strings`, the rule `cowbell catalog --check` reports. |
+| Fix | Fix what the check verifies, or adjust `check` in `harnesses.toml` (a list of strings, for example `["model-server", "accept"]`); a pass is recorded for 7 days. |
 | Source | `cowbell.py` |
 
 ### refused — {} names a wall but no unix_user of its own; the level tha...
@@ -499,13 +499,13 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Fix | Use a lower-privilege lane, a different directory, or adjust trust/policy for this tree. |
 | Source | `cowbell.py` |
 
-### refused — {} has a requires entry that is not an argv
+### refused — {}: requires must be a list of argvs (lists of strings)
 
 | | |
 |--|--|
-| Message | `cowbell: refused — {} has a requires entry that is not an argv` |
-| Cause | A `requires` entry on the harness is not an argv — a bare value, or a list holding non-strings. |
-| Fix | Make `requires` a list of argvs (lists of strings) in `harnesses.toml`. |
+| Message | `cowbell: refused — {}: requires must be a list of argvs (lists of strings)` |
+| Cause | The harness's `requires` is not a list of argvs: a bare string (as the whole value or as an entry), an empty entry, or an entry holding non-strings. It is checked whole, so no entry runs. `cowbell catalog --check` reports the same rule as `harness {}: requires must be a list of argvs (lists of strings)`. |
+| Fix | Make `requires` a list of argvs, each a list of strings: `requires = [["model-server", "status"]]`. |
 | Source | `cowbell.py` |
 
 ### refused — {} requires {!r}, which exited {}
@@ -846,8 +846,8 @@ CI enforces that every template extracted from source appears below (see `tests/
 | | |
 |--|--|
 | Message | `harness {}: check must be one argv, a list of strings` |
-| Cause | The harness catalog fails `cowbell catalog --check` validation. |
-| Fix | Edit `harnesses.toml` to satisfy the constraint named in the message. |
+| Cause | The row's `check` is not a non-empty list of strings. A bare string is refused, not wrapped into one argv; at launch the same rule refuses the row (see `failed its check`). |
+| Fix | Write `check = ["model-server", "accept"]`, not `check = "model-server accept"`. |
 | Source | `cowbell.py` |
 
 ### harness {}: duplicate id
@@ -909,8 +909,8 @@ CI enforces that every template extracted from source appears below (see `tests/
 | | |
 |--|--|
 | Message | `harness {}: requires must be a list of argvs (lists of strings)` |
-| Cause | The harness catalog fails `cowbell catalog --check` validation. |
-| Fix | Edit `harnesses.toml` to satisfy the constraint named in the message. |
+| Cause | The row's `requires` is not a list of non-empty lists of strings. A bare string, as the whole value or as an entry, is refused, not wrapped into one argv; at launch the same rule refuses the row (see `requires must be a list of argvs`). |
+| Fix | Write `requires = [["model-server", "status"]]`, not `requires = "model-server status"` or `requires = ["model-server"]`. |
 | Source | `cowbell.py` |
 
 ### harness {}: unknown egress {!r}

@@ -1086,12 +1086,17 @@ def run_bounded(argv: list[str], timeout: float, attached: bool = False) -> subp
         raise
 
 
+def is_argv(v) -> bool:
+    """One argv: a non-empty list of strings. A bare str is not one; it is never wrapped or split."""
+    return isinstance(v, list) and bool(v) and all(isinstance(x, str) for x in v)
+
+
 def run_check(h: dict) -> tuple[bool, str]:
     """Run the row's check; record and return (passed, last line of its output)."""
     ck = h.get("check")
-    argv = [ck] if isinstance(ck, str) else list(ck) if isinstance(ck, (list, tuple)) else []
-    if not argv or not all(isinstance(x, str) for x in argv):  # a str is one argv, never characters
-        ok, last = False, "check is not an argv"
+    argv = ck if is_argv(ck) else []
+    if not argv:  # a bare str is refused, as `catalog --check` refuses it: never wrapped, never split
+        ok, last = False, "check must be one argv, a list of strings"
     elif (proc := run_bounded(argv, CHECK_TIMEOUT)) is None:
         ok, last = False, f"check timed out after {CHECK_TIMEOUT:g}s"
     else:
@@ -1116,11 +1121,12 @@ def run_check(h: dict) -> tuple[bool, str]:
 
 def run_requires(h: dict) -> None:
     """Run each `requires` argv in order, output to this terminal; the first failure refuses the launch."""
-    reqs = h.get("requires") or []
-    for raw in ([reqs] if isinstance(reqs, str) else reqs):
-        argv = [raw] if isinstance(raw, str) else list(raw) if isinstance(raw, (list, tuple)) else []
-        if not argv or not all(isinstance(x, str) for x in argv):
-            raise SystemExit(f"cowbell: refused — {h['id']} has a requires entry that is not an argv")
+    reqs = h.get("requires")
+    if reqs is None:
+        return
+    if not (isinstance(reqs, list) and all(is_argv(a) for a in reqs)):  # checked whole, before any entry runs
+        raise SystemExit(f"cowbell: refused — {h['id']}: requires must be a list of argvs (lists of strings)")
+    for argv in reqs:
         trace.event("requires", harness=h.get("id", ""), cmd=shell_join(redact_argv(argv)))
         proc = run_bounded(argv, REQUIRES_TIMEOUT, attached=True)
         if proc is None:
@@ -4401,11 +4407,10 @@ def cmd_catalog_check(cat: dict) -> int:
         if h.get("effort") and not ef:
             problems.append(f"harness {hid}: effort {h['effort']!r} set but no effort_flag")
         ck = h.get("check")
-        if ck is not None and not (isinstance(ck, list) and ck and all(isinstance(x, str) for x in ck)):
+        if ck is not None and not is_argv(ck):
             problems.append(f"harness {hid}: check must be one argv, a list of strings")
         rq = h.get("requires")
-        if rq is not None and not (isinstance(rq, list) and all(
-                isinstance(a, list) and a and all(isinstance(x, str) for x in a) for a in rq)):
+        if rq is not None and not (isinstance(rq, list) and all(is_argv(a) for a in rq)):
             problems.append(f"harness {hid}: requires must be a list of argvs (lists of strings)")
         if not installed(h):
             unchecked.append(hid)
