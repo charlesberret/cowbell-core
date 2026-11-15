@@ -124,28 +124,28 @@ cannot be checked from this tree is marked `DRAFT — needs maintainer check:`.
   (`COWBELL_CONFIG_DIR`/`XDG_CONFIG_HOME` override); first run seeds it by
   copying `harnesses.toml` from beside `cowbell.py` or the wheel's
   `share/cowbell/` data; a missing `droid`/`devin` row is spliced in once per
-  install state (verified: `cowbell.py:381` `config_dir()`, `:478` `catalog_path()`,
-  `:366` `seed_path()`, `:516` `fill_missing_seed_kinds()`, `:491` `SEED_FILL_IDS`;
+  install state (verified: `cowbell.py:381` `config_dir()`, `:480` `catalog_path()`,
+  `:366` `seed_path()`, `:518` `fill_missing_seed_kinds()`, `:493` `SEED_FILL_IDS`;
   `pyproject.toml` shared-data).
 - Each `[[harness]]` row maps a kind (the CLI executable, or `command` for a
   wrapper script) to launch flags: `model_flag`, `effort_flag`/`efforts`,
   `add_dir_flag`, `resume`, `tools_allow_flag`/`tools_deny_flag`,
   `system_prompt_flag`, `session_id_flag`, `name_flag`, `claim_flag`,
   `provider`/`provider_flag`, `cycle_flag`, plus `requires` and `check`
-  (verified: `harnesses.toml` seed rows and comments; `cowbell.py:2492`
+  (verified: `harnesses.toml` seed rows and comments; `cowbell.py:2499`
   `build_argv()`).
 - `check` is one argv (a non-empty list of strings); `requires` is a list of such argvs. A bare
-  string is refused for both, never wrapped or split (verified: `cowbell.py:1164` `is_argv()`,
-  `:1173` `run_check()`, `:1203` `run_requires()`, `:4498-4503` `cmd_catalog_check()`).
+  string is refused for both, never wrapped or split (verified: `cowbell.py:1166` `is_argv()`,
+  `:1175` `run_check()`, `:1205` `run_requires()`, `:4512-4517` `cmd_catalog_check()`).
 - `installed(h)` checks the wrapper `command` path exists or the kind resolves
   on PATH — only installed harnesses appear in New Session (verified:
-  `cowbell.py:1050` `installed()`, `harnesses.toml` comment "shown only when
+  `cowbell.py:1052` `installed()`, `harnesses.toml` comment "shown only when
   installed").
 - `[places.<name>]` scopes a directory: `cwd`, `allow_harness`,
   `default_harness`, `lane`, `workspace_label`, `unix_user`,
   `require_uid`, `nono_profile`, `nono_proxy_port`; `place_for` picks the
   deepest matching place and `scoped_catalog` filters the catalog to it
-  (verified: `cowbell.py:1003` `place_for()`, `places()`, `scoped_catalog()`;
+  (verified: `cowbell.py:1005` `place_for()`, `places()`, `scoped_catalog()`;
   `README.md` "A directory can have its own rules").
 - `[defaults] untitled_place` remaps a sitting started in the home directory
   into a named place (verified: `cowbell.py` `resolve_root()`; `README.md`
@@ -153,26 +153,26 @@ cannot be checked from this tree is marked `DRAFT — needs maintainer check:`.
 - Edits go through a splice writer (`harness_insert`, `harness_replace`,
   `harness_delete`, `harness_set_field`, `place_blocks`) that rewrites only the
   changed TOML block, preserving comments and ordering — never a full TOML
-  dump (verified: `cowbell.py:4554` `# --- catalog writer` banner, `:4772` `_splice()`,
-  `:4776` `harness_insert()`, `_format_harness_block()`).
+  dump (verified: `cowbell.py:4568` `# --- catalog writer` banner, `:4786` `_splice()`,
+  `:4790` `harness_insert()`, `_format_harness_block()`).
 - `cowbell catalog` prints one row per harness: id, kind, an egress glyph, `installed`
   (`yes`, `unproven` when installed but its `check` has no fresh pass, or `no`), the trust
-  badge, and the title, then a one-line glyph legend (verified: `cowbell.py:4392` `cmd_catalog()`,
-  `:71-72` `GLYPH`, `LEGEND`, `:4400` legend print).
-- `cowbell catalog --check` (`cmd_catalog_check`, `:4457`, dispatched from `main()` at
-  `:6884-6887`) rejects a malformed catalog by name and exits 1. Schema rules (`:4465-4471`):
+  badge, and the title, then a one-line glyph legend (verified: `cowbell.py:4406` `cmd_catalog()`,
+  `:71-72` `GLYPH`, `LEGEND`, `:4414` legend print).
+- `cowbell catalog --check` (`cmd_catalog_check`, `:4471`, dispatched from `main()` at
+  `:6898-6901`) rejects a malformed catalog by name and exits 1. Schema rules (`:4479-4485`):
   a `schema` that is not a positive int is a FAIL; `schema > SCHEMA + 1` is a FAIL ("upgrade
   cowbell"); `schema == SCHEMA + 1` is a `warn` (a newer file is read, never rewritten).
-  Per-row FAILs (`:4473-4503`): no id, duplicate id, no kind, `egress` not one of
+  Per-row FAILs (`:4487-4517`): no id, duplicate id, no kind, `egress` not one of
   `local|mesh|vendor`, `lane` not `green|yellow|red`, `models` not a list, `effort_flag` not a
   non-empty list of strings, `efforts` not a list of strings, `add_dir_flag` not a non-empty
   string, `effort` set with no `effort_flag`, `check` not one argv, `requires` not a list of
-  argvs. Place FAILs (`:4512-4518`): `allow_harness` or `default_harness` naming an unknown
+  argvs. Place FAILs (`:4526-4532`): `allow_harness` or `default_harness` naming an unknown
   harness. Each installed harness's `--help` is probed for its declared flags (`flag_probe`,
-  `:4420`); a miss is a `warn`, and a not-installed or unprobeable harness is a `skip` line.
+  `:4434`); a miss is a `warn`, and a not-installed or unprobeable harness is a `skip` line.
   Output is `FAIL`/`warn`/`skip` lines, then `ok: N harnesses, M places`, or
   `cowbell: check failed (n problem|problems)` on stderr; the singular/plural is an inline
-  conditional, not a helper (verified: `cowbell.py:4519-4530`, esp. `:4527`).
+  conditional, not a helper (verified: `cowbell.py:4533-4544`, esp. `:4541`).
 
 ## Roster, pins, and state files
 
@@ -180,38 +180,38 @@ cannot be checked from this tree is marked `DRAFT — needs maintainer check:`.
   `COWBELL_STATE_DIR`/`XDG_STATE_HOME` override) records every sitting cowbell
   raised or adopted: name, cwd, harness/kind, model, lane, allow/deny, seat,
   session id, pane binding, recorded argv, effort, dirs, extra (verified:
-  `cowbell.py:390` `state_dir()`, `:472` `roster_path()`, `:3416` `raise_harness()` row dict).
+  `cowbell.py:392` `state_dir()`, `:474` `roster_path()`, `:3430` `raise_harness()` row dict).
 - The state dir is created and, unless it is a symlink, chmod'd to `0700` whenever its mode
-  differs; the roster, `accept.json` and `debug.log` live there (verified: `cowbell.py:390-398`
+  differs; the roster, `accept.json` and `debug.log` live there (verified: `cowbell.py:392-400`
   `state_dir()`).
 - `save_roster` writes through a `.json.tmp` that is unlinked first, then created
   `O_EXCL|O_NOFOLLOW` at mode `0600` (the roster holds raw argv, prompts included), then
   `os.replace`d over the roster. It first calls `check_writable` on the file's current schema
-  (verified: `cowbell.py:1254-1264` `save_roster()`, `:1232` `roster_schema()`).
+  (verified: `cowbell.py:1256-1266` `save_roster()`, `:1234` `roster_schema()`).
 - `load_roster` opens through `_open_regular`; an `OSError` (unreadable, or a fifo/socket/device
   at the path) or a `ValueError` (invalid JSON or invalid UTF-8) refuses with
   `cowbell: <path>: <reason>` instead of reading as an empty roster. An absent file is `[]`
-  (verified: `cowbell.py:1242-1251` `load_roster()`, `:464` `_file_error()`). By contrast
+  (verified: `cowbell.py:1244-1253` `load_roster()`, `:466` `_file_error()`). By contrast
   `load_accepts` and `roster_schema` swallow the same errors and fall back to `{}` / `SCHEMA`
-  (verified: `cowbell.py:1065-1071`, `:1232-1239`).
+  (verified: `cowbell.py:1067-1073`, `:1234-1241`).
 - `_open_regular(path)` opens `O_RDONLY|O_NONBLOCK` and `fstat`s: anything that is not a regular
   file raises `OSError("not a regular file")`, so a fifo planted at a state path cannot hang
   cowbell. `_open_regular_write` is the write side (`O_WRONLY|O_NONBLOCK|O_CREAT|O_TRUNC`; a
-  fifo with no reader fails `ENXIO` at once) (verified: `cowbell.py:438-461`).
+  fifo with no reader fails `ENXIO` at once) (verified: `cowbell.py:440-463`).
 - `pins.json` holds per-directory harness pin/hide prefs; `accept.json` holds `check` results
   (written by `run_check` through a `0600` `O_EXCL|O_NOFOLLOW` tmp, then `replace`);
   `history-cache.json` caches session-discovery rows (see Session discovery); `debug.log`
   (created `0600` with `O_NOFOLLOW`, rotated to `debug.log.1` once it passes `DEBUG_LOG_MAX` =
   1,000,000 bytes) holds the opt-in `COWBELL_DEBUG`/`--debug` trace; `seed-fill.json` marks
-  completed seed splices (verified: `cowbell.py:1267` `pins_path()`, `:1061` `accept_path()`,
-  `:1184-1194` `run_check()` tmp, `:153-174` `Trace._open()`, `:80` `DEBUG_LOG_MAX`,
-  `:494` `seed_fill_marker_path()`).
+  completed seed splices (verified: `cowbell.py:1269` `pins_path()`, `:1063` `accept_path()`,
+  `:1186-1196` `run_check()` tmp, `:153-174` `Trace._open()`, `:80` `DEBUG_LOG_MAX`,
+  `:496` `seed_fill_marker_path()`).
 - `schema = 1` on catalog and roster: a file with a newer schema is read but
   never overwritten (`SchemaError`) (verified: `cowbell.py:374` `SCHEMA`, `:377` `SchemaError`,
-  `:429` `check_writable()`; `harnesses.toml` `schema = 1`).
+  `:431` `check_writable()`; `harnesses.toml` `schema = 1`).
 - `refresh_sessions` re-binds a roster row to the agent still occupying its
   pane and unbinds rows whose pane was taken by different work (verified:
-  `cowbell.py:3247` `refresh_sessions()`, `occupant_same()`).
+  `cowbell.py:3261` `refresh_sessions()`, `occupant_same()`).
 
 ## Debug trace and redaction
 
@@ -225,7 +225,7 @@ cannot be checked from this tree is marked `DRAFT — needs maintainer check:`.
   `ENXIO` instead of hanging, an `fstat` refuses any non-regular file, and `fchmod(0600)` tightens
   a log left by an older run (verified: `cowbell.py:153-174`).
 - Argv and free text are masked before they reach the trace; the launch sheet's printed command is
-  the product and is never redacted (verified: `cowbell.py:180-184` banner comment; `:2984`
+  the product and is never redacted (verified: `cowbell.py:180-184` banner comment; `:2991`
   `exec_here` prints `shell_join(cmd)` unredacted).
 - `redact_argv(argv)` keeps the executable's basename and flag names. Masked as `***`: every word
   after a literal `--`; the value of a sensitive flag (the next word, or the part after `=`);
@@ -245,9 +245,9 @@ cannot be checked from this tree is marked `DRAFT — needs maintainer check:`.
 - `redact_launch(cmd, passthrough)` is `redact_argv` plus the words typed after `--` in
   `cowbell new`: `split_passthrough` drops that `--`, so the words are found by their last
   occurrence in the command and masked (verified: `cowbell.py:277-290`).
-- Call sites: `requires` (`:1206`), `check` (`:1224`), `trust` (`:1900`), `exec` (`:2982`),
-  `spawn` (`:3020`), the herdr call trace (`:3131`, `:3142`), the launch line shown for a herdr
-  pane (`:3458`), `raise` (`:3502`) and `start` (`:6826`) (verified: `grep -n "redact_" cowbell.py`).
+- Call sites: `requires` (`:1208`), `check` (`:1226`), `trust` (`:1907`), `exec` (`:2989`),
+  `spawn` (`:3027`), the herdr call trace (`:3145`, `:3156`), the launch line shown for a herdr
+  pane (`:3472`), `raise` (`:3516`) and `start` (`:6840`) (verified: `grep -n "redact_" cowbell.py`).
 
 ## Session discovery (history)
 
@@ -255,39 +255,39 @@ cannot be checked from this tree is marked `DRAFT — needs maintainer check:`.
   `[defaults] session_history` is `"on"` or `"all"`: Claude under
   `~/.claude/projects/<cwd flattened to ->`, Grok under
   `~/.grok/sessions/<percent-encoded cwd>/` (`HISTORY_PROVIDERS` maps harness
-  id → reader) (verified: `cowbell.py:1757` `HISTORY_PROVIDERS`, `:1573`
-  `claude_store()`, `:1655` `grok_store()`, `:1818` `discover_sessions()`;
+  id → reader) (verified: `cowbell.py:1759` `HISTORY_PROVIDERS`, `:1575`
+  `claude_store()`, `:1657` `grok_store()`, `:1825` `discover_sessions()`;
   `harnesses.toml` session_history comment).
 - Only titles and timestamps are kept — session id, timestamps, title/first utterance
   (60 characters) — never transcript bodies. The reader does open the transcript: `_claude_hit`
   reads up to the first 401 lines of the `.jsonl` for a `custom-title` record and the first real
   user line; `_grok_hit` reads `summary.json` and, only when that title is missing or is chrome,
-  up to 41 lines of `chat_history.jsonl` (verified: `cowbell.py:1586-1610` `_claude_hit()`
-  (`i > 400` break), `:1670-1709` `_grok_hit()` (`i > 40` break), `:1558` `session_title()`).
+  up to 41 lines of `chat_history.jsonl` (verified: `cowbell.py:1588-1612` `_claude_hit()`
+  (`i > 400` break), `:1672-1711` `_grok_hit()` (`i > 40` break), `:1560` `session_title()`).
 - Every history read goes through `_open_regular`, so a fifo or device at a store path is
   skipped, not waited on, and every line or file is decoded as UTF-8 with `errors="replace"`, so
-  an invalid byte cannot abort a scan (verified: `cowbell.py:1590`/`:1595` `_claude_hit`,
-  `:1663`/`:1665` `_read_json`, `:1692`/`:1697` `_grok_hit`, `:1512-1513` `history_cache`). An
+  an invalid byte cannot abort a scan (verified: `cowbell.py:1592`/`:1597` `_claude_hit`,
+  `:1665`/`:1667` `_read_json`, `:1694`/`:1699` `_grok_hit`, `:1514-1515` `history_cache`). An
   `OSError` leaves the hit with blank fields.
 - Results are cached in `history-cache.json` in the state dir, keyed by `path:mtime:size` (a Grok
   key joins the chat and summary signatures); the cache holds those title/utterance fields, so it
-  is as private as the state dir (`0700`) (verified: `cowbell.py:1510` `history_cache()`, `:1528`
-  `cache_key()`, `:1636-1652` `claude_sessions()`, `:1712-1732` `grok_sessions()`).
+  is as private as the state dir (`0700`) (verified: `cowbell.py:1512` `history_cache()`, `:1530`
+  `cache_key()`, `:1638-1654` `claude_sessions()`, `:1714-1734` `grok_sessions()`).
 - `write_history_cache` writes through `_open_regular_write`, so a fifo planted at
   `history-cache.json` fails `ENXIO` and the write is dropped, never blocked; any `OSError` is
   swallowed ("a slow cowbell, not a broken one"). The JSON text is cut at 4,000,000 characters
   before encoding, so an over-cap cache is truncated mid-document and `history_cache()` then reads
-  it back as `{}` (verified: `cowbell.py:1518-1525`, `:1514`).
+  it back as `{}` (verified: `cowbell.py:1520-1527`, `:1516`).
 - `"all"` also keeps sessions whose title looks dispatched (a role prompt);
-  `"on"` filters them out via `DISPATCHED` (verified: `cowbell.py:1507`
-  `DISPATCHED`, `:1832-1833` `discover_sessions()` tail).
+  `"on"` filters them out via `DISPATCHED` (verified: `cowbell.py:1509`
+  `DISPATCHED`, `:1839-1840` `discover_sessions()` tail).
 - For a `unix_user` place, discovery runs as that user through `agent-run` and the `_history`
-  worker (`main()` branch `:6831-6835`; the child is `sys.executable -I <cowbell.py> _history`,
+  worker (`main()` branch `:6845-6849`; the child is `sys.executable -I <cowbell.py> _history`,
   15 s timeout). Returned rows are checked before use: every `session_id` must fully match
   `SESSION_ID`; every `cwd` must equal the requested root, be a plain absolute path and be owned by
   that account; and `title`, `harness_title`, `utterance` and `name` lose C0 and C1 control
-  characters (`CONTROL_WIDE`) (verified: `cowbell.py:1760-1815` `launch_history()`, `:2550`
-  `SESSION_ID`, `:2548` `CONTROL_WIDE`).
+  characters (`CONTROL_WIDE`) (verified: `cowbell.py:1762-1822` `launch_history()`, `:2557`
+  `SESSION_ID`, `:2555` `CONTROL_WIDE`).
 
 ## Resume mechanism
 
@@ -317,8 +317,8 @@ cannot be checked from this tree is marked `DRAFT — needs maintainer check:`.
 - `launch()` runs `run_requires(h)` then `ensure_accepted(h)` before handing
   to `ctx.launch.start`: the row's `requires` argvs in order (first failure refuses), then the
   row's `check` when no pass is recorded within `ACCEPT_MAX_AGE` (7 days); `cowbell accept`
-  runs checks ahead of time (verified: `cowbell.py:3024` `launch()`, `:1198` `run_requires()`,
-  `:1218` `ensure_accepted()`, `:1074` `accepted()`, `:1058` `ACCEPT_MAX_AGE`, `:4437`
+  runs checks ahead of time (verified: `cowbell.py:3031` `launch()`, `:1200` `run_requires()`,
+  `:1220` `ensure_accepted()`, `:1076` `accepted()`, `:1060` `ACCEPT_MAX_AGE`, `:4451`
   `cmd_accept()`; `harnesses.toml` requires/check comment).
 - `run_requires` validates the whole `requires` value first: it must be a list and every entry an
   argv (`is_argv`: a non-empty list of strings), or it refuses `requires must be a list of argvs
@@ -326,15 +326,15 @@ cannot be checked from this tree is marked `DRAFT — needs maintainer check:`.
   then runs through `run_bounded(argv, REQUIRES_TIMEOUT=60, attached=True)`: output goes to this
   terminal, and the first entry that times out, exits non-zero, or will not start (rc 127 with the
   OS error) refuses the launch. Each entry's trace line is the redacted argv (verified:
-  `cowbell.py:1198-1215`, `:1095` `REQUIRES_TIMEOUT`, `:1164-1166` `is_argv()`, `:1206`).
+  `cowbell.py:1200-1217`, `:1097` `REQUIRES_TIMEOUT`, `:1166-1168` `is_argv()`, `:1208`).
 - `run_check` runs the `check` argv (captured, `CHECK_TIMEOUT` = 5 s) and records
   `{ok, ts, detail}` under the row id in `accept.json`. A `check` that is not an argv is a failed
   check ("check must be one argv, a list of strings"), the same refusal `catalog --check` makes; a
   timeout is a failed check; the detail is the last line of stdout, else of stderr, else `exit N`.
-  The trace records the detail through `redact_text` (verified: `cowbell.py:1169-1195`
-  `run_check()`, `:1096` `CHECK_TIMEOUT`, `:1224`).
+  The trace records the detail through `redact_text` (verified: `cowbell.py:1171-1197`
+  `run_check()`, `:1098` `CHECK_TIMEOUT`, `:1226`).
 - `run_bounded(argv, timeout, attached=False)` is the one bounded runner (verified:
-  `cowbell.py:1103-1161`). Captured (default): the child gets a new session
+  `cowbell.py:1105-1163`). Captured (default): the child gets a new session
   (`start_new_session`), `stdin=DEVNULL` and piped output, so it has no controlling tty and cannot
   prompt; on timeout, or on an interrupt such as Ctrl-C (which a session leader does not
   receive), the whole process group is `SIGKILL`ed with `os.killpg(proc.pid, …)` and the pipes
@@ -347,12 +347,12 @@ cannot be checked from this tree is marked `DRAFT — needs maintainer check:`.
 - `build_argv` assembles the agent argv: provider, model, effort (with `{}`
   interpolation), model cycle, lane args from `[lanes.<kind>]`, tool
   allow/deny, extra dirs, seat file, inline `system_prompt`, grok `claim_flag`,
-  then the resume spec and passthrough `extra` (verified: `cowbell.py:2492`
+  then the resume spec and passthrough `extra` (verified: `cowbell.py:2499`
   `build_argv()`, `effort_argv()`, `dirs_argv()`, `claim_argv()`).
 - `shell_join` refuses control characters rather than quoting them (verified:
-  `cowbell.py:2553` `shell_join()`, `:2546` `CONTROL`).
+  `cowbell.py:2560` `shell_join()`, `:2553` `CONTROL`).
 - `gate` runs the trust `match` verdict before `new`: `blocked` refuses,
-  `overprivilege` warns (verified: `cowbell.py:4321` `gate()`, `:1885` `trust_match()`).
+  `overprivilege` warns (verified: `cowbell.py:4335` `gate()`, `:1892` `trust_match()`).
 
 ## Confinement (`unix_confine`)
 
@@ -378,47 +378,47 @@ cannot be checked from this tree is marked `DRAFT — needs maintainer check:`.
 
 - `[defaults] trust_command` names an external checker asked `subject <path>`,
   `match <tool> <path>`, `badge <tool>`; exit 4 refuses, exit 3 warns; absent
-  from PATH means no verdicts are shown at all (verified: `cowbell.py:908` `EXT`,
-  `:1853` `trust_available()`, `:1857` `trust_subject()`, `:1885` `trust_match()`,
-  `:1904` `trust_badge()`; `harnesses.toml` trust comment).
-- `TRUST_TIMEOUT = 2.5` seconds bounds a slow checker (verified: `cowbell.py:909`
-  `TRUST_TIMEOUT`, used at `:1860`, `:1892`, `:1909`).
+  from PATH means no verdicts are shown at all (verified: `cowbell.py:910` `EXT`,
+  `:1860` `trust_available()`, `:1864` `trust_subject()`, `:1892` `trust_match()`,
+  `:1911` `trust_badge()`; `harnesses.toml` trust comment).
+- `TRUST_TIMEOUT = 2.5` seconds bounds a slow checker (verified: `cowbell.py:911`
+  `TRUST_TIMEOUT`, used at `:1867`, `:1899`, `:1916`).
 - Calls that go through `run_bounded` (verified: `grep -n "run_bounded(" cowbell.py`):
-  `git_root` (`:659`, `GIT_TIMEOUT`), the `check` (`:1175`, captured), `requires` (`:1207`,
-  attached), `trust_subject` (`:1860`), and the `ps` and `lsof` scans (`:2608`, `:2644`).
+  `git_root` (`:661`, `GIT_TIMEOUT`), the `check` (`:1177`, captured), `requires` (`:1209`,
+  attached), `trust_subject` (`:1867`), and the `ps` and `lsof` scans (`:2615`, `:2651`).
   Captured callers kill the whole process group on timeout or interrupt; the one attached caller
   (`requires`) kills the child only.
 - `trust_match` and `trust_badge` do not use it: they call `subprocess.run` with
-  `timeout=TRUST_TIMEOUT` (`:1891`, `:1908`), so a timeout reads as "no verdict" (`unknown` / `?`),
+  `timeout=TRUST_TIMEOUT` (`:1898`, `:1915`), so a timeout reads as "no verdict" (`unknown` / `?`),
   but nothing puts the checker in its own session or kills a grandchild. Also bounded only by an
-  explicit `timeout=`: `launch_history` (15 s, `:1790`), `flag_probe` (15 s, `:4430`), `herdr()`
-  (`HERDR_TIMEOUT`, `:3133`), `fc-cache` (30 s, `:3658`).
+  explicit `timeout=`: `launch_history` (15 s, `:1797`), `flag_probe` (15 s, `:4444`), `herdr()`
+  (`HERDR_TIMEOUT`, `:3147`), `fc-cache` (30 s, `:3672`).
 - DRAFT — needs maintainer check: the checker's verdict taxonomy beyond the
-  `blocked`/`overprivilege`/`ok` outcomes handled in `parse_match` (`:1864`).
+  `blocked`/`overprivilege`/`ok` outcomes handled in `parse_match` (`:1871`).
 
 ## The herdr adapter boundary
 
 - Every `herdr(…)` CLI call lives inside the `# --- herdr adapter` section of
   `cowbell.py`; `Hosts.test_every_herdr_call_is_inside_the_adapter` scans the
-  source and fails on any call outside it (verified: `cowbell.py:3117` adapter
-  banner; `tests/test_cowbell.py:1143` `class Hosts`, `:1148`
+  source and fails on any call outside it (verified: `cowbell.py:3124` adapter
+  banner; `tests/test_cowbell.py:1145` `class Hosts`, `:1150`
   `test_every_herdr_call_is_inside_the_adapter`).
 - `herdr()` runs the binary (`HERDR_BIN_PATH` or `which herdr` or
   `~/.local/bin/herdr`) with `HERDR_TIMEOUT = 5.0`s; `server_up()` probes the
-  socket rather than the CLI (verified: `cowbell.py:3119` `herdr_bin()`, `:3123`
-  `HERDR_TIMEOUT`, `:3126` `herdr()`, `:3181` `server_up()`).
+  socket rather than the CLI (verified: `cowbell.py:3126` `herdr_bin()`, `:3130`
+  `HERDR_TIMEOUT`, `:3140` `herdr()`, `:3195` `server_up()`).
 - `herdr()` writes its trace line from the redacted argv (`redact_argv`; `log_argv` lets a caller
   show a masked launch line in place of one packed argument) and redacts the error text it traces
-  (verified: `cowbell.py:3126-3142`).
+  (verified: `cowbell.py:3140-3156`).
 - The adapter covers: snapshot/agents/panes/workspaces reads, tab create/focus,
   pane split/run/rename/process-info, agent start/focus, identity publish
   (`report_identity`, `stamp_live_identities`, `sync_identity_from_plugin_event`)
-  (verified: `cowbell.py` functions inside `:3117-3969`).
+  (verified: `cowbell.py` functions inside `:3124-3983`).
 - `start_native` waits for a shell in the pane (`wait_shell`, 10 s,
   `shell_ready_from_process` against `SHELLS`) then runs `herdr agent start`
   with a 35 s subprocess timeout (`--timeout 30000` to herdr itself) and up to 5 attempts on
-  `agent_pane_busy` / "not an available shell" (verified: `cowbell.py:3378` `wait_shell()`,
-  `:3394-3413` `start_native()`, `:70` `SHELLS`).
+  `agent_pane_busy` / "not an available shell" (verified: `cowbell.py:3392` `wait_shell()`,
+  `:3408-3427` `start_native()`, `:70` `SHELLS`).
 - DRAFT — needs maintainer check: the JSON shapes herdr returns (`agent_session`,
   workspace/pane records) are herdr's contract; this tree only shows how
   cowbell consumes them.
@@ -450,10 +450,10 @@ cannot be checked from this tree is marked `DRAFT — needs maintainer check:`.
 - `tests/test_cowbell.py` (~5,700 lines, 46 `TestCase` classes) is the main unittest suite; it
   stubs the herdr binary via `HERDR_BIN_PATH` pointing at a logging sentinel so no
   test can reach a live server, and `ZSuiteSeam` fails if it was ever invoked
-  (verified: `tests/test_cowbell.py:88` `setUpModule`, `:5317` `ZSuiteSeam`, class list via
+  (verified: `tests/test_cowbell.py:88` `setUpModule`, `:5331` `ZSuiteSeam`, class list via
   `grep -n "class.*TestCase"`; `wc -l` → 5700). The classes that pin the hardening work:
-  `DebugLog` (`:1896`), `SessionHistory` (`:3009`), `CatalogCheck` (`:4940`),
-  `SubprocessTimeouts` (`:5272`), `RequiresCheck` (`:5328`), `BoundedSubprocess` (`:5534`).
+  `DebugLog` (`:1903`), `SessionHistory` (`:3016`), `CatalogCheck` (`:4954`),
+  `SubprocessTimeouts` (`:5286`), `RequiresCheck` (`:5342`), `BoundedSubprocess` (`:5548`).
 - `tests/test_pty.py` (315 lines) drives `menu`, `line_input`, and the picker in a real
   pseudo-terminal (verified: `tests/test_pty.py` module docstring; classes `Menu`, `Prompt`,
   `PickerHere`).
