@@ -2060,6 +2060,14 @@ class DebugLog(unittest.TestCase):
                 hm.run_check(row)
             self.assertEqual(hm.accept_path().stat().st_mode & 0o777, 0o600)
 
+    def test_roster_is_born_private(self):
+        old = os.umask(0)
+        self.addCleanup(os.umask, old)
+        with mock.patch.dict(os.environ, {"COWBELL_STATE_DIR": self.tmp.name}):
+            hm.save_roster([{"id": "x", "name": "seat", "cwd": "/w"}])
+            self.assertEqual(hm.roster_path().stat().st_mode & 0o777, 0o600)
+            self.assertEqual(Path(self.tmp.name).stat().st_mode & 0o777, 0o700)
+
     def test_a_directory_at_the_accept_tmp_is_a_clean_refusal(self):
         with mock.patch.dict(os.environ, {"COWBELL_STATE_DIR": self.tmp.name}):
             hm.accept_path().with_suffix(".tmp").mkdir()

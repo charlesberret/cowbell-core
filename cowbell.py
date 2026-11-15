@@ -393,6 +393,8 @@ def state_dir() -> Path:
         Path(os.environ.get("XDG_STATE_HOME") or "~/.local/state").expanduser() / "cowbell"
     p = Path(base).expanduser()
     p.mkdir(parents=True, exist_ok=True)
+    if p.is_dir() and not p.is_symlink() and p.stat().st_mode & 0o777 != 0o700:
+        os.chmod(p, 0o700)  # roster, accept.json and debug.log live here — owner only
     return p
 
 
@@ -1254,7 +1256,11 @@ def save_roster(rows: list[dict]) -> None:
     check_writable(roster_schema(p), str(p))
     rows.sort(key=lambda r: (r.get("cwd", ""), r.get("name", "")))
     tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps({"schema": SCHEMA, "harnesses": rows}, indent=2) + "\n")
+    # the roster holds raw argv, prompts included — born 0600 like accept.json and the debug log
+    tmp.unlink(missing_ok=True)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"schema": SCHEMA, "harnesses": rows}, indent=2) + "\n")
     os.replace(tmp, p)
 
 

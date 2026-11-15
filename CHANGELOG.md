@@ -18,6 +18,7 @@
 - The last unguarded file paths take the fifo guard too: the session-history scan (a `*.jsonl` that is a fifo no longer hangs the scan) and the history-cache write (`O_NONBLOCK` then fstat, same as the reads). A truncated `roster.json` is a named refusal (`cowbell: <path>: <reason>`) instead of a traceback, and a Grok chat line with a bad byte is decoded again instead of silently skipped. `catalog --check` speaks plainer — `checks up to schema 2` for a far-newer file, `newer file: read, never rewritten` for one a rev ahead, `1 problem` pluralized — `Permission denied` no longer echoes the path twice, a `schema` that is not an integer is told `schema must be an int` rather than to upgrade, and an undecodable file is `not valid UTF-8` instead of a raw codec dump.
 - `fc-cache` subprocess now has a 30-second timeout during `cowbell font install`.
 - `accept.json` is written mode 0600 explicitly before atomic replace (was umask-dependent).
+- `roster.json` — which stores raw argv, prompts included — is written mode 0600 from creation, and the state directory is tightened to mode 0700.
 - The harness verify hint now names `agent-run` only; the stale "or sudo" wording is gone (cowbell never falls back to `sudo -u`).
 - `cowbell catalog` prints a glyph legend footer (`⌂ local  ↑ vendor · ok  ! more reach  ⊘ blocked  ? unknown`).
 - The shipped seed `harnesses.toml` documents `egress` and `family` fields in comments.
