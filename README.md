@@ -244,7 +244,7 @@ Day-to-day users do not need these commands; they run from plugin hooks or durin
 
 ## Debug trace
 
-`COWBELL_DEBUG_LOG=<path> cowbell …` writes a trace of what cowbell did — one line per event, `key=value` fields. The log is created mode 0600 and an older loose log is tightened on open. (verified: `cowbell.py` `Trace._open` opens `os.open(…, 0o600)` then `os.fchmod`)
+`COWBELL_DEBUG=1 cowbell …` writes a trace of what cowbell did — `COWBELL_DEBUG_LOG=<path>` chooses the file (default `debug.log` in the state dir) — one line per event, `key=value` fields. The log is created mode 0600 and an older loose log is tightened on open. (verified: `cowbell.py` `Trace._open` opens `os.open(…, 0o600)` then `os.fchmod`)
 
 Trace lines redact before they write. `redact_argv` keeps the program's basename and every flag name. It masks:
 

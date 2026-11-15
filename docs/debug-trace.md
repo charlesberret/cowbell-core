@@ -62,7 +62,7 @@ Tracing is designed to never compromise privacy, consume unbounded disk space, o
 
 ### Privacy
 
-The log may contain paths and flag names from harness configuration. It is written mode 0600 and only when `COWBELL_DEBUG` (or `--debug`/`COWBELL_DEBUG_LOG`) is set. It should not be shared unreviewed. The log path is opened without following a symlink and must be a regular file; anything else turns tracing off for that run.
+The log may contain paths and flag names from harness configuration. It is written mode 0600 and only when `COWBELL_DEBUG` (or `--debug`) is set — `COWBELL_DEBUG_LOG` chooses the path, it does not turn tracing on. It should not be shared unreviewed. The log path is opened without following a symlink and must be a regular file; anything else turns tracing off for that run.
 
 **What is masked.** Command lines in `start`, `requires`, `exec`, `spawn`, `raise` and `herdr` events keep the executable's basename and flag names. Masked as `***`: every word you typed after `--` in `cowbell new`, every word after a literal `--`, the value of a flag whose name has a part like `key`, `token`, `secret`, `pass`, `password`, `auth`, `bearer`, `prompt` or `instruction` (`--api-key`, `--system-prompt`; a flag such as `--dangerously-bypass-approvals-and-sandbox` is not one), and every `NAME=value` word. A bare `--` is never taken as a flag's value. The herdr `pane run` event is built from the masked argv, not from the packed launch line.
 
