@@ -242,6 +242,21 @@ cowbell font [install]       is the icon font here; install fetches the pinned f
 
 Day-to-day users do not need these commands; they run from plugin hooks or during seed and catalog maintenance to re-synchronize pane identities. (verified: cowbell.py:3383-3470, 6553-6556)
 
+## Debug trace
+
+`COWBELL_DEBUG_LOG=<path> cowbell …` writes a trace of what cowbell did — one line per event, `key=value` fields. The log is created mode 0600 and an older loose log is tightened on open. (verified: `cowbell.py` `Trace._open` opens `os.open(…, 0o600)` then `os.fchmod`)
+
+Trace lines redact before they write. `redact_argv` keeps the program's basename and every flag name. It masks:
+
+- the value of any flag whose name names a secret — a dash/underscore/dot-separated part ending in `key`, `token`, `secret` or `prompt`, or exactly `pass`, `password`, `passwd`, `passphrase`, `auth`, `oauth`, `authorization`, `bearer` or `credential(s)`;
+- every argument after a bare `--`, and the passthrough words of `cowbell new X -- …`;
+- the value in `NAME=value` arguments;
+- the userinfo in URLs (`https://user:pw@host/` becomes `https://***@host/`).
+
+`redact_text` masks the same shapes plus credential-looking words inside free text — `sk-…` keys, `ghp_…` tokens and `Bearer …` headers in check output and herdr errors.
+
+**Limit.** Redaction matches flag names and credential shapes. A free-form secret with no credential shape — a passphrase in an ordinary message, a value under an unremarkable flag name — is not guaranteed to be masked. Treat `debug.log` as sensitive: review it before attaching it to an issue. The full runbook is `docs/debug-trace.md`.
+
 ## Development
 
 Run the test suite: (verified: .github/workflows/test.yml runs the same suite)
