@@ -1984,6 +1984,14 @@ class DebugLog(unittest.TestCase):
                          f"run --dangerously-bypass-x --token {hm.REDACT} now")
         self.assertNotIn("tailDDDD4", hm.redact_text("go --prompt 'It'\"'\"'s a tailDDDD4' done"))
 
+    def test_plural_and_longer_secret_flag_names_still_mask(self):
+        # _SECRET_PART matches whole parts only; plurals and longer forms must not slip through
+        for flag in ("--api-keys", "--tokens", "--secrets", "--passwords", "--passcode", "--authentication"):
+            self.assertEqual(hm.redact_argv(["agent", flag, "plainwordIIII9"]),
+                             ["agent", flag, hm.REDACT], flag)
+        self.assertEqual(hm.redact_argv(["agent", "--dangerously-bypass-approvals-and-sandbox", "plainwordJJJJ8"]),
+                         ["agent", "--dangerously-bypass-approvals-and-sandbox", "plainwordJJJJ8"])
+
     def test_redact_launch_masks_the_passthrough_words(self):
         extra = ["plainwordEEEE5", "--model", "It's tailFFFF6"]
         cmd = ["/opt/bin/agent", "--effort", "high", *extra, "--name", "seat"]

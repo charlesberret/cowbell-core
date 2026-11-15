@@ -187,7 +187,7 @@ REDACT = "***"
 # --api-key, --auth-token, --system-prompt, --apikey. A substring test also caught
 # --dangerously-bypass-approvals-and-sandbox ("bypass" holds "pass"), a boolean flag.
 _SECRET_PART = re.compile(
-    r"(?:key|token|secret|prompt)$|^(?:pass(?:word|wd|phrase)?|o?auth(?:orization)?|bearer|credentials?)$", re.I)
+    r"(?:key|token|secret|prompt)s?$|^(?:pass(?:word|wd|phrase|code)?s?|o?auth(?:entication|orization)?|bearer|credentials?)$", re.I)
 _FLAG_NAME_ONLY = re.compile(r"(?<![\w-])-{1,2}[A-Za-z][\w.-]*")
 # one shell word: quoted runs and escapes join, so 'It'"'"'s a prompt' is masked whole
 _FLAG_SEP_VALUE = re.compile(r"(=|[ \t]+)((?:'[^']*'|\"(?:[^\"\\]|\\.)*\"|\\.|[^\s'\"\\])+)")
@@ -1189,7 +1189,7 @@ def run_check(h: dict) -> tuple[bool, str]:
             fh.write(json.dumps(accepts, indent=2) + "\n")
         tmp.replace(accept_path())
     except OSError as e:
-        raise SystemExit(f"cowbell: {tmp}: {e}")
+        raise SystemExit(f"cowbell: {tmp}: {_file_error(e)}")
     return ok, last
 
 
