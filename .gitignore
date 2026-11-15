@@ -4,11 +4,8 @@ dist/
 .local/
 
 # Agent working files (kept on disk, never published)
-HANDOFF*.md
-handoff*.md
 _Status.md
 THREADS.md
-.inbox/
 .coordination/
 
 
