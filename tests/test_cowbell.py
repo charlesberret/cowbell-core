@@ -6,6 +6,8 @@ import json
 import os
 import re
 import shutil
+import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -5435,6 +5437,71 @@ class BoundedSubprocess(unittest.TestCase):
     def test_a_str_requires_entry_is_one_argv(self):
         hm.run_requires({"id": "x", "requires": "true"})    # a bare str, wrapped: does not raise
         hm.run_requires({"id": "x", "requires": ["true"]})  # a str entry, wrapped: does not raise
+
+    def test_a_nul_byte_in_argv_is_a_clean_failure(self):
+        proc = hm.run_bounded(["true\0x"], 5)
+        self.assertEqual(proc.returncode, 127)
+        self.assertTrue(proc.stderr)
+        ok, _ = hm.run_check({"id": "nul", "kind": "sh", "check": ["true\0x"]})
+        self.assertFalse(ok)
+        with self.assertRaises(SystemExit):
+            hm.run_requires({"id": "nul", "requires": [["true\0x"]]})
+
+    def test_a_captured_child_reads_eof_on_stdin(self):
+        # Hand this process a stdin with data waiting: an inherited fd 0 would
+        # let the child steal it; DEVNULL reads EOF at once.
+        r, w = os.pipe()
+        os.write(w, b"keystrokes\n")
+        saved = os.dup(0)
+        os.dup2(r, 0)
+        try:
+            proc = hm.run_bounded(["sh", "-c", "if read x; then echo data; else echo eof; fi"], 5)
+        finally:
+            os.dup2(saved, 0)
+            for fd in (saved, r, w):
+                os.close(fd)
+        self.assertEqual(proc.stdout.strip(), "eof")
+
+    def test_an_interrupt_during_a_captured_run_leaves_no_orphan_group(self):
+        # Ctrl-C does not reach a session leader, so run_bounded must kill the
+        # group itself. The interrupt is injected at communicate(), once the
+        # grandchild has written its pid; no real signal is sent to this process.
+        pidfile = Path(tempfile.mkdtemp()) / "gpid"
+        real = subprocess.Popen.communicate
+
+        def interrupted(self_, *a, **kw):
+            for _ in range(100):
+                if pidfile.exists() and pidfile.read_text().endswith("\n"):
+                    break
+                time.sleep(0.05)
+            raise KeyboardInterrupt
+
+        gpid = None
+        try:
+            with mock.patch.object(subprocess.Popen, "communicate", interrupted):
+                with self.assertRaises(KeyboardInterrupt):
+                    hm.run_bounded(["sh", "-c", f"sleep 600 & echo $! > {pidfile}; wait"], 30)
+            gpid = int(pidfile.read_text())
+            for _ in range(100):  # init reaps the orphaned grandchild
+                try:
+                    os.kill(gpid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail(f"grandchild {gpid} survived the interrupt")
+        finally:
+            if gpid:
+                with contextlib.suppress(OSError):
+                    os.kill(gpid, signal.SIGKILL)
+        self.assertIs(subprocess.Popen.communicate, real)
+
+    def test_an_interrupt_during_an_attached_run_does_not_killpg(self):
+        with mock.patch.object(hm.os, "killpg") as killpg, \
+                mock.patch.object(subprocess.Popen, "wait", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                hm.run_bounded(["true"], 5, attached=True)
+        killpg.assert_not_called()
 
     def test_a_hung_requires_times_out_without_the_tty(self):
         row = {"id": "hang", "requires": [["sh", "-c", "sleep 600"]]}

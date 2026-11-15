@@ -1028,19 +1028,24 @@ KILL_GRACE = 2.0        # a killed child gets this long to be reaped, then the w
 def run_bounded(argv: list[str], timeout: float, attached: bool = False) -> subprocess.CompletedProcess | None:
     """Run argv without ever waiting past `timeout` (+ KILL_GRACE to reap).
 
-    Captured (default): the child leads its own session; a timeout SIGKILLs the
-    whole process group, so a grandchild holding the captured pipe open cannot
-    stretch the wait. Attached: the child inherits this terminal — a sudo prompt
-    on the tty still works — and a timeout kills the child alone, never the group.
+    Captured (default): the child leads its own session, reads EOF on stdin and
+    has no controlling tty, so it cannot prompt; a timeout, or an interrupt such
+    as Ctrl-C (which a session leader does not receive), SIGKILLs the whole
+    process group, so a grandchild holding the captured pipe open cannot stretch
+    the wait or outlive us. Worst case: timeout + KILL_GRACE. Attached: the child
+    inherits this terminal — a sudo prompt on the tty still works — and a timeout
+    kills the child alone, never the group; worst case: timeout + 2 x KILL_GRACE
+    (terminate, then kill, each given KILL_GRACE to reap).
     Returns the CompletedProcess, or None when the bound was hit. A binary that
     will not start is rc 127 with the OS error on stderr, like a shell.
     """
     try:
         proc = subprocess.Popen(
             argv, start_new_session=not attached,
-            **({} if attached else {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "text": True}),
+            **({} if attached else {"stdin": subprocess.DEVNULL, "stdout": subprocess.PIPE,
+                                    "stderr": subprocess.PIPE, "text": True}),
         )
-    except OSError as e:
+    except (OSError, ValueError) as e:  # ValueError: a NUL byte in argv
         return subprocess.CompletedProcess(argv, 127, None if attached else "", str(e))
     try:
         if attached:
@@ -1071,6 +1076,14 @@ def run_bounded(argv: list[str], timeout: float, attached: bool = False) -> subp
                 except OSError:
                     pass
         return None
+    except BaseException:
+        if not attached:  # Ctrl-C: start_new_session took the child out of our SIGINT group
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait(timeout=KILL_GRACE)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        raise
 
 
 def run_check(h: dict) -> tuple[bool, str]:

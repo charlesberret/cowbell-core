@@ -263,6 +263,10 @@ cannot be checked from this tree is marked `DRAFT — needs maintainer check:`.
   `harnesses.toml` trust comment).
 - `TRUST_TIMEOUT = 2.5` seconds bounds a slow checker (verified: `cowbell.py`
   `TRUST_TIMEOUT`, `trust_match()`).
+- Subprocess bounds go through `run_bounded` (verified: `cowbell.py`). Captured
+  mode (check, trust) kills the whole process group on timeout or interrupt;
+  attached mode (`requires`) kills the child only, so its grandchildren are
+  orphaned by design.
 - DRAFT — needs maintainer check: the checker's verdict taxonomy beyond the
   `blocked`/`overprivilege`/`ok` outcomes handled in `parse_match`.
 
