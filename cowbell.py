@@ -383,7 +383,9 @@ def config_dir() -> Path:
     base = os.environ.get("COWBELL_CONFIG_DIR") or \
         Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser() / "cowbell"
     p = Path(base).expanduser()
-    p.mkdir(parents=True, exist_ok=True)
+    p.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if p.is_dir() and not p.is_symlink() and p.stat().st_mode & 0o777 != 0o700:
+        os.chmod(p, 0o700)  # the catalog can carry secrets in check/requires argv
     return p
 
 
@@ -392,7 +394,7 @@ def state_dir() -> Path:
     base = os.environ.get("COWBELL_STATE_DIR") or \
         Path(os.environ.get("XDG_STATE_HOME") or "~/.local/state").expanduser() / "cowbell"
     p = Path(base).expanduser()
-    p.mkdir(parents=True, exist_ok=True)
+    p.mkdir(parents=True, exist_ok=True, mode=0o700)
     if p.is_dir() and not p.is_symlink() and p.stat().st_mode & 0o777 != 0o700:
         os.chmod(p, 0o700)  # roster, accept.json and debug.log live here — owner only
     return p

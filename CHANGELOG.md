@@ -19,7 +19,7 @@
 - The picker cannot stack herdr timeouts: after one herdr call times out, later calls in the next ~30 seconds fail fast (`herdr {} skipped: marked down after a timeout`) instead of each waiting 5 seconds. A stalled session-history lookup no longer crashes the picker frame; it yields no history for that place. And a catalog row with no `id` — tolerated by `catalog` and named by `catalog --check` — is skipped by `cowbell accept` and the New-with-options wizard instead of raising KeyError.
 - `fc-cache` subprocess now has a 30-second timeout during `cowbell font install`.
 - `accept.json` is written mode 0600 explicitly before atomic replace (was umask-dependent).
-- `roster.json` — which stores raw argv, prompts included — is written mode 0600 from creation, and the state directory is tightened to mode 0700.
+- `roster.json` — which stores raw argv, prompts included — is written mode 0600 from creation, and the state and config directories are created mode 0700 and a pre-existing looser one is tightened (the catalog can carry secrets in `check`/`requires` argv).
 - The harness verify hint now names `agent-run` only; the stale "or sudo" wording is gone (cowbell never falls back to `sudo -u`).
 - `cowbell catalog` prints a glyph legend footer (`⌂ local  ↑ vendor · ok  ! more reach  ⊘ blocked  ? unknown`).
 - The shipped seed `harnesses.toml` documents `egress` and `family` fields in comments.
