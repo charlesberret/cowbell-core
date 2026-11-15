@@ -3044,6 +3044,26 @@ class SessionHistory(unittest.TestCase):
     def test_malformed_file_does_not_break_discovery(self):
         self.assertIn("broken", {r["session_id"] for r in self.rows()})
 
+    def test_fifo_session_file_is_a_quiet_miss_not_a_hang(self):
+        os.mkfifo(self.claude_dir / "fifo.jsonl")
+        hit = hm._claude_hit(self.claude_dir / "fifo.jsonl")
+        self.assertEqual(hit["session_id"], "fifo")
+        self.assertEqual(hit["utterance"], "")
+        got = {(r["harness"], r["session_id"]) for r in self.rows()}
+        self.assertIn(("claude", "fifo"), got)            # an empty row, not a blocked scan
+
+    def test_claude_hit_decodes_bad_utf8_in_a_valid_line(self):
+        f = self.claude_dir / "sess-c.jsonl"
+        f.write_bytes(b'{"type": "user", "timestamp": "2026-09-03T10:00:00Z",'
+                      b'"message": {"role": "user", "content": "caf\xff fix"}}\n')
+        self.assertIn("caf", hm._claude_hit(f)["utterance"])
+
+    def test_grok_hit_decodes_bad_utf8_in_a_valid_line(self):
+        gdir = hm.grok_store(self.root, self.home) / "02b"
+        gdir.mkdir(parents=True)
+        (gdir / "chat_history.jsonl").write_bytes(b'{"type": "user", "content": "caf\xff work"}\n')
+        self.assertIn("caf", hm._grok_hit(gdir)["utterance"])
+
     def test_missing_store_is_quiet(self):
         self.assertEqual(hm.discover_sessions(fx("nowhere"), self.cat, home=self.home), [])
 
@@ -5097,8 +5117,7 @@ class StrangerCatalogs(unittest.TestCase):
 
         with mock.patch.object(os, "open", side_effect=deny):
             msg, out = self.refused("catalog", "--check")
-        self.assertTrue(msg.startswith("cowbell: "), msg)
-        self.assertIn("Permission denied", msg)
+        self.assertEqual(msg, f"cowbell: {self.catalog}: Permission denied")
         self.assertNotIn("Traceback", out)
 
     def test_fifo_catalog_is_a_clean_refusal_not_a_hang(self):
@@ -5118,13 +5137,47 @@ class StrangerCatalogs(unittest.TestCase):
         # and the tolerant schema sniff does not hang either
         self.assertEqual(hm.roster_schema(self.state / "roster.json"), hm.SCHEMA)
 
+    def test_fifo_history_cache_is_a_clean_refusal_not_a_hang(self):
+        os.mkfifo(self.state / "history-cache.json")
+        hm.write_history_cache({"k": {"utterance": "x"}})         # returns, never blocks
+        self.assertFalse((self.state / "history-cache.json").is_file())
+        self.assertEqual(hm.history_cache(), {})                  # the reader refuses the same way
+
+    def test_history_cache_round_trip_on_a_regular_file(self):
+        hm.write_history_cache({"k": {"utterance": "u", "session_id": "s"}})
+        self.assertEqual(hm.history_cache()["k"]["session_id"], "s")
+
+    def test_truncated_roster_is_a_clean_refusal_not_a_traceback(self):
+        (self.state / "roster.json").write_text('{"schema": 1, "harnesses": [')
+        with self.assertRaises(SystemExit) as cm:
+            hm.load_roster()
+        self.assertIn("roster.json", str(cm.exception.code))
+
+    def test_bad_utf8_catalog_is_named_without_a_codec_dump(self):
+        self.catalog.write_bytes(b'schema = 1\nname = "\xff"\n')
+        msg, out = self.refused("catalog", "--check")
+        self.assertEqual(msg, f"cowbell: {self.catalog}: not valid UTF-8")
+        self.assertNotIn("Traceback", out)
+
+    def test_check_writable_names_a_non_int_schema_without_an_upgrade_nudge(self):
+        with self.assertRaises(hm.SchemaError) as cm:
+            hm.check_writable("two", "harnesses.toml")
+        self.assertEqual(str(cm.exception.code), "cowbell: harnesses.toml: schema must be an int")
+        with self.assertRaises(hm.SchemaError) as cm:            # a bool is not an int either
+            hm.check_writable(True, "harnesses.toml")
+        self.assertIn("schema must be an int", str(cm.exception.code))
+        with self.assertRaises(hm.SchemaError) as cm:            # a real int still gets the upgrade line
+            hm.check_writable(hm.SCHEMA + 1, "harnesses.toml")
+        self.assertIn("Upgrade cowbell", str(cm.exception.code))
+
     def test_schema_far_newer_is_named_by_check(self):
         self.catalog.write_text('schema = 99\n[[harness]]\nid = "a"\nkind = "zzz-none"\n')
         rc, out, err = self.check3("catalog", "--check")
         self.assertEqual(rc, 1, out)
         self.assertIn("FAIL catalog is schema 99", out)
+        self.assertIn("checks up to schema 2", out)
         self.assertEqual([l for l in err.splitlines() if l.startswith("cowbell:")],
-                         ["cowbell: check failed (1 problems)"])
+                         ["cowbell: check failed (1 problem)"])
         rc2, _ = self.check("catalog")      # the newer file still reads for listing
         self.assertEqual(rc2, 0)
 
@@ -5132,7 +5185,8 @@ class StrangerCatalogs(unittest.TestCase):
         self.catalog.write_text('schema = 2\n[[harness]]\nid = "a"\nkind = "zzz-none"\n')
         rc, out = self.check("catalog", "--check")
         self.assertEqual(rc, 0, out)
-        self.assertIn("warn catalog is schema 2", out)
+        self.assertIn("warn catalog is schema 2; this cowbell writes schema 1"
+                      " (newer file: read, never rewritten)", out)
         self.assertIn("ok: 1 harnesses", out)
 
     def test_schema_not_positive_is_named_by_check(self):
@@ -5140,14 +5194,16 @@ class StrangerCatalogs(unittest.TestCase):
         rc, out, err = self.check3("catalog", "--check")
         self.assertEqual(rc, 1, out)
         self.assertIn("schema 0 must be a positive int", out)
-        self.assertIn("cowbell: check failed (1 problems)", err)
+        self.assertIn("cowbell: check failed (1 problem)", err)
 
     def test_check_failed_summary_counts_every_problem(self):
-        self.catalog.write_text('[[harness]]\nid = "a"\n[[harness]]\nid = "a"\nkind = "zzz-none"\n')
+        self.catalog.write_text('[[harness]]\nid = "a"\negress = "sideways"\n'
+                                '[[harness]]\nid = "a"\nkind = "zzz-none"\n')
         rc, out, err = self.check3("catalog", "--check")
         self.assertEqual(rc, 1, out)
         self.assertIn("duplicate id", out)
-        self.assertIn("cowbell: check failed (", err)
+        self.assertIn("unknown egress", out)
+        self.assertIn("cowbell: check failed (2 problems)", err)
 
     def test_place_allow_and_default_refuse_non_string_members(self):
         # before this, [places.*] allow_harness = [{x=1}] / a list default_harness

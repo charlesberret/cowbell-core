@@ -175,40 +175,40 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Fix | Read the message, fix arguments or environment, and consult `cowbell catalog` / `cowbell sessions`. |
 | Source | `cowbell.py` |
 
-### catalog is schema {}; this cowbell reads at most schema {} (upgrade cowbell)
+### catalog is schema {}; cowbell {} checks up to schema {} (upgrade cowbell)
 
 | | |
 |--|--|
-| Message | `catalog is schema {}; this cowbell reads at most schema {} (upgrade cowbell)` |
+| Message | `catalog is schema {}; cowbell {} checks up to schema {} (upgrade cowbell)` |
+| Cause | The catalog's `schema` is more than one revision ahead of this cowbell, so `cowbell catalog --check` cannot vouch for it. |
+| Fix | Upgrade cowbell. Editing the file does not help. |
+| Source | `cowbell.py` |
+
+### catalog is schema {}; this cowbell writes schema {} (newer file: read, never rewritten)
+
+| | |
+|--|--|
+| Message | `catalog is schema {}; this cowbell writes schema {} (newer file: read, never rewritten)` |
+| Cause | The catalog is one schema revision newer than this cowbell. It is read, never rewritten; this is a warning, not a failure. |
+| Fix | Nothing to edit. Upgrade cowbell before you add or change a harness, since writes are refused until then. |
+| Source | `cowbell.py` |
+
+### catalog schema {} must be a positive int
+
+| | |
+|--|--|
+| Message | `catalog schema {} must be a positive int` |
 | Cause | The harness catalog fails `cowbell catalog --check` validation. |
 | Fix | Edit `harnesses.toml` to satisfy the constraint named in the message. |
 | Source | `cowbell.py` |
 
-### catalog is schema {}; this cowbell writes schema {} (newer file, read for listing)
+### check failed ({} {})
 
 | | |
 |--|--|
-| Message | `catalog is schema {}; this cowbell writes schema {} (newer file, read for listing)` |
-| Cause | The harness catalog fails `cowbell catalog --check` validation. |
-| Fix | Edit `harnesses.toml` to satisfy the constraint named in the message. |
-| Source | `cowbell.py` |
-
-### catalog schema {!r} must be a positive int
-
-| | |
-|--|--|
-| Message | `catalog schema {!r} must be a positive int` |
-| Cause | The harness catalog fails `cowbell catalog --check` validation. |
-| Fix | Edit `harnesses.toml` to satisfy the constraint named in the message. |
-| Source | `cowbell.py` |
-
-### check failed ({} problems)
-
-| | |
-|--|--|
-| Message | `cowbell: check failed ({} problems)` |
-| Cause | The harness catalog fails `cowbell catalog --check` validation. |
-| Fix | Edit `harnesses.toml` to satisfy the constraint named in the message. |
+| Message | `cowbell: check failed ({} {})` |
+| Cause | `cowbell catalog --check` printed one or more `FAIL` lines on stdout. |
+| Fix | Read the `FAIL` lines above this one and fix each in `harnesses.toml`. |
 | Source | `cowbell.py` |
 
 ### checking {} (no pass in the last 7 days)
@@ -802,7 +802,7 @@ CI enforces that every template extracted from source appears below (see `tests/
 |--|--|
 | Message | `cowbell: {}: empty catalog` |
 | Cause | The catalog file parses to no keys at all — truncated to zero bytes, or left comments-only. |
-| Fix | Restore rows with `cowbell harness add`, or remove the file so the seed catalog is copied in on next run. |
+| Fix | Restore the rows from the seed `harnesses.toml` that ships with cowbell, or delete the file and cowbell copies the seed in on next run. |
 | Source | `cowbell.py` |
 
 ### {}: {}
@@ -810,8 +810,17 @@ CI enforces that every template extracted from source appears below (see `tests/
 | | |
 |--|--|
 | Message | `cowbell: {}: {}` |
-| Cause | A state or catalog file could not be opened or parsed; the first slot names the file, the second the OS or format error (for example `not a regular file` on a fifo or device). |
+| Cause | A state or catalog file could not be opened or parsed; the first slot names the file, the second the OS or format error (for example `not a regular file` on a fifo or device, `Permission denied`, `not valid UTF-8`). |
 | Fix | Replace the named file with a regular file cowbell can read, or remove it and let cowbell recreate it. |
+| Source | `cowbell.py` |
+
+### {}: schema must be an int
+
+| | |
+|--|--|
+| Message | `cowbell: {}: schema must be an int` |
+| Cause | The named file's `schema` is not an integer (for example `schema = "two"` or `schema = true` in a catalog, or a string in `roster.json`/`pins.json`). |
+| Fix | Set `schema` to an integer — this cowbell writes `schema = 1` — or remove the file and let cowbell recreate it. |
 | Source | `cowbell.py` |
 
 ### enter <name>

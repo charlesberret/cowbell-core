@@ -426,7 +426,9 @@ def migrate_file(new: Path, old: Path) -> bool:
 
 def check_writable(schema, what: str) -> None:
     """A file written by a newer cowbell is read, never overwritten."""
-    if isinstance(schema, bool) or not isinstance(schema, int) or schema > SCHEMA:
+    if isinstance(schema, bool) or not isinstance(schema, int):
+        raise SchemaError(f"cowbell: {what}: schema must be an int")
+    if schema > SCHEMA:
         raise SchemaError(f"cowbell: {what} is schema {schema}; cowbell {__version__} writes schema {SCHEMA}. "
                           f"Upgrade cowbell before changing it.")
 
@@ -442,6 +444,27 @@ def _open_regular(path: Path):
     except BaseException:
         os.close(fd)
         raise
+
+
+def _open_regular_write(path: Path):
+    """Write side of _open_regular: O_NONBLOCK answers ENXIO at once on a fifo
+    with no reader instead of blocking, then fstat refuses non-regular files."""
+    fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK | os.O_CREAT | os.O_TRUNC, 0o666)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("not a regular file")
+        return os.fdopen(fd, "wb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _file_error(e: Exception) -> str:
+    """One clause for a file cowbell refuses: the OS reason without the path
+    repeated, a plain verdict on undecodable bytes, or the parser's detail."""
+    if isinstance(e, UnicodeDecodeError):
+        return "not valid UTF-8"
+    return getattr(e, "strerror", None) or str(e)
 
 
 def roster_path() -> Path:
@@ -939,7 +962,7 @@ def load_catalog() -> dict:
         with _open_regular(p) as fh:
             cat = tomllib.load(fh)
     except (OSError, ValueError) as e:  # ValueError covers TOMLDecodeError and bad UTF-8
-        detail = f"{p}: {e}"
+        detail = f"{p}: {_file_error(e)}"
         raise SystemExit(f"cowbell: {detail}")
     if not cat:
         raise SystemExit(f"cowbell: {p}: empty catalog")
@@ -1221,8 +1244,8 @@ def load_roster() -> list[dict]:
     try:
         with _open_regular(p) as fh:
             data = json.loads(fh.read())
-    except OSError as e:
-        raise SystemExit(f"cowbell: {p}: {e}")
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"cowbell: {p}: {_file_error(e)}")
     return data.get("harnesses", []) if isinstance(data, dict) else data
 
 
@@ -1490,7 +1513,8 @@ def write_history_cache(cache: dict) -> None:
     try:
         p = state_dir() / "history-cache.json"
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(cache)[:4_000_000])
+        with _open_regular_write(p) as fh:
+            fh.write(json.dumps(cache)[:4_000_000].encode("utf-8"))
     except OSError:
         pass  # a cache that cannot be written is a slow cowbell, not a broken one
 
@@ -1557,12 +1581,12 @@ def _claude_hit(f: Path) -> dict:
     """customTitle and the first real user line from one Claude session file."""
     hit = {"session_id": f.stem, "harness_title": "", "utterance": "", "started": "", "last": ""}
     try:
-        with open(f, "r", errors="replace") as fh:
-            for i, line in enumerate(fh):
+        with _open_regular(f) as fh:
+            for i, raw in enumerate(fh):
                 if i > 400:
                     break
                 try:
-                    d = json.loads(line)
+                    d = json.loads(raw.decode("utf-8", "replace"))
                 except ValueError:
                     continue
                 ts = d.get("timestamp") or ""
@@ -1664,7 +1688,7 @@ def _grok_hit(d: Path) -> dict:
                 if i > 40:
                     break
                 try:
-                    r = json.loads(line)
+                    r = json.loads(line.decode("utf-8", "replace"))
                 except ValueError:
                     continue
                 if r.get("type") == "user":
@@ -4430,15 +4454,15 @@ def cmd_catalog_check(cat: dict) -> int:
     docs lag real argv — codex `-m` vs `--model` is the shape), not a failure.
     Not-installed or unprobeable harnesses are reported, not failed."""
     problems, warns, unchecked = [], [], []
-    # A file one schema rev ahead is a normal newer file (read for listing; warn it);
+    # A file one schema rev ahead is a normal newer file (read, never rewritten; warn it);
     # further ahead or not an int is not a readable catalog — name it.
     schema = cat.get("schema", 1)
     if isinstance(schema, bool) or not isinstance(schema, int) or schema < 1:
-        problems.append(f"catalog schema {schema!r} must be a positive int")
+        problems.append(f"catalog schema {schema} must be a positive int")
     elif schema > SCHEMA + 1:
-        problems.append(f"catalog is schema {schema}; this cowbell reads at most schema {SCHEMA + 1} (upgrade cowbell)")
+        problems.append(f"catalog is schema {schema}; cowbell {__version__} checks up to schema {SCHEMA + 1} (upgrade cowbell)")
     elif schema > SCHEMA:
-        warns.append(f"catalog is schema {schema}; this cowbell writes schema {SCHEMA} (newer file, read for listing)")
+        warns.append(f"catalog is schema {schema}; this cowbell writes schema {SCHEMA} (newer file: read, never rewritten)")
     ids = set()
     for h in cat.get("harness", []):
         hid = h.get("id") or "(missing id)"
@@ -4493,7 +4517,8 @@ def cmd_catalog_check(cat: dict) -> int:
     for hid in unchecked:
         print(f"  skip {hid}: not installed")
     if problems:
-        print(f"cowbell: check failed ({len(problems)} problems)", file=sys.stderr)
+        n = len(problems)
+        print(f"cowbell: check failed ({n} {'problem' if n == 1 else 'problems'})", file=sys.stderr)
         return 1
     print(f"  ok: {len(ids)} harnesses, {len(cat.get('places') or {})} places")
     return 0
@@ -4668,8 +4693,11 @@ def _format_harness_block(h: dict) -> str:
 def _file_schema(path: Path) -> int:
     if tomllib is None:
         raise SystemExit("cowbell: python >= 3.11 required (tomllib)")
-    with _open_regular(path) as fh:
-        data = tomllib.load(fh)
+    try:
+        with _open_regular(path) as fh:
+            data = tomllib.load(fh)
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"cowbell: {path}: {_file_error(e)}")
     return data.get("schema", 1) if isinstance(data, dict) else 1
 
 
@@ -4709,7 +4737,7 @@ def _commit_catalog(path: Path, new_text: str) -> None:
         with _open_regular(path) as fh:
             old = fh.read().decode("utf-8")
     except (OSError, ValueError) as e:
-        raise SystemExit(f"cowbell: {path}: {e}")
+        raise SystemExit(f"cowbell: {path}: {_file_error(e)}")
     if old == new_text:
         return
     _backup_timestamped(path)
@@ -4727,7 +4755,7 @@ def _catalog_text(path: Path | None) -> tuple[Path, str]:
         with _open_regular(p) as fh:
             return p, fh.read().decode("utf-8")
     except (OSError, ValueError) as e:
-        raise SystemExit(f"cowbell: {p}: {e}")
+        raise SystemExit(f"cowbell: {p}: {_file_error(e)}")
 
 
 def _find_block(spans: list[dict], hid: str) -> dict | None:
