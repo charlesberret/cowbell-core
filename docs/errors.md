@@ -463,6 +463,15 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Fix | Use a lower-privilege lane, a different directory, or adjust trust/policy for this tree. |
 | Source | `cowbell.py` |
 
+### refused — {} has a requires entry that is not an argv
+
+| | |
+|--|--|
+| Message | `cowbell: refused — {} has a requires entry that is not an argv` |
+| Cause | A `requires` entry on the harness is not an argv — a bare value, or a list holding non-strings. |
+| Fix | Make `requires` a list of argvs (lists of strings) in `harnesses.toml`. |
+| Source | `cowbell.py` |
+
 ### refused — {} requires {!r}, which exited {}
 
 | | |
@@ -470,6 +479,24 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Message | `cowbell: refused — {} requires {!r}, which exited {}` |
 | Cause | A `requires` argv on the harness exited non-zero, so the launch was refused before it began. |
 | Fix | Make the named command succeed, or remove it from `requires` in `harnesses.toml`. |
+| Source | `cowbell.py` |
+
+### refused — {} requires {!r}, which timed out after {}s
+
+| | |
+|--|--|
+| Message | `cowbell: refused — {} requires {!r}, which timed out after {}s` |
+| Cause | A `requires` argv on the harness did not finish inside its bound, so the launch was refused rather than hang the picker. |
+| Fix | Make the named command finish faster, or remove it from `requires` in `harnesses.toml`. |
+| Source | `cowbell.py` |
+
+### refused — {} requires {!r}: {}
+
+| | |
+|--|--|
+| Message | `cowbell: refused — {} requires {!r}: {}` |
+| Cause | A `requires` argv on the harness could not start at all; the trailing text is the OS error (usually a missing binary). |
+| Fix | Install the named command, or remove it from `requires` in `harnesses.toml`. |
 | Source | `cowbell.py` |
 
 ### refused — {} resolved to {} after the change of directory

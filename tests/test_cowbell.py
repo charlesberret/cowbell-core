@@ -1,3 +1,4 @@
+import ast
 import contextlib
 import hashlib
 import io
@@ -5043,13 +5044,11 @@ class RequiresCheck(unittest.TestCase):
         self.assertFalse(hm.accepted(row))
 
     def test_check_gets_a_timeout_and_expiry_fails_closed(self):
-        import subprocess
         proc = mock.Mock(returncode=0, stdout="PASS x\n", stderr="")
-        with mock.patch("cowbell.subprocess.run", return_value=proc) as run:
+        with mock.patch("cowbell.run_bounded", return_value=proc) as run:
             hm.run_check(self.row)
-        self.assertEqual(run.call_args.kwargs["timeout"], 5)
-        hung = subprocess.TimeoutExpired(self.row["check"], 5)
-        with mock.patch("cowbell.subprocess.run", side_effect=hung):
+        self.assertEqual(run.call_args.args[1], 5)
+        with mock.patch("cowbell.run_bounded", return_value=None):  # the bound was hit
             ok, last = hm.run_check(self.row)
         self.assertFalse(ok)
         self.assertIn("timed out", last)
@@ -5211,6 +5210,94 @@ class RequiresCheck(unittest.TestCase):
         stored["local-x"]["ts"] = time.time() - hm.ACCEPT_MAX_AGE - 1
         hm.accept_path().write_text(json.dumps(stored) + "\n")
         self.assertIn("unproven", visible())
+
+
+class BoundedSubprocess(unittest.TestCase):
+    """No subprocess cowbell runs for its own bookkeeping may hang the picker.
+    Every subprocess.run carries timeout=; the rest go through run_bounded, which
+    kills the child's whole group on a captured call and the child alone on an
+    attached one."""
+
+    SRC = Path(__file__).resolve().parent.parent / "cowbell.py"
+
+    def setUp(self):
+        os.environ["COWBELL_STATE_DIR"] = tempfile.mkdtemp()
+
+    def tearDown(self):
+        os.environ.pop("COWBELL_STATE_DIR", None)
+
+    def test_every_subprocess_run_carries_a_timeout(self):
+        bad = []
+        for node in ast.walk(ast.parse(self.SRC.read_text())):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            f = node.func
+            if (f.attr == "run" and isinstance(f.value, ast.Name) and f.value.id == "subprocess"
+                    and not any(k.arg == "timeout" for k in node.keywords)):
+                bad.append(f"line {node.lineno}")
+        self.assertEqual(bad, [])
+
+    def test_only_the_named_handoffs_spawn_outside_run(self):
+        # exec_here (os.execv) replaces this process; spawn_here (subprocess.Popen)
+        # detaches a session leader. run_bounded is the only other Popen site —
+        # it is the bound. Any new unbounded spawn point fails here.
+        src = self.SRC.read_text()
+        self.assertEqual(src.count("subprocess.Popen("), 2)   # run_bounded, spawn_here
+        self.assertEqual(src.count("os.execv("), 1)           # exec_here
+
+    def test_a_hung_check_returns_inside_the_bound(self):
+        row = {"id": "hang", "kind": "sh", "check": ["sh", "-c", "sleep 600 & wait"]}
+        t0 = time.monotonic()
+        with mock.patch.object(hm, "CHECK_TIMEOUT", 0.5):
+            ok, last = hm.run_check(row)
+        self.assertLess(time.monotonic() - t0, 10)
+        self.assertFalse(ok)
+        self.assertIn("timed out", last)
+
+    def test_a_grandchild_holding_the_pipe_is_killed_with_the_group(self):
+        # The child exits at once; a grandchild keeps the captured pipe open and
+        # would write a marker at +2s. Only a group kill keeps it unborn.
+        marker = Path(tempfile.mkdtemp()) / "born"
+        row = {"id": "hang", "kind": "sh",
+               "check": ["sh", "-c", f"(sleep 2; touch {marker}) & exit 0"]}
+        t0 = time.monotonic()
+        with mock.patch.object(hm, "CHECK_TIMEOUT", 0.5):
+            hm.run_check(row)
+        self.assertLess(time.monotonic() - t0, 10)
+        time.sleep(3)
+        self.assertFalse(marker.exists())
+
+    def test_a_missing_check_binary_is_a_clean_failure(self):
+        row = {"id": "gone", "kind": "sh", "check": ["/nonexistent/cowbell-no-such-bin"]}
+        ok, last = hm.run_check(row)
+        self.assertFalse(ok)
+        self.assertIn("No such file", last)
+
+    def test_a_str_check_is_one_argv_not_characters(self):
+        ok, _ = hm.run_check({"id": "strck", "kind": "sh", "check": "true"})
+        self.assertTrue(ok)
+        ok, last = hm.run_check({"id": "strck", "kind": "sh", "check": "no such binary"})
+        self.assertFalse(ok)
+        self.assertIn("No such file", last)
+
+    def test_a_missing_requires_binary_refuses_cleanly(self):
+        row = {"id": "gone", "requires": [["/nonexistent/cowbell-no-such-bin"]]}
+        with self.assertRaises(SystemExit) as e:
+            hm.run_requires(row)
+        self.assertIn("No such file", str(e.exception))
+
+    def test_a_str_requires_entry_is_one_argv(self):
+        hm.run_requires({"id": "x", "requires": "true"})    # a bare str, wrapped: does not raise
+        hm.run_requires({"id": "x", "requires": ["true"]})  # a str entry, wrapped: does not raise
+
+    def test_a_hung_requires_times_out_without_the_tty(self):
+        row = {"id": "hang", "requires": [["sh", "-c", "sleep 600"]]}
+        t0 = time.monotonic()
+        with mock.patch.object(hm, "REQUIRES_TIMEOUT", 0.5):
+            with self.assertRaises(SystemExit) as e:
+                hm.run_requires(row)
+        self.assertLess(time.monotonic() - t0, 10)
+        self.assertIn("timed out", str(e.exception))
 
 
 if __name__ == "__main__":

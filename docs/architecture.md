@@ -9,7 +9,7 @@ cannot be checked from this tree is marked `DRAFT — needs maintainer check:`.
 - The whole program is one file, `cowbell.py` (~6,600 lines), with a `__version__`
   constant at the top (currently `0.3.3`) (verified: `cowbell.py:63`, `wc -l cowbell.py`).
 - Stdlib only: the imports are `datetime`, `json`, `os`, `re`, `shutil`,
-  `subprocess`, `sys`, `tempfile`, `threading`, `time`, `urllib.parse`,
+  `signal`, `subprocess`, `sys`, `tempfile`, `threading`, `time`, `urllib.parse`,
   `concurrent.futures`, `dataclasses`, `pathlib`, and a guarded `tomllib`
   (verified: `cowbell.py` import block, lines ~41–61; `pyproject.toml`
   `dependencies = []`).

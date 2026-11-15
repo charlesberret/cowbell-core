@@ -45,6 +45,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -489,8 +490,10 @@ def unbind_sitting(row: dict) -> None:
 
 
 def git_root(path: str) -> str | None:
-    proc = subprocess.run(["git", "-C", path, "rev-parse", "--show-toplevel"], capture_output=True, text=True)
-    return proc.stdout.strip() or None if proc.returncode == 0 else None
+    proc = run_bounded(["git", "-C", path, "rev-parse", "--show-toplevel"], GIT_TIMEOUT)
+    if proc is None or proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
 
 
 def seat_file(root: str, home: str | None = None) -> Path | None:
@@ -911,15 +914,77 @@ def unavailable_reason(h: dict) -> str:
     return ""
 
 
+# Subprocess bounds: nothing cowbell runs for its own bookkeeping may hang the
+# picker. Every call goes through run_bounded or passes an explicit timeout.
+REQUIRES_TIMEOUT = 60   # a requires argv may start a model server; give it a minute
+CHECK_TIMEOUT = 5       # one argv, run at launch when its last pass is stale
+GIT_TIMEOUT = 5
+PS_TIMEOUT = 5
+LSOF_TIMEOUT = 5
+KILL_GRACE = 2.0        # a killed child gets this long to be reaped, then the wait is abandoned
+
+
+def run_bounded(argv: list[str], timeout: float, attached: bool = False) -> subprocess.CompletedProcess | None:
+    """Run argv without ever waiting past `timeout` (+ KILL_GRACE to reap).
+
+    Captured (default): the child leads its own session; a timeout SIGKILLs the
+    whole process group, so a grandchild holding the captured pipe open cannot
+    stretch the wait. Attached: the child inherits this terminal — a sudo prompt
+    on the tty still works — and a timeout kills the child alone, never the group.
+    Returns the CompletedProcess, or None when the bound was hit. A binary that
+    will not start is rc 127 with the OS error on stderr, like a shell.
+    """
+    try:
+        proc = subprocess.Popen(
+            argv, start_new_session=not attached,
+            **({} if attached else {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "text": True}),
+        )
+    except OSError as e:
+        return subprocess.CompletedProcess(argv, 127, None if attached else "", str(e))
+    try:
+        if attached:
+            proc.wait(timeout=timeout)
+            return subprocess.CompletedProcess(argv, proc.returncode)
+        out, err = proc.communicate(timeout=timeout)
+        return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+    except subprocess.TimeoutExpired:
+        if attached:
+            proc.terminate()  # the tty is shared: never killpg on this path
+            try:
+                proc.wait(timeout=KILL_GRACE)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        else:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)  # the child led its own session: pgid == pid
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=KILL_GRACE)
+        except subprocess.TimeoutExpired:
+            pass  # a child that will not reap (D-state) is abandoned, never waited on
+        if not attached:
+            for fh in (proc.stdout, proc.stderr):
+                try:
+                    fh.close()
+                except OSError:
+                    pass
+        return None
+
+
 def run_check(h: dict) -> tuple[bool, str]:
     """Run the row's check; record and return (passed, last line of its output)."""
-    try:
-        proc = subprocess.run(list(h["check"]), capture_output=True, text=True, timeout=5)
-        out = proc.stdout.strip().splitlines() or proc.stderr.strip().splitlines()  # the verdict is on stdout
+    ck = h.get("check")
+    argv = [ck] if isinstance(ck, str) else list(ck) if isinstance(ck, (list, tuple)) else []
+    if not argv or not all(isinstance(x, str) for x in argv):  # a str is one argv, never characters
+        ok, last = False, "check is not an argv"
+    elif (proc := run_bounded(argv, CHECK_TIMEOUT)) is None:
+        ok, last = False, f"check timed out after {CHECK_TIMEOUT:g}s"
+    else:
+        out = (proc.stdout or "").strip().splitlines() or (proc.stderr or "").strip().splitlines()  # verdict on stdout
         last = out[-1] if out else f"exit {proc.returncode}"
         ok = proc.returncode == 0
-    except subprocess.TimeoutExpired:
-        ok, last = False, "check timed out after 5s"
+
     accepts = load_accepts()
     accepts[h["id"]] = {"ok": ok, "ts": time.time(), "detail": last}
     tmp = accept_path().with_suffix(".tmp")
@@ -931,11 +996,21 @@ def run_check(h: dict) -> tuple[bool, str]:
 
 def run_requires(h: dict) -> None:
     """Run each `requires` argv in order, output to this terminal; the first failure refuses the launch."""
-    for argv in h.get("requires") or []:
-        trace.event("requires", harness=h.get("id", ""), cmd=shell_join(list(argv)))
-        rc = subprocess.run(list(argv)).returncode
-        if rc:
-            raise SystemExit(f"cowbell: refused — {h['id']} requires {shell_join(list(argv))!r}, which exited {rc}")
+    reqs = h.get("requires") or []
+    for raw in ([reqs] if isinstance(reqs, str) else reqs):
+        argv = [raw] if isinstance(raw, str) else list(raw) if isinstance(raw, (list, tuple)) else []
+        if not argv or not all(isinstance(x, str) for x in argv):
+            raise SystemExit(f"cowbell: refused — {h['id']} has a requires entry that is not an argv")
+        trace.event("requires", harness=h.get("id", ""), cmd=shell_join(argv))
+        proc = run_bounded(argv, REQUIRES_TIMEOUT, attached=True)
+        if proc is None:
+            raise SystemExit(
+                f"cowbell: refused — {h['id']} requires {shell_join(argv)!r}, "
+                f"which timed out after {REQUIRES_TIMEOUT:g}s")
+        if proc.returncode:
+            if proc.stderr:  # a binary that would not start carries the OS error here (rc 127)
+                raise SystemExit(f"cowbell: refused — {h['id']} requires {shell_join(argv)!r}: {proc.stderr.strip()}")
+            raise SystemExit(f"cowbell: refused — {h['id']} requires {shell_join(argv)!r}, which exited {proc.returncode}")
 
 
 def ensure_accepted(h: dict) -> None:
@@ -1566,8 +1641,8 @@ def trust_available() -> bool:
 def trust_subject(root: str) -> str:
     if not trust_available():
         return "?"
-    proc = subprocess.run([EXT["trust_command"], "subject", root], capture_output=True, text=True)
-    return proc.stdout.strip() or "?"
+    proc = run_bounded([EXT["trust_command"], "subject", root], TRUST_TIMEOUT)
+    return (proc.stdout.strip() or "?") if proc else "?"
 
 
 def parse_match(text: str, code: int) -> dict:
@@ -2314,7 +2389,8 @@ def caller_is_agent(env=None) -> bool:
 def ps_table(text: str | None = None) -> dict[int, dict]:
     """pid -> {ppid, tty, argv}. `text` is `ps -axo pid=,ppid=,tty=,args=` output (for tests)."""
     if text is None:
-        text = subprocess.run(["ps", "-axo", "pid=,ppid=,tty=,args="], capture_output=True, text=True).stdout
+        proc = run_bounded(["ps", "-axo", "pid=,ppid=,tty=,args="], PS_TIMEOUT)
+        text = proc.stdout if proc else ""
     out = {}
     for line in text.splitlines():
         parts = line.split(None, 3)
@@ -2349,8 +2425,9 @@ def process_cwds(pids: list[int]) -> dict[int, str]:
     lsof = shutil.which("lsof") or next((x for x in ("/usr/sbin/lsof", "/usr/bin/lsof") if os.access(x, os.X_OK)), None)
     if not lsof:  # a spare PATH (launchd, a plugin host) often lacks /usr/sbin; no lsof means no cwds, not a crash
         return {}
-    proc = subprocess.run([lsof, "-a", "-d", "cwd", "-Fpn", "-p", ",".join(map(str, pids))],
-                          capture_output=True, text=True)
+    proc = run_bounded([lsof, "-a", "-d", "cwd", "-Fpn", "-p", ",".join(map(str, pids))], LSOF_TIMEOUT)
+    if proc is None:
+        return {}
     out, pid = {}, None
     for line in proc.stdout.splitlines():
         if line.startswith("p") and line[1:].isdigit():
