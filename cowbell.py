@@ -159,12 +159,85 @@ class Trace:
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.is_file() and path.stat().st_size > DEBUG_LOG_MAX:
             os.replace(path, path.with_name(path.name + ".1"))
-        self._fh = open(path, "a", encoding="utf-8")
-        os.chmod(path, 0o600)
+        # 0600 at os.open creation, never a umask-mode window; O_NONBLOCK so a fifo
+        # planted at the log path fails ENXIO instead of hanging the launch.
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK, 0o600)
+        try:
+            os.fchmod(fd, 0o600)  # a log left by an older run keeps its old mode otherwise
+            self._fh = os.fdopen(fd, "a", encoding="utf-8")
+        except BaseException:
+            os.close(fd)
+            raise
         return self._fh
 
 
 trace = Trace()
+
+
+# --- redaction ----------------------------------------------------------------
+# The trace is opt-in debugging, not a credential store: argv and free text go
+# through these first. Flag names and the executable basename survive so the
+# event still reads as a command line; every value that could carry a secret is
+# masked. The launch sheet's printed command is the product and is never redacted.
+REDACT = "***"
+_FLAG_NAME = re.compile(r"key|token|secret|pass|auth|bearer|prompt", re.I)
+_ENV_ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=")
+_FLAG_VALUE = re.compile(
+    r"(-{1,2}[\w.-]*(?:key|token|secret|pass|auth|bearer|prompt)[\w.-]*)"
+    r"([ \t]+|=)(\"[^\"]*\"|'[^']*'|\S+)", re.I)
+_NAME_VALUE = re.compile(
+    r"\b([A-Za-z_][\w.]*(?:key|token|secret|pass|auth|bearer|credential|prompt)[\w.]*)=[^\s'\"]*", re.I)
+_URL_USERINFO = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]{1,15}://)[^/\s@'\"]+@")
+_CRED_SHAPE = re.compile(
+    r"\b(?:sk|pk)-[0-9A-Za-z_-]{4,}"
+    r"|\bgh[pousr]_[0-9A-Za-z]{4,}"
+    r"|\bgithub_pat_[0-9A-Za-z_]{6,}"
+    r"|\bBearer[ \t]+[^\s'\"]+", re.I)
+
+
+def redact_text(s: str) -> str:
+    """Mask credential shapes inside free text (check output, herdr errors, a packed
+    command line passed as one arg): userinfo, sensitive flag values, NAME=value, and
+    token-shaped words. Context around them survives."""
+    s = _URL_USERINFO.sub(r"\g<1>***@", s)
+    s = _FLAG_VALUE.sub(lambda m: f"{m[1]}{m[2]}{REDACT}", s)
+    s = _NAME_VALUE.sub(lambda m: f"{m[1]}={REDACT}", s)
+    return _CRED_SHAPE.sub(REDACT, s)
+
+
+def redact_argv(argv) -> list[str]:
+    """argv safe to log: basename of the executable and flag names stay; everything
+    past a literal --, the value of a sensitive flag, and every NAME=value word is
+    masked, and credential shapes inside a word are masked too."""
+    out: list[str] = []
+    after_dd = False   # a literal "--" masks the rest of the line
+    flag_val = False   # previous word was a sensitive flag taking its value next
+    for i, word in enumerate(argv):
+        w = str(word)
+        if i == 0:
+            out.append(redact_text(os.path.basename(w) or w))
+            continue
+        if after_dd or flag_val:
+            out.append(REDACT)
+            flag_val = False
+            continue
+        if w == "--":
+            after_dd = True
+        elif _ENV_ASSIGN.match(w):
+            w = f"{_ENV_ASSIGN.match(w).group(1)}={REDACT}"
+        elif w.startswith("-"):
+            flag, eq, val = w.partition("=")
+            if _FLAG_NAME.search(flag):
+                if eq:
+                    w = f"{flag}={REDACT}"
+                else:
+                    flag_val = True
+            elif eq:
+                w = f"{flag}={redact_text(val)}"
+        else:
+            w = redact_text(w)
+        out.append(w)
+    return out
 
 
 class HerdrError(RuntimeError):
@@ -1016,8 +1089,14 @@ def run_check(h: dict) -> tuple[bool, str]:
     accepts = load_accepts()
     accepts[h["id"]] = {"ok": ok, "ts": time.time(), "detail": last}
     tmp = accept_path().with_suffix(".tmp")
-    tmp.write_text(json.dumps(accepts, indent=2) + "\n")
-    os.chmod(tmp, 0o600)
+    tmp.unlink(missing_ok=True)  # a stale tmp keeps its old mode: start fresh so the
+    # 0600 in os.open is the creation mode, with no umask-mode window between opens
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NONBLOCK, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(accepts, indent=2) + "\n")
+    except OSError as e:
+        raise SystemExit(f"cowbell: {tmp}: {e}")
     tmp.replace(accept_path())
     return ok, last
 
@@ -1029,7 +1108,7 @@ def run_requires(h: dict) -> None:
         argv = [raw] if isinstance(raw, str) else list(raw) if isinstance(raw, (list, tuple)) else []
         if not argv or not all(isinstance(x, str) for x in argv):
             raise SystemExit(f"cowbell: refused — {h['id']} has a requires entry that is not an argv")
-        trace.event("requires", harness=h.get("id", ""), cmd=shell_join(argv))
+        trace.event("requires", harness=h.get("id", ""), cmd=shell_join(redact_argv(argv)))
         proc = run_bounded(argv, REQUIRES_TIMEOUT, attached=True)
         if proc is None:
             raise SystemExit(
@@ -1047,7 +1126,7 @@ def ensure_accepted(h: dict) -> None:
         return
     print(f"cowbell: checking {h['id']} (no pass in the last 7 days)", file=sys.stderr)
     ok, last = run_check(h)
-    trace.event("check", harness=h.get("id", ""), ok=ok, detail=last)
+    trace.event("check", harness=h.get("id", ""), ok=ok, detail=redact_text(last))
     if not ok:
         raise SystemExit(f"cowbell: refused — {h['id']} failed its check: {last}")
     print(f"cowbell: {last}", file=sys.stderr)
@@ -1718,7 +1797,7 @@ def trust_match(tool: str, root: str) -> dict:
         trace.event("trust", tool=tool, ms=_ms(t0), verdict="unknown", rc=proc.returncode)
         return {"verdict": "unknown", "flag": "?", "exit": proc.returncode}
     verdict = parse_match(proc.stdout, proc.returncode)
-    trace.event("trust", tool=tool, ms=_ms(t0), verdict=verdict.get("verdict") or "unknown")
+    trace.event("trust", tool=tool, ms=_ms(t0), verdict=redact_text(verdict.get("verdict") or "unknown"))
     return verdict
 
 
@@ -2800,7 +2879,7 @@ def exec_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", la
     cmd = unix_confine(cat, root, cmd, h=h)
     exe = _here_exe(h, cmd)
     _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, None, name_source, extra, effort, dirs)
-    trace.event("exec", harness=h.get("id", ""), cmd=shell_join(cmd))
+    trace.event("exec", harness=h.get("id", ""), cmd=shell_join(redact_argv(cmd)))
     sys.stdout.write("\x1b[H\x1b[2J" if sys.stdout.isatty() else "")
     print(f"  {paint(name, INK, bold=True)}  {paint(shell_join(cmd), MUTED)}  {paint(tilde(root), FAINT)}")
     sys.stdout.flush()
@@ -2838,7 +2917,7 @@ def spawn_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", l
         raise SystemExit(f"cowbell: refused — the launch folder moved under it ({e})")
     pane_id = f"pid:{proc.pid}"
     _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, pane_id, name_source, extra, effort, dirs)
-    trace.event("spawn", harness=h.get("id", ""), pid=proc.pid, cmd=shell_join(cmd))
+    trace.event("spawn", harness=h.get("id", ""), pid=proc.pid, cmd=shell_join(redact_argv(cmd)))
     return {"pane_id": pane_id, "pid": proc.pid}
 
 
@@ -2949,32 +3028,32 @@ def herdr(*args: str, expect_json: bool = True, timeout: float = HERDR_TIMEOUT) 
     try:
         proc = subprocess.run([herdr_bin(), *args], capture_output=True, text=True, check=False, timeout=timeout)
     except subprocess.TimeoutExpired as e:
-        trace.event("herdr", ms=_ms(t0), err="timeout", argv=" ".join(args))
+        trace.event("herdr", ms=_ms(t0), err="timeout", argv=" ".join(redact_argv(args)))
         raise HerdrError(f"herdr {' '.join(args[:2])} timed out after {timeout:g}s") from e
     except OSError as e:  # herdr not installed: standalone cowbell still works
-        trace.event("herdr", ms=_ms(t0), err="os", argv=" ".join(args))
+        trace.event("herdr", ms=_ms(t0), err="os", argv=" ".join(redact_argv(args)))
         raise HerdrError(f"herdr unavailable: {e}") from e
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip()
-        trace.event("herdr", ms=_ms(t0), rc=proc.returncode, argv=" ".join(args), err=(err or "exit")[:120])
+        trace.event("herdr", ms=_ms(t0), rc=proc.returncode, argv=" ".join(redact_argv(args)), err=redact_text(err or "exit")[:120])
         raise HerdrError(err or f"herdr {' '.join(args)} exited {proc.returncode}")
     out = (proc.stdout or "").strip()
     if not out:
-        trace.event("herdr", ms=_ms(t0), rc=0, argv=" ".join(args))
+        trace.event("herdr", ms=_ms(t0), rc=0, argv=" ".join(redact_argv(args)))
         return {}
     try:
         payload = json.loads(out)
     except json.JSONDecodeError:
         if expect_json:
-            trace.event("herdr", ms=_ms(t0), err="json", argv=" ".join(args))
+            trace.event("herdr", ms=_ms(t0), err="json", argv=" ".join(redact_argv(args)))
             raise HerdrError(f"herdr {' '.join(args)}: non-JSON output: {out[:120]}")
-        trace.event("herdr", ms=_ms(t0), rc=0, argv=" ".join(args))
+        trace.event("herdr", ms=_ms(t0), rc=0, argv=" ".join(redact_argv(args)))
         return {"raw": out}
     if isinstance(payload, dict) and "error" in payload:
         e = payload["error"]
-        trace.event("herdr", ms=_ms(t0), err="payload", argv=" ".join(args))
+        trace.event("herdr", ms=_ms(t0), err="payload", argv=" ".join(redact_argv(args)))
         raise HerdrError(e.get("message", str(e)) if isinstance(e, dict) else str(e))
-    trace.event("herdr", ms=_ms(t0), rc=0, argv=" ".join(args), bytes=len(out))
+    trace.event("herdr", ms=_ms(t0), rc=0, argv=" ".join(redact_argv(args)), bytes=len(out))
     if isinstance(payload, dict) and "result" in payload:
         r = payload["result"]
         return r if isinstance(r, dict) else {"value": r}
@@ -3312,7 +3391,7 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
             herdr("tab", "focus", pane["tab_id"])
         except HerdrError:
             pass
-    trace.event("raise", phase="done", how=how, mode=mode, pane=pid, ms=_ms(t0), cmd=shell_join(base))
+    trace.event("raise", phase="done", how=how, mode=mode, pane=pid, ms=_ms(t0), cmd=shell_join(redact_argv(base)))
     return pane
 
 
@@ -6633,7 +6712,7 @@ def take_debug(argv: list[str]) -> list[str]:
 def main(argv: list[str]) -> int:
     argv = take_debug(list(argv))
     if trace.enabled():
-        trace.event("start", argv=" ".join(argv) or "(default)", cwd=os.getcwd())
+        trace.event("start", argv=" ".join(redact_argv(argv)) or "(default)", cwd=os.getcwd())
     if argv and argv[0] in ("-h", "--help"):
         print(__doc__); return 0
     if argv and argv[0] in ("-V", "--version"):

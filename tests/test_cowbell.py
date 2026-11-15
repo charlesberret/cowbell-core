@@ -1924,6 +1924,67 @@ class DebugLog(unittest.TestCase):
         self.assertTrue((self.log.parent / "debug.log.1").is_file())
         self.assertIn("pane list", self.log.read_text())
 
+    def test_log_is_born_private_not_chmodded_after(self):
+        old = os.umask(0)  # the widest umask: only the open mode can make it 0600
+        self.addCleanup(os.umask, old)
+        with mock.patch.dict(os.environ, {"COWBELL_DEBUG": "1", "COWBELL_DEBUG_LOG": str(self.log)}):
+            with mock.patch("cowbell.os.chmod", side_effect=AssertionError("chmod after open")):
+                hm.trace.event("frame", ms=1)
+        self.assertEqual(self.log.stat().st_mode & 0o777, 0o600)
+
+    def test_a_loose_old_log_is_tightened(self):
+        self.log.write_text("old\n")
+        os.chmod(self.log, 0o644)
+        with mock.patch.dict(os.environ, {"COWBELL_DEBUG": "1", "COWBELL_DEBUG_LOG": str(self.log)}):
+            hm.trace.event("frame", ms=1)
+        self.assertEqual(self.log.stat().st_mode & 0o777, 0o600)
+
+    def test_a_fifo_at_the_log_path_does_not_hang_the_launch(self):
+        os.mkfifo(self.log)
+        with mock.patch.dict(os.environ, {"COWBELL_DEBUG": "1", "COWBELL_DEBUG_LOG": str(self.log)}):
+            hm.trace.event("frame", ms=1)  # ENXIO: tracing goes dead, nothing blocks
+        self.assertTrue(hm.trace._dead)
+
+    def test_argv_secrets_never_reach_the_log(self):
+        key, tok, env, prompt = "sk-canaryAAAA1111", "ghp_canaryBBBB2222", "canaryenvCCCC3333", "canaryprompt DDDD4444"
+        argv = ["/opt/bin/probeagent", "--model", "m1", "--api-key", key, f"--auth-token={tok}",
+                "--append-system-prompt", prompt, f"PROBE_TOKEN={env}", "--", "--api-key", "afterdd5555"]
+        with mock.patch.dict(os.environ, {"COWBELL_DEBUG": "1", "COWBELL_DEBUG_LOG": str(self.log)}):
+            hm.trace.event("exec", cmd=hm.shell_join(hm.redact_argv(argv)))
+            hm.trace.event("herdr", argv=" ".join(hm.redact_argv(["pane", "run", "--token", tok])))
+            hm.trace.event("check", detail=hm.redact_text(f"ok token={key} via https://u:{env}@host/p Bearer {tok}"))
+        text = self.log.read_text()
+        for canary in (key, tok, env, "canaryprompt", "DDDD4444", "afterdd5555"):
+            self.assertNotIn(canary, text)
+        for kept in ("probeagent", "--model", "m1", "--api-key", "--auth-token", "--append-system-prompt",
+                     "PROBE_TOKEN=", "--", "https://", "@host/p", "pane run"):
+            self.assertIn(kept, text)
+        self.assertNotIn("/opt/bin", text)  # basename only
+
+    def test_redact_argv_shape(self):
+        self.assertEqual(hm.redact_argv(["/x/y/agent", "--model", "m", "--password", "p", "-k", "v", "--", "a", "b"]),
+                         ["agent", "--model", "m", "--password", hm.REDACT, "-k", "v", "--", hm.REDACT, hm.REDACT])
+        self.assertEqual(hm.redact_argv(["env", "A_SECRET=1", "true"]), ["env", f"A_SECRET={hm.REDACT}", "true"])
+        self.assertEqual(hm.redact_argv(["agent", "--api-key=zz"]), ["agent", f"--api-key={hm.REDACT}"])
+        self.assertEqual(hm.redact_argv(["agent", "--x", "sk-abcd1234"]), ["agent", "--x", hm.REDACT])
+
+    def test_the_sheet_command_is_not_redacted(self):
+        # redaction is for the trace only: shell_join of the real argv still carries every word
+        argv = ["agent", "--api-key", "sk-real1234"]
+        self.assertIn("sk-real1234", hm.shell_join(argv))
+
+    def test_accept_file_is_born_private_even_over_a_loose_tmp(self):
+        old = os.umask(0)
+        self.addCleanup(os.umask, old)
+        with mock.patch.dict(os.environ, {"COWBELL_STATE_DIR": self.tmp.name}):
+            stale = hm.accept_path().with_suffix(".tmp")
+            stale.write_text("{}")
+            os.chmod(stale, 0o644)
+            row = {"id": "x", "check": ["sh", "-c", "echo PASS x"]}
+            with mock.patch("cowbell.os.chmod", side_effect=AssertionError("chmod after open")):
+                hm.run_check(row)
+            self.assertEqual(hm.accept_path().stat().st_mode & 0o777, 0o600)
+
     def test_herdr_call_is_timed(self):
         ok = mock.Mock(returncode=0, stdout='{"result": {"snapshot": {}}}', stderr="")
         bad = mock.Mock(returncode=1, stdout="", stderr="nope")
