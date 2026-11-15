@@ -4817,6 +4817,12 @@ class StrangerCatalogs(unittest.TestCase):
             rc = hm.main(list(argv))
         return rc, out.getvalue() + err.getvalue()
 
+    def check3(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = hm.main(list(argv))
+        return rc, out.getvalue(), err.getvalue()
+
     def refused(self, *argv):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -4825,12 +4831,25 @@ class StrangerCatalogs(unittest.TestCase):
         return str(cm.exception.code), out.getvalue() + err.getvalue()
 
     def test_empty_comments_and_defaults_only_are_clean(self):
-        for text in ("", "# just a note\n", "harness = []\n", '[defaults]\nlane = "yellow"\n'):
+        for text in ("harness = []\n", '[defaults]\nlane = "yellow"\n'):
             with self.subTest(text=text):
                 self.catalog.write_text(text)
                 rc, out = self.check("catalog", "--check")
                 self.assertEqual(rc, 0, out)
                 self.assertIn("ok: 0 harnesses", out)
+
+    def test_an_empty_catalog_file_is_a_clean_refusal(self):
+        # a file that parses to no keys at all (truncated, comments-only) is not a
+        # catalog — cowbell never writes one — so every read refuses it by name.
+        for text in ("", "# just a note\n", "   \n"):
+            with self.subTest(text=text):
+                self.catalog.write_text(text)
+                msg, out = self.refused("catalog", "--check")
+                self.assertTrue(msg.startswith("cowbell: "), msg)
+                self.assertIn("empty catalog", msg)
+                self.assertNotIn("Traceback", out)
+                same, _ = self.refused("catalog")
+                self.assertEqual(msg, same)
 
     def test_malformed_toml_is_one_clean_refusal(self):
         self.catalog.write_text('[[harness]]\nid = \n')
@@ -4876,6 +4895,10 @@ class StrangerCatalogs(unittest.TestCase):
             ('defaults = "x"\n', "must be a table"),
             ('places = "x"\n', "must be a table"),
             ('[places.p]\nallow_harness = "x"\n', "must be a list"),
+            ('[places.p]\nallow_harness = [{x = 1}]\n', "must be a list of strings"),
+            ('[places.p]\ndefault_harness = ["a"]\n', "must be a string"),
+            ('schema = "x"\n', "schema must be an int"),
+            ('schema = true\n', "schema must be an int"),
             ('[[harness]]\nid = 5\n', "must be a string"),
             ('[[harness]]\ncommand = 5\n', "must be a string"),
         ]
@@ -4903,18 +4926,80 @@ class StrangerCatalogs(unittest.TestCase):
 
     def test_unreadable_catalog_is_a_clean_refusal(self):
         self.catalog.write_text('schema = 1\n')
-        real_open = open
+        real_open = os.open
 
         def deny(path, *a, **k):
             if str(path) == str(self.catalog):
                 raise PermissionError(13, "Permission denied")
             return real_open(path, *a, **k)
 
-        with mock.patch("builtins.open", side_effect=deny):
+        with mock.patch.object(os, "open", side_effect=deny):
             msg, out = self.refused("catalog", "--check")
         self.assertTrue(msg.startswith("cowbell: "), msg)
         self.assertIn("Permission denied", msg)
         self.assertNotIn("Traceback", out)
+
+    def test_fifo_catalog_is_a_clean_refusal_not_a_hang(self):
+        os.mkfifo(self.catalog)
+        msg, out = self.refused("catalog", "--check")
+        self.assertTrue(msg.startswith("cowbell: "), msg)
+        self.assertIn("not a regular file", msg)
+        self.assertNotIn("Traceback", out)
+        same, _ = self.refused("catalog")   # plain `catalog` refuses the same way
+        self.assertEqual(msg, same)
+
+    def test_fifo_roster_is_a_clean_refusal_not_a_hang(self):
+        os.mkfifo(self.state / "roster.json")
+        with self.assertRaises(SystemExit) as cm:
+            hm.load_roster()
+        self.assertIn("not a regular file", str(cm.exception.code))
+        # and the tolerant schema sniff does not hang either
+        self.assertEqual(hm.roster_schema(self.state / "roster.json"), hm.SCHEMA)
+
+    def test_schema_far_newer_is_named_by_check(self):
+        self.catalog.write_text('schema = 99\n[[harness]]\nid = "a"\nkind = "zzz-none"\n')
+        rc, out, err = self.check3("catalog", "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL catalog is schema 99", out)
+        self.assertEqual([l for l in err.splitlines() if l.startswith("cowbell:")],
+                         ["cowbell: check failed (1 problems)"])
+        rc2, _ = self.check("catalog")      # the newer file still reads for listing
+        self.assertEqual(rc2, 0)
+
+    def test_schema_one_rev_newer_reads_with_a_warn(self):
+        self.catalog.write_text('schema = 2\n[[harness]]\nid = "a"\nkind = "zzz-none"\n')
+        rc, out = self.check("catalog", "--check")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("warn catalog is schema 2", out)
+        self.assertIn("ok: 1 harnesses", out)
+
+    def test_schema_not_positive_is_named_by_check(self):
+        self.catalog.write_text('schema = 0\n')
+        rc, out, err = self.check3("catalog", "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("schema 0 must be a positive int", out)
+        self.assertIn("cowbell: check failed (1 problems)", err)
+
+    def test_check_failed_summary_counts_every_problem(self):
+        self.catalog.write_text('[[harness]]\nid = "a"\n[[harness]]\nid = "a"\nkind = "zzz-none"\n')
+        rc, out, err = self.check3("catalog", "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("duplicate id", out)
+        self.assertIn("cowbell: check failed (", err)
+
+    def test_place_allow_and_default_refuse_non_string_members(self):
+        # before this, [places.*] allow_harness = [{x=1}] / a list default_harness
+        # crashed TypeError in scoped_catalog/set(allow) on the picker path
+        for text, want in (
+            ('[places.p]\nallow_harness = [{x = 1}]\n', "allow_harness must be a list of strings"),
+            ('[places.p]\ndefault_harness = ["a"]\n', "default_harness must be a string"),
+        ):
+            with self.subTest(text=text):
+                self.catalog.write_text(text)
+                msg, out = self.refused("catalog", "--check")
+                self.assertTrue(msg.startswith("cowbell: "), msg)
+                self.assertIn(want, msg)
+                self.assertNotIn("Traceback", out)
 
 
 class FlagProbe(unittest.TestCase):

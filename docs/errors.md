@@ -175,6 +175,42 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Fix | Read the message, fix arguments or environment, and consult `cowbell catalog` / `cowbell sessions`. |
 | Source | `cowbell.py` |
 
+### catalog is schema {}; this cowbell reads at most schema {} (upgrade cowbell)
+
+| | |
+|--|--|
+| Message | `catalog is schema {}; this cowbell reads at most schema {} (upgrade cowbell)` |
+| Cause | The harness catalog fails `cowbell catalog --check` validation. |
+| Fix | Edit `harnesses.toml` to satisfy the constraint named in the message. |
+| Source | `cowbell.py` |
+
+### catalog is schema {}; this cowbell writes schema {} (newer file, read for listing)
+
+| | |
+|--|--|
+| Message | `catalog is schema {}; this cowbell writes schema {} (newer file, read for listing)` |
+| Cause | The harness catalog fails `cowbell catalog --check` validation. |
+| Fix | Edit `harnesses.toml` to satisfy the constraint named in the message. |
+| Source | `cowbell.py` |
+
+### catalog schema {!r} must be a positive int
+
+| | |
+|--|--|
+| Message | `catalog schema {!r} must be a positive int` |
+| Cause | The harness catalog fails `cowbell catalog --check` validation. |
+| Fix | Edit `harnesses.toml` to satisfy the constraint named in the message. |
+| Source | `cowbell.py` |
+
+### check failed ({} problems)
+
+| | |
+|--|--|
+| Message | `cowbell: check failed ({} problems)` |
+| Cause | The harness catalog fails `cowbell catalog --check` validation. |
+| Fix | Edit `harnesses.toml` to satisfy the constraint named in the message. |
+| Source | `cowbell.py` |
+
 ### checking {} (no pass in the last 7 days)
 
 | | |
@@ -758,6 +794,24 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Message | `cowbell: {} uses harness {!r} which may not resume in {}` |
 | Cause | Harness id, install, or catalog field does not match what you asked for. |
 | Fix | Run `cowbell catalog`, install the agent CLI, or adjust harness/place settings. |
+| Source | `cowbell.py` |
+
+### {}: empty catalog
+
+| | |
+|--|--|
+| Message | `cowbell: {}: empty catalog` |
+| Cause | The catalog file parses to no keys at all — truncated to zero bytes, or left comments-only. |
+| Fix | Restore rows with `cowbell harness add`, or remove the file so the seed catalog is copied in on next run. |
+| Source | `cowbell.py` |
+
+### {}: {}
+
+| | |
+|--|--|
+| Message | `cowbell: {}: {}` |
+| Cause | A state or catalog file could not be opened or parsed; the first slot names the file, the second the OS or format error (for example `not a regular file` on a fifo or device). |
+| Fix | Replace the named file with a regular file cowbell can read, or remove it and let cowbell recreate it. |
 | Source | `cowbell.py` |
 
 ### enter <name>

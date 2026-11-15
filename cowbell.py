@@ -46,6 +46,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -302,9 +303,22 @@ def migrate_file(new: Path, old: Path) -> bool:
 
 def check_writable(schema, what: str) -> None:
     """A file written by a newer cowbell is read, never overwritten."""
-    if isinstance(schema, int) and schema > SCHEMA:
+    if isinstance(schema, bool) or not isinstance(schema, int) or schema > SCHEMA:
         raise SchemaError(f"cowbell: {what} is schema {schema}; cowbell {__version__} writes schema {SCHEMA}. "
                           f"Upgrade cowbell before changing it.")
+
+
+def _open_regular(path: Path):
+    """open() that cannot hang on a fifo: O_NONBLOCK returns at once without a writer,
+    then fstat refuses anything that is not a regular file (fifo, socket, device)."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("not a regular file")
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def roster_path() -> Path:
@@ -338,7 +352,8 @@ def _seed_fill_considered() -> set[str]:
     if not p.is_file():
         return set()
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        with _open_regular(p) as fh:
+            data = json.loads(fh.read())
     except (OSError, ValueError):
         return set()
     ids = data.get("ids") if isinstance(data, dict) else None
@@ -362,9 +377,9 @@ def fill_missing_seed_kinds(path: Path) -> None:
     if not seed or not seed.is_file():
         return
     try:
-        with open(seed, "rb") as fh:
+        with _open_regular(seed) as fh:
             seed_cat = tomllib.load(fh)
-        with open(path, "rb") as fh:
+        with _open_regular(path) as fh:
             house = tomllib.load(fh)
     except (OSError, tomllib.TOMLDecodeError):
         return
@@ -380,13 +395,16 @@ def fill_missing_seed_kinds(path: Path) -> None:
             now.add(hid)
             continue
         if installed(rec):
-            harness_insert({
-                "id": rec["id"],
-                "kind": rec.get("kind") or rec["id"],
-                "title": rec.get("title") or rec["id"],
-                "models": rec.get("models") or [],
-                "resume": rec.get("resume") or [],
-            }, path=path)
+            try:  # a newer-schema catalog is read, never overwritten — skip the fill
+                harness_insert({
+                    "id": rec["id"],
+                    "kind": rec.get("kind") or rec["id"],
+                    "title": rec.get("title") or rec["id"],
+                    "models": rec.get("models") or [],
+                    "resume": rec.get("resume") or [],
+                }, path=path)
+            except SchemaError:
+                pass
         now.add(hid)
     if now != considered:
         _seed_fill_record(now)
@@ -762,6 +780,8 @@ def catalog_shape_error(cat: dict) -> str | None:
     for key in ("defaults", "lanes", "places"):
         if key in cat and not isinstance(cat[key], dict):
             return f"{key} must be a table"
+    if "schema" in cat and (isinstance(cat["schema"], bool) or not isinstance(cat["schema"], int)):
+        return "schema must be an int"
     for name, lane in (cat.get("lanes") or {}).items():
         if not isinstance(lane, dict):
             return f"lanes.{name} must be a table"
@@ -770,6 +790,11 @@ def catalog_shape_error(cat: dict) -> str | None:
             return f"places.{name} must be a table"
         if "allow_harness" in pl and not isinstance(pl["allow_harness"], list):
             return f"places.{name}.allow_harness must be a list"
+        if isinstance(pl.get("allow_harness"), list) and not all(
+                isinstance(x, str) for x in pl["allow_harness"]):
+            return f"places.{name}.allow_harness must be a list of strings"
+        if "default_harness" in pl and not isinstance(pl["default_harness"], str):
+            return f"places.{name}.default_harness must be a string"
     if "harness" in cat and not isinstance(cat["harness"], list):
         return "harness must be a list of [[harness]] tables"
     for h in cat.get("harness") or []:
@@ -788,11 +813,13 @@ def load_catalog() -> dict:
     if not p.exists():
         raise SystemExit(f"cowbell: no catalog at {p}")
     try:
-        with open(p, "rb") as fh:
+        with _open_regular(p) as fh:
             cat = tomllib.load(fh)
     except (OSError, ValueError) as e:  # ValueError covers TOMLDecodeError and bad UTF-8
         detail = f"{p}: {e}"
         raise SystemExit(f"cowbell: {detail}")
+    if not cat:
+        raise SystemExit(f"cowbell: {p}: empty catalog")
     shape = catalog_shape_error(cat)
     if shape:
         detail = f"{p}: {shape}"
@@ -889,7 +916,8 @@ def accept_path() -> Path:
 
 def load_accepts() -> dict:
     try:
-        data = json.loads(accept_path().read_text())
+        with _open_regular(accept_path()) as fh:
+            data = json.loads(fh.read())
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
@@ -1030,7 +1058,8 @@ def ensure_accepted(h: dict) -> None:
 def roster_schema(p: Path | None = None) -> int:
     p = p or roster_path()
     try:
-        data = json.loads(p.read_text())
+        with _open_regular(p) as fh:
+            data = json.loads(fh.read())
     except (OSError, ValueError):
         return SCHEMA
     return data.get("schema", 1) if isinstance(data, dict) else 1
@@ -1040,7 +1069,11 @@ def load_roster() -> list[dict]:
     p = roster_path()
     if not p.exists():
         return []
-    data = json.loads(p.read_text())
+    try:
+        with _open_regular(p) as fh:
+            data = json.loads(fh.read())
+    except OSError as e:
+        raise SystemExit(f"cowbell: {p}: {e}")
     return data.get("harnesses", []) if isinstance(data, dict) else data
 
 
@@ -1064,7 +1097,8 @@ def _norm_root(root: str) -> str:
 def pins_schema(p: Path | None = None) -> int:
     p = p or pins_path()
     try:
-        data = json.loads(p.read_text())
+        with _open_regular(p) as fh:
+            data = json.loads(fh.read())
     except (OSError, ValueError):
         return SCHEMA
     return data.get("schema", SCHEMA) if isinstance(data, dict) else SCHEMA
@@ -1076,7 +1110,8 @@ def load_pins() -> dict:
     if not p.exists():
         return {"schema": SCHEMA, "dirs": {}}
     try:
-        data = json.loads(p.read_text())
+        with _open_regular(p) as fh:
+            data = json.loads(fh.read())
     except (OSError, ValueError):
         return {"schema": SCHEMA, "dirs": {}}
     if not isinstance(data, dict):
@@ -1296,7 +1331,8 @@ DISPATCHED = re.compile(r"^(you are|act as|role:)\b", re.I)
 
 def history_cache() -> dict:
     try:
-        return json.loads((state_dir() / "history-cache.json").read_text())
+        with _open_regular(state_dir() / "history-cache.json") as fh:
+            return json.loads(fh.read().decode("utf-8", "replace"))
     except Exception:
         return {}
 
@@ -1445,7 +1481,8 @@ def grok_store(root: str, home: Path | None = None) -> Path:
 
 def _read_json(path: Path) -> dict:
     try:
-        data = json.loads(path.read_text(errors="replace"))
+        with _open_regular(path) as fh:
+            data = json.loads(fh.read().decode("utf-8", "replace"))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -1473,7 +1510,7 @@ def _grok_hit(d: Path) -> dict:
     if kept:
         return hit
     try:
-        with open(chat, "r", errors="replace") as fh:
+        with _open_regular(chat) as fh:
             for i, line in enumerate(fh):
                 if i > 40:
                     break
@@ -4236,6 +4273,15 @@ def cmd_catalog_check(cat: dict) -> int:
     docs lag real argv — codex `-m` vs `--model` is the shape), not a failure.
     Not-installed or unprobeable harnesses are reported, not failed."""
     problems, warns, unchecked = [], [], []
+    # A file one schema rev ahead is a normal newer file (read for listing; warn it);
+    # further ahead or not an int is not a readable catalog — name it.
+    schema = cat.get("schema", 1)
+    if isinstance(schema, bool) or not isinstance(schema, int) or schema < 1:
+        problems.append(f"catalog schema {schema!r} must be a positive int")
+    elif schema > SCHEMA + 1:
+        problems.append(f"catalog is schema {schema}; this cowbell reads at most schema {SCHEMA + 1} (upgrade cowbell)")
+    elif schema > SCHEMA:
+        warns.append(f"catalog is schema {schema}; this cowbell writes schema {SCHEMA} (newer file, read for listing)")
     ids = set()
     for h in cat.get("harness", []):
         hid = h.get("id") or "(missing id)"
@@ -4291,6 +4337,7 @@ def cmd_catalog_check(cat: dict) -> int:
     for hid in unchecked:
         print(f"  skip {hid}: not installed")
     if problems:
+        print(f"cowbell: check failed ({len(problems)} problems)", file=sys.stderr)
         return 1
     print(f"  ok: {len(ids)} harnesses, {len(cat.get('places') or {})} places")
     return 0
@@ -4465,7 +4512,7 @@ def _format_harness_block(h: dict) -> str:
 def _file_schema(path: Path) -> int:
     if tomllib is None:
         raise SystemExit("cowbell: python >= 3.11 required (tomllib)")
-    with open(path, "rb") as fh:
+    with _open_regular(path) as fh:
         data = tomllib.load(fh)
     return data.get("schema", 1) if isinstance(data, dict) else 1
 
@@ -4502,7 +4549,11 @@ def _commit_catalog(path: Path, new_text: str) -> None:
     if not path.is_file():
         raise SystemExit(f"cowbell: no catalog at {path}")
     check_writable(_file_schema(path), str(path))
-    old = path.read_text(encoding="utf-8")
+    try:
+        with _open_regular(path) as fh:
+            old = fh.read().decode("utf-8")
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"cowbell: {path}: {e}")
     if old == new_text:
         return
     _backup_timestamped(path)
@@ -4516,7 +4567,11 @@ def _catalog_text(path: Path | None) -> tuple[Path, str]:
     p = Path(path) if path is not None else catalog_path()
     if not p.is_file():
         raise SystemExit(f"cowbell: no catalog at {p}")
-    return p, p.read_text(encoding="utf-8")
+    try:
+        with _open_regular(p) as fh:
+            return p, fh.read().decode("utf-8")
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"cowbell: {p}: {e}")
 
 
 def _find_block(spans: list[dict], hid: str) -> dict | None:
