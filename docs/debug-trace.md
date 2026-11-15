@@ -62,7 +62,11 @@ Tracing is designed to never compromise privacy, consume unbounded disk space, o
 
 ### Privacy
 
-The log may contain command arguments and paths from harness configuration. It is written mode 0600 and only when `COWBELL_DEBUG` (or `--debug`/`COWBELL_DEBUG_LOG`) is set. It should not be shared unreviewed. (verified: cowbell.py:105-107, 142-146, 160, 895, 2649)
+The log may contain paths and flag names from harness configuration. It is written mode 0600 and only when `COWBELL_DEBUG` (or `--debug`/`COWBELL_DEBUG_LOG`) is set. It should not be shared unreviewed. The log path is opened without following a symlink and must be a regular file; anything else turns tracing off for that run.
+
+**What is masked.** Command lines in `start`, `requires`, `exec`, `spawn`, `raise` and `herdr` events keep the executable's basename and flag names. Masked as `***`: every word you typed after `--` in `cowbell new`, every word after a literal `--`, the value of a flag whose name has a part like `key`, `token`, `secret`, `pass`, `password`, `auth`, `bearer` or `prompt` (`--api-key`, `--system-prompt`; a flag such as `--dangerously-bypass-approvals-and-sandbox` is not one), and every `NAME=value` word. A bare `--` is never taken as a flag's value. The herdr `pane run` event is built from the masked argv, not from the packed launch line.
+
+**What is not masked (stated limit).** Free text is masked only where it has a credential shape: `sk-…`/`pk-…` keys, `ghp_…`-style tokens, `Bearer …`, `user:pass@` in a URL, `NAME=value` with a sensitive name, and a sensitive flag with its value. The last line a harness `check` prints (the `check` event's `detail`) and herdr's error text (`err` on a failed `herdr` event) can hold any other word a tool chose to print, and those words are written as they are. A secret with no recognizable shape in that output reaches the log. Do not point a `check` at a command that prints one, and treat the log as sensitive.
 
 ## Trace Line Format and Event Reference
 

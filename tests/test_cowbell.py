@@ -1970,6 +1970,71 @@ class DebugLog(unittest.TestCase):
         self.assertEqual(hm.redact_argv(["agent", "--api-key=zz"]), ["agent", f"--api-key={hm.REDACT}"])
         self.assertEqual(hm.redact_argv(["agent", "--x", "sk-abcd1234"]), ["agent", "--x", hm.REDACT])
 
+    def test_a_boolean_flag_does_not_eat_the_double_dash(self):
+        # "bypass" holds "pass": it is no secret flag, and `--` after it still ends the options
+        self.assertEqual(
+            hm.redact_argv(["agent", "--dangerously-bypass-approvals-and-sandbox", "--", "plainwordAAAA1"]),
+            ["agent", "--dangerously-bypass-approvals-and-sandbox", "--", hm.REDACT])
+        self.assertEqual(hm.redact_argv(["agent", "--api-key", "--", "plainwordBBBB2"]),
+                         ["agent", "--api-key", "--", hm.REDACT])
+        self.assertEqual(hm.redact_argv(["agent", "--apikey", "zz", "--accessToken=zz", "--system-prompt", "zz"]),
+                         ["agent", "--apikey", hm.REDACT, f"--accessToken={hm.REDACT}", "--system-prompt", hm.REDACT])
+        # free text: a non-secret flag consumes nothing, so the secret flag after it is still masked
+        self.assertEqual(hm.redact_text("run --dangerously-bypass-x --token plainwordCCCC3 now"),
+                         f"run --dangerously-bypass-x --token {hm.REDACT} now")
+        self.assertNotIn("tailDDDD4", hm.redact_text("go --prompt 'It'\"'\"'s a tailDDDD4' done"))
+
+    def test_redact_launch_masks_the_passthrough_words(self):
+        extra = ["plainwordEEEE5", "--model", "It's tailFFFF6"]
+        cmd = ["/opt/bin/agent", "--effort", "high", *extra, "--name", "seat"]
+        self.assertEqual(hm.redact_launch(cmd, extra),
+                         ["agent", "--effort", "high", hm.REDACT, hm.REDACT, hm.REDACT, "--name", "seat"])
+        self.assertEqual(hm.redact_launch(cmd, []), hm.redact_argv(cmd))
+
+    def _traced(self):
+        return mock.patch.dict(os.environ, {"COWBELL_DEBUG": "1", "COWBELL_DEBUG_LOG": str(self.log)})
+
+    def test_passthrough_words_never_reach_the_exec_spawn_or_raise_events(self):
+        # none of these words has a credential shape or a sensitive name
+        extra = ["plainwordGGGG7", "--model", "It's tailHHHH8 here"]
+        grok = hm.harness_by_id(CAT, "grok")
+        canaries = ("plainwordGGGG7", "tailHHHH8", "It's")
+        with self._traced(), contextlib.redirect_stdout(io.StringIO()):
+            with mock.patch.object(hm, "_here_exe", return_value="/bin/true"), \
+                 mock.patch.object(hm, "_record_here"), \
+                 mock.patch("cowbell.subprocess.Popen", return_value=mock.Mock(pid=4242)):
+                hm.spawn_here(CAT, grok, "t", ROOT, hm.Ctx(cwd=ROOT), extra=extra)
+            with mock.patch.object(hm, "_here_exe", return_value="/bin/true"), \
+                 mock.patch.object(hm, "_record_here"), \
+                 mock.patch.object(hm.os, "chdir"), \
+                 mock.patch.object(hm.os, "getcwd", return_value=hm._expected_cwd(grok, hm.launch_root(CAT, ROOT, grok))), \
+                 mock.patch.object(hm.os, "execv"):
+                hm.exec_here(CAT, grok, "t", ROOT, hm.Ctx(cwd=ROOT), extra=extra)
+        text = self.log.read_text()
+        self.assertIn(" spawn ", text)
+        self.assertIn(" exec ", text)
+        for canary in canaries:
+            self.assertNotIn(canary, text)
+
+    def test_pane_run_trace_hides_words_with_no_credential_shape(self):
+        extra = ["plainwordIIII9", "--model", "It's tailJJJJ0 here"]
+        grok = hm.harness_by_id(CAT, "grok")
+        ok = mock.Mock(returncode=0, stdout="", stderr="")
+        pane = {"pane_id": "w1C:p1", "tab_id": "w1C:t1", "workspace_id": "w1C"}
+        with self._traced(), mock.patch("cowbell.subprocess.run", return_value=ok) as run:
+            with mock.patch.object(hm, "wait_shell"), mock.patch.object(hm, "save_roster"), \
+                 mock.patch.object(hm, "load_roster", return_value=[]), \
+                 mock.patch.object(hm, "report_identity"), mock.patch.object(hm, "mark_harness"):
+                hm.raise_harness(CAT, grok, "t", ROOT, hm.Ctx(cwd=ROOT), extra=extra, reuse_pane=pane)
+        ran = [c.args[0] for c in run.call_args_list if c.args[0][1:3] == ["pane", "run"]]
+        self.assertEqual(len(ran), 1)
+        self.assertIn("plainwordIIII9", ran[0][-1])  # the pane itself still gets the real line
+        text = self.log.read_text()
+        self.assertIn("pane run", text)
+        self.assertIn(" raise ", text)
+        for canary in ("plainwordIIII9", "tailJJJJ0", "It's"):
+            self.assertNotIn(canary, text)
+
     def test_the_sheet_command_is_not_redacted(self):
         # redaction is for the trace only: shell_join of the real argv still carries every word
         argv = ["agent", "--api-key", "sk-real1234"]
@@ -1986,6 +2051,40 @@ class DebugLog(unittest.TestCase):
             with mock.patch("cowbell.os.chmod", side_effect=AssertionError("chmod after open")):
                 hm.run_check(row)
             self.assertEqual(hm.accept_path().stat().st_mode & 0o777, 0o600)
+
+    def test_a_directory_at_the_accept_tmp_is_a_clean_refusal(self):
+        with mock.patch.dict(os.environ, {"COWBELL_STATE_DIR": self.tmp.name}):
+            hm.accept_path().with_suffix(".tmp").mkdir()
+            with self.assertRaises(SystemExit) as cm:
+                hm.run_check({"id": "x", "check": ["sh", "-c", "echo PASS x"]})
+        self.assertIn("accept.tmp", str(cm.exception))
+
+    def test_a_tmp_planted_after_the_unlink_is_never_followed(self):
+        victim = Path(self.tmp.name) / "victim"
+        victim.write_text("keep")
+        with mock.patch.dict(os.environ, {"COWBELL_STATE_DIR": self.tmp.name}):
+            hm.accept_path().with_suffix(".tmp").symlink_to(victim)
+            with mock.patch.object(Path, "unlink"):  # the plant survives the unlink: O_EXCL|O_NOFOLLOW refuses it
+                with self.assertRaises(SystemExit):
+                    hm.run_check({"id": "x", "check": ["sh", "-c", "echo PASS x"]})
+        self.assertEqual(victim.read_text(), "keep")
+
+    def test_a_symlink_at_the_log_path_is_not_followed_or_chmodded(self):
+        victim = Path(self.tmp.name) / "victim.log"
+        victim.write_text("keep\n")
+        os.chmod(victim, 0o644)
+        self.log.symlink_to(victim)
+        with self._traced():
+            hm.trace.event("frame", ms=1)
+        self.assertTrue(hm.trace._dead)
+        self.assertEqual(victim.read_text(), "keep\n")
+        self.assertEqual(victim.stat().st_mode & 0o777, 0o644)
+
+    def test_a_non_regular_log_is_refused_before_any_chmod(self):
+        with mock.patch.dict(os.environ, {"COWBELL_DEBUG": "1", "COWBELL_DEBUG_LOG": os.devnull}):
+            with mock.patch.object(hm.os, "fchmod", side_effect=AssertionError("fchmod on a device")):
+                hm.trace.event("frame", ms=1)  # opens fine, fstat says character device: refused
+        self.assertTrue(hm.trace._dead)
 
     def test_herdr_call_is_timed(self):
         ok = mock.Mock(returncode=0, stdout='{"result": {"snapshot": {}}}', stderr="")
