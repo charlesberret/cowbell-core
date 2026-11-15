@@ -187,7 +187,7 @@ REDACT = "***"
 # --api-key, --auth-token, --system-prompt, --apikey. A substring test also caught
 # --dangerously-bypass-approvals-and-sandbox ("bypass" holds "pass"), a boolean flag.
 _SECRET_PART = re.compile(
-    r"(?:key|token|secret|prompt)s?$|^(?:pass(?:word|wd|phrase|code)?s?|o?auth(?:entication|orization)?|bearer|credentials?)$", re.I)
+    r"(?:key|token|secret|prompt|instruction)s?$|^(?:pass(?:word|wd|phrase|code)?s?|o?auth(?:entication|orization)?|bearer|credentials?)$", re.I)
 _FLAG_NAME_ONLY = re.compile(r"(?<![\w-])-{1,2}[A-Za-z][\w.-]*")
 # one shell word: quoted runs and escapes join, so 'It'"'"'s a prompt' is masked whole
 _FLAG_SEP_VALUE = re.compile(r"(=|[ \t]+)((?:'[^']*'|\"(?:[^\"\\]|\\.)*\"|\\.|[^\s'\"\\])+)")
@@ -453,7 +453,7 @@ def _open_regular(path: Path):
 def _open_regular_write(path: Path):
     """Write side of _open_regular: O_NONBLOCK answers ENXIO at once on a fifo
     with no reader instead of blocking, then fstat refuses non-regular files."""
-    fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK | os.O_CREAT | os.O_TRUNC, 0o666)
+    fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise OSError("not a regular file")

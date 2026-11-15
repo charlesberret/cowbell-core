@@ -1992,6 +1992,11 @@ class DebugLog(unittest.TestCase):
         self.assertEqual(hm.redact_argv(["agent", "--dangerously-bypass-approvals-and-sandbox", "plainwordJJJJ8"]),
                          ["agent", "--dangerously-bypass-approvals-and-sandbox", "plainwordJJJJ8"])
 
+    def test_an_instructions_flag_masks_its_value(self):
+        # a flag that carries a prompt by another name is still a prompt (R3-a)
+        self.assertEqual(hm.redact_argv(["agent", "--instructions", "never-share-KKKK1"]),
+                         ["agent", "--instructions", hm.REDACT])
+
     def test_redact_launch_masks_the_passthrough_words(self):
         extra = ["plainwordEEEE5", "--model", "It's tailFFFF6"]
         cmd = ["/opt/bin/agent", "--effort", "high", *extra, "--name", "seat"]
@@ -5188,6 +5193,14 @@ class StrangerCatalogs(unittest.TestCase):
         hm.write_history_cache({"k": {"utterance": "x"}})         # returns, never blocks
         self.assertFalse((self.state / "history-cache.json").is_file())
         self.assertEqual(hm.history_cache(), {})                  # the reader refuses the same way
+
+    def test_history_cache_symlink_is_refused_not_followed(self):
+        # O_NOFOLLOW: a planted symlink at the cache path is refused, never written through (D4)
+        victim = Path(self.tmp.name) / "victim.txt"
+        victim.write_text("mine")
+        (self.state / "history-cache.json").symlink_to(victim)
+        hm.write_history_cache({"k": {"utterance": "x"}})
+        self.assertEqual(victim.read_text(), "mine")
 
     def test_history_cache_round_trip_on_a_regular_file(self):
         hm.write_history_cache({"k": {"utterance": "u", "session_id": "s"}})
