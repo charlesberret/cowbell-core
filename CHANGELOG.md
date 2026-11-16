@@ -30,6 +30,7 @@
 - The debug trace masks `instructions=` values like `--prompt` — bare `instructions=`, dotted `-c key=value` argv (`-c model.instructions=…`), and a `NAME=value` word whose sensitive name sits at the word's start. The same word-start fix closes a whole class: `token=`, `key=`, `password=` and the other sensitive names leaked when they opened a word rather than followed a prefix.
 - The herdr timeout breaker governs only tick-fast calls: a call whose caller paid for a longer wait (the 35 s `agent start`, cleanup work) neither trips the breaker nor is skipped by it. A failed or refused launch still closes its empty tab — previously the armed breaker ate the `tab close` cleanup and left it behind.
 - A pre-existing trace or accept file with a loose mode is tightened to `0600` at open instead of staying as found.
+- A config or state directory that cannot be tightened to `0700` warns once per process (`cowbell: could not tighten <path> to 0700: <reason>`) instead of raising a traceback. And the `NAME=value` mask catches the sensitive word anywhere in the name — `author=` and `keyboard=` mask too — erring on the masked side, never the leaked side.
 
 ## 0.3.2 — 2026-11-02
 
