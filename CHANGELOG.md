@@ -27,6 +27,10 @@
 - `CHANGELOG.md` now ships inside the sdist.
 - `docs/errors.md` corrections: the `nono` row names the real cause/fix, and both home-permission rows' fixes repair the home rather than telling users to install `agent-run`.
 
+- The debug trace masks `instructions=` values like `--prompt` — bare `instructions=`, dotted `-c key=value` argv (`-c model.instructions=…`), and a `NAME=value` word whose sensitive name sits at the word's start. The same word-start fix closes a whole class: `token=`, `key=`, `password=` and the other sensitive names leaked when they opened a word rather than followed a prefix.
+- The herdr timeout breaker governs only tick-fast calls: a call whose caller paid for a longer wait (the 35 s `agent start`, cleanup work) neither trips the breaker nor is skipped by it. A failed or refused launch still closes its empty tab — previously the armed breaker ate the `tab close` cleanup and left it behind.
+- A pre-existing trace or accept file with a loose mode is tightened to `0600` at open instead of staying as found.
+
 ## 0.3.2 — 2026-11-02
 
 - A saved harness launches like the one it was saved from: save-as copies the source row whole and overrides only what the sheet set, so the seat file, `--name`, and a confining `unix_user` are kept.
