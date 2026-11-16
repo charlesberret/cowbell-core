@@ -193,7 +193,9 @@ _FLAG_NAME_ONLY = re.compile(r"(?<![\w-])-{1,2}[A-Za-z][\w.-]*")
 _FLAG_SEP_VALUE = re.compile(r"(=|[ \t]+)((?:'[^']*'|\"(?:[^\"\\]|\\.)*\"|\\.|[^\s'\"\\])+)")
 _ENV_ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=")
 # the name prefix before the secret word is optional so a name that starts with it
-# (instructions=x, token=x) masks like one that only carries it (api_token=x)
+# (instructions=x, token=x) masks like one that only carries it (api_token=x);
+# keyword-anywhere-in-name (unlike _SECRET_PART's whole-part rule) also catches
+# safe-side names like author=/keyboard= — intentional, pinned in test_rc_redact
 _NAME_VALUE = re.compile(
     r"\b((?:[A-Za-z_][\w.]*)?(?:key|token|secret|pass|auth|bearer|credential|prompt|instruction)[\w.]*)=[^\s'\"]*", re.I)
 _URL_USERINFO = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]{1,15}://)[^/\s@'\"]+@")
@@ -3158,7 +3160,8 @@ def herdr(*args: str, expect_json: bool = True, timeout: float = HERDR_TIMEOUT,
     packs words that only the caller can tell apart (a whole launch line to `pane run`)."""
     global _HERDR_DOWN_UNTIL
     # the breaker exists for the picker's ~5s tick; a caller that paid for a longer wait
-    # (agent start's 35s, launch cleanup) neither trips it nor is skipped by it
+    # (agent start's 35s, launch cleanup) neither trips it nor is skipped by it.
+    # a sub-tick timeout still arms the full window — callers must pay the tick
     tick = timeout <= HERDR_TIMEOUT
     if tick and time.monotonic() < _HERDR_DOWN_UNTIL:
         raise HerdrError(f"herdr {' '.join(args[:2])} skipped: marked down after a timeout")
