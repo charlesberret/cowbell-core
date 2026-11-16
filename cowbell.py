@@ -380,6 +380,16 @@ class SchemaError(SystemExit):
     pass
 
 
+_TIGHTEN_WARNED: set = set()
+
+
+def _warn_tighten_once(p: Path, e: OSError) -> None:
+    """Warn once per path per process — config_dir/state_dir run every picker frame."""
+    if str(p) not in _TIGHTEN_WARNED:
+        _TIGHTEN_WARNED.add(str(p))
+        print(f"cowbell: could not tighten {p} to 0700: {e}", file=sys.stderr)
+
+
 def config_dir() -> Path:
     """~/.config/cowbell (COWBELL_CONFIG_DIR, then XDG_CONFIG_HOME). Shared by the plugin and the CLI."""
     base = os.environ.get("COWBELL_CONFIG_DIR") or \
@@ -390,7 +400,7 @@ def config_dir() -> Path:
         try:
             os.chmod(p, 0o700)  # the catalog can carry secrets in check/requires argv
         except OSError as e:
-            print(f"cowbell: could not tighten {p} to 0700: {e}", file=sys.stderr)
+            _warn_tighten_once(p, e)
     return p
 
 
@@ -404,7 +414,7 @@ def state_dir() -> Path:
         try:
             os.chmod(p, 0o700)  # roster, accept.json and debug.log live here — owner only
         except OSError as e:
-            print(f"cowbell: could not tighten {p} to 0700: {e}", file=sys.stderr)
+            _warn_tighten_once(p, e)
     return p
 
 
