@@ -3132,7 +3132,7 @@ def herdr_bin() -> str:
 HERDR_TIMEOUT = 5.0  # seconds; a hung herdr server must not freeze the picker tick
 
 
-_HERDR_DOWN_UNTIL = 0.0  # one timeout marks herdr down briefly, so a stalled CLI costs a frame ~5s, not 5s per call
+_HERDR_DOWN_UNTIL = 0.0  # one tick-fast timeout marks herdr down briefly, so a stalled CLI costs a frame ~5s, not 5s per call
 
 
 def herdr(*args: str, expect_json: bool = True, timeout: float = HERDR_TIMEOUT,
@@ -3140,14 +3140,18 @@ def herdr(*args: str, expect_json: bool = True, timeout: float = HERDR_TIMEOUT,
     """Run the herdr CLI. `log_argv` is what the trace shows instead of `args` when one arg
     packs words that only the caller can tell apart (a whole launch line to `pane run`)."""
     global _HERDR_DOWN_UNTIL
-    if time.monotonic() < _HERDR_DOWN_UNTIL:
+    # the breaker exists for the picker's ~5s tick; a caller that paid for a longer wait
+    # (agent start's 35s, launch cleanup) neither trips it nor is skipped by it
+    tick = timeout <= HERDR_TIMEOUT
+    if tick and time.monotonic() < _HERDR_DOWN_UNTIL:
         raise HerdrError(f"herdr {' '.join(args[:2])} skipped: marked down after a timeout")
     t0 = time.perf_counter()
     shown = " ".join(redact_argv(args if log_argv is None else log_argv))
     try:
         proc = subprocess.run([herdr_bin(), *args], capture_output=True, text=True, check=False, timeout=timeout)
     except subprocess.TimeoutExpired as e:
-        _HERDR_DOWN_UNTIL = time.monotonic() + 30
+        if tick:
+            _HERDR_DOWN_UNTIL = time.monotonic() + 30
         trace.event("herdr", ms=_ms(t0), err="timeout", argv=shown)
         raise HerdrError(f"herdr {' '.join(args[:2])} timed out after {timeout:g}s") from e
     except OSError as e:  # herdr not installed: standalone cowbell still works
@@ -3485,7 +3489,8 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
         trace.event("raise", phase="fail", how=how, pane=pid, ms=_ms(t0))
         if pane.get("tab_id") and not reuse_pane:  # do not leave an empty tab behind a failed or refused launch
             try:
-                herdr("tab", "close", pane["tab_id"])
+                # longer than HERDR_TIMEOUT so the cleanup still runs while a timed-out tick has herdr marked down
+                herdr("tab", "close", pane["tab_id"], timeout=HERDR_TIMEOUT * 2)
             except HerdrError:
                 pass
         raise
