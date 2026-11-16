@@ -1,4 +1,6 @@
+import re
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -65,6 +67,88 @@ class TestRcRedactOverMatch(unittest.TestCase):
     def test_plain_prose_is_untouched(self):
         s = "instructions and authors"
         self.assertEqual(hm.redact_text(s), s)
+
+
+class TestRcRedactPerf(unittest.TestCase):
+    """A launcher must not hang on a long argv: redact_text must stay linear on a long
+    dotted name= run, even with no keyword and no '=' anywhere near the start of it."""
+
+    def test_long_dotted_string_redacts_in_under_a_second(self):
+        s = "a." * 10000 + "=x"
+        start = time.perf_counter()
+        hm.redact_text(s)
+        elapsed = time.perf_counter() - start
+        self.assertLess(elapsed, 1.0, f"redact_text took {elapsed:.2f}s on a 20000-char dotted string")
+
+
+# A frozen copy of the old, superlinear _NAME_VALUE pattern (cowbell.py historical,
+# pre fix for the 'a.'*50000+'=x' hang). Used only to differentially check that the
+# new linear masking agrees with the old regex's masking decisions.
+_OLD_NAME_VALUE = re.compile(
+    r"\b((?:[A-Za-z_][\w.]*)?(?:key|token|secret|pass|auth|bearer|credential|prompt|instruction)[\w.]*)=[^\s'\"]*",
+    re.I,
+)
+
+
+def _old_redact_name_value(s: str) -> str:
+    return _OLD_NAME_VALUE.sub(lambda m: f"{m[1]}={hm.REDACT}", s)
+
+
+class TestRcRedactDifferential(unittest.TestCase):
+    """New linear masking must agree with the old backtracking regex on a corpus of
+    name=value shapes: keywords, over-match cases, dots, digits, urls, and edge cases."""
+
+    CORPUS = [
+        "instructions=NOSHAPE1",
+        "api_token=NOSHAPE2",
+        "author=NOSHAPE3",
+        "keyboard=NOSHAPE4",
+        "slogan=NOSHAPE5",
+        "model.instructions=NOSHAPE6",
+        "profile.instructions=NOSHAPE7",
+        "a.b.c.token=NOSHAPE8",
+        "a.b.c.slogan=NOSHAPE9",
+        "token=NOSHAPE10",
+        "secret=NOSHAPE11",
+        "password=NOSHAPE12",
+        "passwd=NOSHAPE13",
+        "passphrase=NOSHAPE14",
+        "passcode=NOSHAPE15",
+        "auth=NOSHAPE16",
+        "oauth=NOSHAPE17",
+        "authentication=NOSHAPE18",
+        "authorization=NOSHAPE19",
+        "bearer=NOSHAPE20",
+        "credential=NOSHAPE21",
+        "credentials=NOSHAPE22",
+        "prompt=NOSHAPE23",
+        "system_prompt=NOSHAPE24",
+        "instruction=NOSHAPE25",
+        "mykeyword=NOSHAPE26",
+        "1secret=NOSHAPE27",
+        "1.secret=NOSHAPE28",
+        "123token=NOSHAPE29",
+        "123.token=NOSHAPE30",
+        "url=https://user:NOSHAPE31@example.com/",
+        "https://example.com/path?token=NOSHAPE32",
+        "=NOSHAPE33",
+        "==NOSHAPE34",
+        "name=",
+        "token=",
+        "token=a=b",
+        "slogan=foo.token=NOSHAPE35",
+        "instruction manual with no equals",
+        "plain prose, no secrets, no equals signs at all",
+        "_token=NOSHAPE36",
+        "_secret_=NOSHAPE37",
+        "multi token=NOSHAPE38 slogan=NOSHAPE39 author=NOSHAPE40",
+    ]
+
+    def test_new_masking_matches_old_regex_on_corpus(self):
+        for s in self.CORPUS:
+            with self.subTest(s=s):
+                self.assertEqual(hm._mask_name_values(s), _old_redact_name_value(s))
+
 
 if __name__ == "__main__":
     unittest.main()
