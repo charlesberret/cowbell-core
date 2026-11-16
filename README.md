@@ -248,7 +248,7 @@ Day-to-day users do not need these commands; they run from plugin hooks or durin
 
 Trace lines redact before they write. `redact_argv` keeps the program's basename and every flag name. It masks:
 
-- the value of any flag whose name names a secret — a dash/underscore/dot-separated part ending in `key`, `token`, `secret`, `prompt` or `instruction`, or exactly `pass`, `password`, `passwd`, `passphrase`, `auth`, `oauth`, `authorization`, `bearer` or `credential(s)`;
+- the value of any flag whose name names a secret — a dash/underscore/dot-separated part ending in `key`, `token`, `secret`, `prompt` or `instruction`, each matched with an optional plural `s` (`--api-keys`, `--tokens`), or exactly `pass`, `password`, `passwd`, `passphrase`, `passcode`, `auth`, `oauth`, `authentication`, `authorization`, `bearer` or `credential(s)`, again with plurals;
 - every argument after a bare `--`, and the passthrough words of `cowbell new X -- …`;
 - the value in `NAME=value` arguments;
 - the userinfo in URLs (`https://user:pw@host/` becomes `https://***@host/`).
