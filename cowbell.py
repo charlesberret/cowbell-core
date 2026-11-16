@@ -195,9 +195,14 @@ _ENV_ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=")
 # the name prefix before the secret word is optional so a name that starts with it
 # (instructions=x, token=x) masks like one that only carries it (api_token=x);
 # keyword-anywhere-in-name (unlike _SECRET_PART's whole-part rule) also catches
-# safe-side names like author=/keyboard= — intentional, pinned in test_rc_redact
-_NAME_VALUE = re.compile(
-    r"\b((?:[A-Za-z_][\w.]*)?(?:key|token|secret|pass|auth|bearer|credential|prompt|instruction)[\w.]*)=[^\s'\"]*", re.I)
+# safe-side names like author=/keyboard= — intentional, pinned in test_rc_redact.
+#
+# _mask_name_values (below) replaced a single backtracking regex here: a dotted run
+# with no keyword (e.g. 'a.'*50000) made the old \b(prefix?)(keyword)[\w.]*= pattern
+# retry its whole backtrack at every "a", O(n^2) on argv a launcher must not hang on.
+_NAME_RUN = re.compile(r"[\w.]+")
+_KEYWORD = re.compile(r"key|token|secret|pass|auth|bearer|credential|prompt|instruction", re.I)
+_NAME_START_CHAR = re.compile(r"[A-Za-z_]")
 _URL_USERINFO = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]{1,15}://)[^/\s@'\"]+@")
 _CRED_SHAPE = re.compile(
     r"\b(?:sk|pk)-[0-9A-Za-z_-]{4,}"
@@ -228,6 +233,53 @@ def _mask_flag_values(s: str) -> str:
     return "".join(out)
 
 
+def _name_value_mask_start(name: str):
+    """Smallest index in `name` (a run of [\\w.] chars) a NAME=value match could start
+    at: index 0 if it's a letter/underscore, else the first letter/underscore right
+    after a '.' — the only two places \\b plus the old pattern's required first
+    character could land. A smaller start always sees a superset of a larger one's
+    text, so if this earliest start's tail has no keyword, no later start would
+    either; one check replaces the old per-position backtrack."""
+    if name and _NAME_START_CHAR.match(name[0]):
+        return 0
+    for i in range(1, len(name)):
+        if name[i - 1] == "." and _NAME_START_CHAR.match(name[i]):
+            return i
+    return None
+
+
+def _mask_name_values(s: str) -> str:
+    """Mask the value of every NAME=value word whose name carries a secret keyword
+    (api_token=x, model.instructions=x, author=x — see _NAME_START_CHAR comment above).
+    Linear: runs of [\\w.] chars are found once (plain `+`, no backtracking), and a
+    masked run's value — which can itself contain '=' — is skipped whole, exactly as
+    the old regex's greedy value consumed it, so nothing inside is rematched."""
+    runs = list(_NAME_RUN.finditer(s))
+    out: list[str] = []
+    pos = 0
+    i = 0
+    n = len(runs)
+    while i < n:
+        m = runs[i]
+        a, b = m.start(), m.end()
+        if b < len(s) and s[b] == "=":
+            start = _name_value_mask_start(s[a:b])
+            if start is not None and _KEYWORD.search(s[a + start:b]):
+                c = b + 1
+                while c < len(s) and not s[c].isspace() and s[c] not in "'\"":
+                    c += 1
+                out.append(s[pos:b + 1])
+                out.append(REDACT)
+                pos = c
+                i += 1
+                while i < n and runs[i].start() < pos:
+                    i += 1
+                continue
+        i += 1
+    out.append(s[pos:])
+    return "".join(out)
+
+
 def redact_text(s: str) -> str:
     """Mask credential shapes inside free text (check output, herdr errors): userinfo,
     sensitive flag values, NAME=value, and token-shaped words. Context around them survives.
@@ -235,7 +287,7 @@ def redact_text(s: str) -> str:
     (docs/debug-trace.md)."""
     s = _URL_USERINFO.sub(r"\g<1>***@", s)
     s = _mask_flag_values(s)
-    s = _NAME_VALUE.sub(lambda m: f"{m[1]}={REDACT}", s)
+    s = _mask_name_values(s)
     return _CRED_SHAPE.sub(REDACT, s)
 
 
