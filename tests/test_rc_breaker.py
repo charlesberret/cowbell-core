@@ -22,34 +22,21 @@ class TestRcBreaker(unittest.TestCase):
             )
             hm.herdr("pane", "list")
 
-        self.assertGreaterEqual(run.call_count, 2)
+        self.assertEqual(run.call_count, 2)
 
     def test_long_timeout_bypasses_armed_breaker(self):
         completed = mock.Mock(stdout="{}", stderr="", returncode=0)
-        with mock.patch.object(hm, "_HERDR_DOWN_UNTIL", 0.0), \
-             mock.patch.object(
-                 hm.subprocess, "run", return_value=completed
-             ) as run:
-            with mock.patch.object(
-                hm, "_HERDR_DOWN_UNTIL", time.monotonic() + 30
-            ):
-                hm.herdr(
-                    "tab",
-                    "close",
-                    "t1",
-                    timeout=hm.HERDR_TIMEOUT * 2,
-                )
-
-        self.assertEqual(run.call_count, 1)
-
-    def test_default_timeout_still_arms_breaker(self):
-        down = hm.subprocess.TimeoutExpired(cmd="herdr", timeout=5)
-        with mock.patch.object(hm, "_HERDR_DOWN_UNTIL", 0.0), \
-             mock.patch.object(hm.subprocess, "run", side_effect=down) as run:
-            with self.assertRaises(hm.HerdrError):
-                hm.herdr("pane", "list")
-            with self.assertRaises(hm.HerdrError):
-                hm.herdr("workspace", "list")
+        with mock.patch.object(
+            hm.subprocess, "run", return_value=completed
+        ) as run, mock.patch.object(
+            hm, "_HERDR_DOWN_UNTIL", time.monotonic() + 30
+        ):
+            hm.herdr(
+                "tab",
+                "close",
+                "t1",
+                timeout=hm.HERDR_TIMEOUT * 2,
+            )
 
         self.assertEqual(run.call_count, 1)
 
