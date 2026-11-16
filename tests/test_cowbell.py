@@ -692,6 +692,17 @@ class Paths(unittest.TestCase):
         finally:
             os.environ.pop("XDG_CONFIG_HOME"); os.environ.pop("XDG_STATE_HOME")
 
+    def test_env_dir_the_user_cannot_chmod_warns_instead_of_dying(self):
+        # COWBELL_STATE_DIR naming a dir the user cannot chmod must warn, not traceback.
+        self.state.mkdir(parents=True)
+        os.chmod(self.state, 0o755)
+        err = io.StringIO()
+        with mock.patch("cowbell.os.chmod", side_effect=PermissionError(13, "Permission denied")), \
+             contextlib.redirect_stderr(err):
+            self.assertEqual(hm.state_dir(), self.state)
+            self.assertEqual(hm.load_roster(), [])          # the command path still works
+        self.assertIn(f"cowbell: could not tighten {self.state} to 0700:", err.getvalue())
+
     def test_seed_names_droid_and_devin(self):
         import tomllib
         seed = Path(__file__).resolve().parent.parent / "harnesses.toml"
@@ -3997,11 +4008,12 @@ class TierWalls(unittest.TestCase):
             stack.enter_context(mock.patch.object(hm, "pick_workspace", return_value="w1"))
             stack.enter_context(mock.patch.object(hm, "create_tab",
                                                   return_value={"pane_id": "w1:p9", "tab_id": "w1:t9"}))
-            stack.enter_context(mock.patch.object(hm, "herdr", side_effect=lambda *a, **k: ran.append(a) or {}))
+            stack.enter_context(mock.patch.object(hm, "herdr", side_effect=lambda *a, **k: ran.append((a, k)) or {}))
             with self.assertRaises(SystemExit):
                 hm.raise_harness(cat, h, "seat", bad, hm.Ctx(cwd=self.house))
-        self.assertIn(("tab", "close", "w1:t9"), ran)
-        self.assertFalse(any(a[:2] == ("pane", "run") for a in ran))
+        close = next(k for a, k in ran if a == ("tab", "close", "w1:t9"))
+        self.assertGreater(close.get("timeout", 0), hm.HERDR_TIMEOUT)  # survives the tick-only breaker
+        self.assertFalse(any(a[:2] == ("pane", "run") for a, k in ran))
 
     def test_history_strips_control_characters_from_titles(self):
         rows, _ = self._history([{"session_id": "s1", "cwd": self.house, "title": "\x1b]52;c;ZXZpbA==\x07Fix tests",

@@ -387,7 +387,10 @@ def config_dir() -> Path:
     p = Path(base).expanduser()
     p.mkdir(parents=True, exist_ok=True, mode=0o700)
     if p.is_dir() and not p.is_symlink() and p.stat().st_mode & 0o777 != 0o700:
-        os.chmod(p, 0o700)  # the catalog can carry secrets in check/requires argv
+        try:
+            os.chmod(p, 0o700)  # the catalog can carry secrets in check/requires argv
+        except OSError as e:
+            print(f"cowbell: could not tighten {p} to 0700: {e}", file=sys.stderr)
     return p
 
 
@@ -398,7 +401,10 @@ def state_dir() -> Path:
     p = Path(base).expanduser()
     p.mkdir(parents=True, exist_ok=True, mode=0o700)
     if p.is_dir() and not p.is_symlink() and p.stat().st_mode & 0o777 != 0o700:
-        os.chmod(p, 0o700)  # roster, accept.json and debug.log live here — owner only
+        try:
+            os.chmod(p, 0o700)  # roster, accept.json and debug.log live here — owner only
+        except OSError as e:
+            print(f"cowbell: could not tighten {p} to 0700: {e}", file=sys.stderr)
     return p
 
 

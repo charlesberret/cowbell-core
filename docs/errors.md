@@ -229,6 +229,15 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Fix | Check connectivity and retry `cowbell font install`; the URL and sha256 are pinned in source. |
 | Source | `cowbell.py` |
 
+### could not tighten {} to 0700: {}
+
+| | |
+|--|--|
+| Message | `cowbell: could not tighten {} to 0700: {}` |
+| Cause | The config or state dir exists with looser permissions and cowbell could not chmod it to owner-only (commonly a `COWBELL_CONFIG_DIR`/`COWBELL_STATE_DIR` naming a directory you do not own). Warning only; the command continues. |
+| Fix | Point the env var at a directory you own, or tighten it yourself with `chmod 700`. |
+| Source | `cowbell.py` |
+
 ### harness needs an id
 
 | | |
