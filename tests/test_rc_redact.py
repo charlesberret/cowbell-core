@@ -43,5 +43,28 @@ class TestRcRedact(unittest.TestCase):
         s = "no secrets here: instruction manual"
         self.assertEqual(hm.redact_text(s), s)
 
+
+class TestRcRedactOverMatch(unittest.TestCase):
+    """Pins intentional over-match: a NAME=value word is masked whenever NAME contains
+    a keyword part anywhere, not just as a whole word. director-ruled safe-side."""
+
+    def test_name_containing_auth_is_masked(self):
+        redacted = hm.redact_text("author=NOSHAPE_A")
+        self.assertNotIn("NOSHAPE_A", redacted)
+        self.assertIn(hm.REDACT, redacted)
+
+    def test_name_containing_key_is_masked(self):
+        redacted = hm.redact_text("keyboard=NOSHAPE_K")
+        self.assertNotIn("NOSHAPE_K", redacted)
+        self.assertIn(hm.REDACT, redacted)
+
+    def test_name_without_any_keyword_part_is_untouched(self):
+        s = "slogan=NOSHAPE_Z"
+        self.assertEqual(hm.redact_text(s), s)
+
+    def test_plain_prose_is_untouched(self):
+        s = "instructions and authors"
+        self.assertEqual(hm.redact_text(s), s)
+
 if __name__ == "__main__":
     unittest.main()

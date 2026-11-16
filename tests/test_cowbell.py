@@ -685,8 +685,13 @@ class Paths(unittest.TestCase):
 
     def test_missing_seed_and_legacy_means_no_catalog(self):
         (self.seed_root / "harnesses.toml").unlink()
-        with self.assertRaises(SystemExit):
-            hm.load_catalog()
+        saved = sys.prefix
+        sys.prefix = str(Path(self.tmp.name) / "no-such-prefix")
+        try:
+            with self.assertRaises(SystemExit):
+                hm.load_catalog()
+        finally:
+            sys.prefix = saved
 
     def test_xdg_homes_when_no_override(self):
         for k in ("COWBELL_CONFIG_DIR", "COWBELL_STATE_DIR"):
