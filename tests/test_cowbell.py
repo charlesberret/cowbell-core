@@ -108,6 +108,13 @@ def tearDownModule():
         _SENTINEL_DIR.cleanup()
 
 
+def _disarm_herdr_breaker():
+    """_HERDR_DOWN_UNTIL is a module global: a timeout tripped in one test must
+    never skip a later test's herdr calls. Classes that drive the real hm.herdr
+    run this in setUp and register it again as a cleanup."""
+    hm._HERDR_DOWN_UNTIL = 0.0
+
+
 class Scope(unittest.TestCase):
     def test_at_or_beneath(self):
         self.assertTrue(hm.at_or_beneath(ROOT, ROOT))
@@ -1911,6 +1918,8 @@ class DebugLog(unittest.TestCase):
         self.log = Path(self.tmp.name) / "debug.log"
         hm.trace.reset()
         self.addCleanup(hm.trace.reset)
+        _disarm_herdr_breaker()  # test_herdr_call_is_timed drives the real adapter
+        self.addCleanup(_disarm_herdr_breaker)
 
     def test_off_writes_nothing(self):
         env = {k: v for k, v in os.environ.items() if k != "COWBELL_DEBUG"}
@@ -2961,6 +2970,8 @@ class ExtensionPoints(unittest.TestCase):
 
     def setUp(self):
         self._ext = dict(hm.EXT)
+        _disarm_herdr_breaker()  # a timed-out hm.herdr call below trips the breaker
+        self.addCleanup(_disarm_herdr_breaker)
 
     def tearDown(self):
         hm.EXT.clear(); hm.EXT.update(self._ext)
@@ -3051,6 +3062,8 @@ class SessionHistory(unittest.TestCase):
         (gdir / "chat_history.jsonl").write_text(
             json.dumps({"type": "system", "content": "you are grok"}) + "\n" +
             json.dumps({"type": "user", "content": [{"type": "text", "text": "<user_query>ship it</user_query>"}]}) + "\n")
+        _disarm_herdr_breaker()  # the timeout test below drives the real adapter
+        self.addCleanup(_disarm_herdr_breaker)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -3194,8 +3207,7 @@ class SessionHistory(unittest.TestCase):
 
     def test_a_herdr_timeout_marks_the_server_down(self):
         down = hm.subprocess.TimeoutExpired(cmd="herdr", timeout=5)
-        with mock.patch.object(hm.subprocess, "run", side_effect=down) as run, \
-             mock.patch.object(hm, "_HERDR_DOWN_UNTIL", 0.0):
+        with mock.patch.object(hm.subprocess, "run", side_effect=down) as run:
             with self.assertRaises(hm.HerdrError):
                 hm.herdr("pane", "list")
             with self.assertRaises(hm.HerdrError):
@@ -5335,7 +5347,8 @@ class SubprocessTimeouts(unittest.TestCase):
     """A hung herdr or trust checker ends in a bounded wait, never an uncaught exception."""
 
     def setUp(self):
-        hm._HERDR_DOWN_UNTIL = 0.0  # a prior test's timeout must not skip this one's calls
+        _disarm_herdr_breaker()  # a prior test's timeout must not skip this one's calls
+        self.addCleanup(_disarm_herdr_breaker)  # and this one's trip must not skip a later test's
 
     def _hang(self, argv, **kw):
         self.kw = kw
