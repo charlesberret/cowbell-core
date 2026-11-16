@@ -192,8 +192,10 @@ _FLAG_NAME_ONLY = re.compile(r"(?<![\w-])-{1,2}[A-Za-z][\w.-]*")
 # one shell word: quoted runs and escapes join, so 'It'"'"'s a prompt' is masked whole
 _FLAG_SEP_VALUE = re.compile(r"(=|[ \t]+)((?:'[^']*'|\"(?:[^\"\\]|\\.)*\"|\\.|[^\s'\"\\])+)")
 _ENV_ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=")
+# the name prefix before the secret word is optional so a name that starts with it
+# (instructions=x, token=x) masks like one that only carries it (api_token=x)
 _NAME_VALUE = re.compile(
-    r"\b([A-Za-z_][\w.]*(?:key|token|secret|pass|auth|bearer|credential|prompt)[\w.]*)=[^\s'\"]*", re.I)
+    r"\b((?:[A-Za-z_][\w.]*)?(?:key|token|secret|pass|auth|bearer|credential|prompt|instruction)[\w.]*)=[^\s'\"]*", re.I)
 _URL_USERINFO = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]{1,15}://)[^/\s@'\"]+@")
 _CRED_SHAPE = re.compile(
     r"\b(?:sk|pk)-[0-9A-Za-z_-]{4,}"
