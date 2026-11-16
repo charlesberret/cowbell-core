@@ -459,6 +459,7 @@ def _open_regular_write(path: Path):
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise OSError("not a regular file")
+        os.fchmod(fd, 0o600)  # a file left by an older run keeps its old mode otherwise
         return os.fdopen(fd, "wb")
     except BaseException:
         os.close(fd)

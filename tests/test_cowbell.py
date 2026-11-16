@@ -5206,6 +5206,13 @@ class StrangerCatalogs(unittest.TestCase):
         hm.write_history_cache({"k": {"utterance": "u", "session_id": "s"}})
         self.assertEqual(hm.history_cache()["k"]["session_id"], "s")
 
+    def test_a_loose_old_history_cache_is_tightened(self):
+        cache = self.state / "history-cache.json"
+        cache.write_text("{}")
+        os.chmod(cache, 0o644)
+        hm.write_history_cache({"k": {"utterance": "u"}})
+        self.assertEqual(cache.stat().st_mode & 0o777, 0o600)
+
     def test_truncated_roster_is_a_clean_refusal_not_a_traceback(self):
         (self.state / "roster.json").write_text('{"schema": 1, "harnesses": [')
         with self.assertRaises(SystemExit) as cm:
