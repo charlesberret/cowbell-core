@@ -623,6 +623,8 @@ class Paths(unittest.TestCase):
                     "HERDR_PLUGIN_ROOT": str(self.seed_root)}
         self.saved = {k: os.environ.get(k) for k in self.env}
         os.environ.update(self.env)
+        hm._TIGHTEN_WARNED.clear()
+        self.addCleanup(hm._TIGHTEN_WARNED.clear)
 
     def tearDown(self):
         for k, v in self.saved.items():
@@ -714,6 +716,7 @@ class Paths(unittest.TestCase):
             self.assertEqual(hm.state_dir(), self.state)
             self.assertEqual(hm.load_roster(), [])          # the command path still works
         self.assertIn(f"cowbell: could not tighten {self.state} to 0700:", err.getvalue())
+        self.assertEqual(1, err.getvalue().count("could not tighten"))  # once per process, not per frame
 
     def test_seed_names_droid_and_devin(self):
         import tomllib
