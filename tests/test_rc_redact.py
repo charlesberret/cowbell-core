@@ -142,6 +142,9 @@ class TestRcRedactDifferential(unittest.TestCase):
         "_token=NOSHAPE36",
         "_secret_=NOSHAPE37",
         "multi token=NOSHAPE38 slogan=NOSHAPE39 author=NOSHAPE40",
+        "ſecret=NOSHAPE41",        # re.I codepoints the old [A-Za-z_] matched
+        "Ktoken=NOSHAPE42",
+        "9.İtoken=NOSHAPE43",
     ]
 
     def test_new_masking_matches_old_regex_on_corpus(self):

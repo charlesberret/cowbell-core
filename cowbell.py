@@ -202,7 +202,7 @@ _ENV_ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=")
 # retry its whole backtrack at every "a", O(n^2) on argv a launcher must not hang on.
 _NAME_RUN = re.compile(r"[\w.]+")
 _KEYWORD = re.compile(r"key|token|secret|pass|auth|bearer|credential|prompt|instruction", re.I)
-_NAME_START_CHAR = re.compile(r"[A-Za-z_]")
+_NAME_START_CHAR = re.compile(r"[A-Za-z_]", re.I)  # re.I matches the same 4 exotic codepoints the old pattern did
 _URL_USERINFO = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]{1,15}://)[^/\s@'\"]+@")
 _CRED_SHAPE = re.compile(
     r"\b(?:sk|pk)-[0-9A-Za-z_-]{4,}"
