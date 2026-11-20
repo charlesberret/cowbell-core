@@ -206,6 +206,11 @@ cowbell font [install]       is the icon font here; install fetches the pinned f
 
 `bin/cowbell` picks a python ≥ 3.11, for tomllib, and follows symlinks. macOS `/usr/bin/python3` is 3.9 and must not run this. Stdlib only. (verified: bin/cowbell:1-19; pyproject.toml:14)
 
+## Testing
+
+Acceptance scenarios, the output to expect, and a pass/fail sheet are in
+[`docs/uat/`](docs/uat/README.md).
+
 ## Development
 
 ```bash
