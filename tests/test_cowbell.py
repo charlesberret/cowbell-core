@@ -1,3 +1,4 @@
+import ast
 import contextlib
 import hashlib
 import io
@@ -5,6 +6,8 @@ import json
 import os
 import re
 import shutil
+import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -103,6 +106,13 @@ def tearDownModule():
         os.environ["COWBELL_DEBUG"] = _SAVED_DEBUG
     if _SENTINEL_DIR:
         _SENTINEL_DIR.cleanup()
+
+
+def _disarm_herdr_breaker():
+    """_HERDR_DOWN_UNTIL is a module global: a timeout tripped in one test must
+    never skip a later test's herdr calls. Classes that drive the real hm.herdr
+    run this in setUp and register it again as a cleanup."""
+    hm._HERDR_DOWN_UNTIL = 0.0
 
 
 class Scope(unittest.TestCase):
@@ -613,6 +623,8 @@ class Paths(unittest.TestCase):
                     "HERDR_PLUGIN_ROOT": str(self.seed_root)}
         self.saved = {k: os.environ.get(k) for k in self.env}
         os.environ.update(self.env)
+        hm._TIGHTEN_WARNED.clear()
+        self.addCleanup(hm._TIGHTEN_WARNED.clear)
 
     def tearDown(self):
         for k, v in self.saved.items():
@@ -675,8 +687,13 @@ class Paths(unittest.TestCase):
 
     def test_missing_seed_and_legacy_means_no_catalog(self):
         (self.seed_root / "harnesses.toml").unlink()
-        with self.assertRaises(SystemExit):
-            hm.load_catalog()
+        saved = sys.prefix
+        sys.prefix = str(Path(self.tmp.name) / "no-such-prefix")
+        try:
+            with self.assertRaises(SystemExit):
+                hm.load_catalog()
+        finally:
+            sys.prefix = saved
 
     def test_xdg_homes_when_no_override(self):
         for k in ("COWBELL_CONFIG_DIR", "COWBELL_STATE_DIR"):
@@ -688,6 +705,18 @@ class Paths(unittest.TestCase):
             self.assertEqual(hm.state_dir(), base / "xs" / "cowbell")
         finally:
             os.environ.pop("XDG_CONFIG_HOME"); os.environ.pop("XDG_STATE_HOME")
+
+    def test_env_dir_the_user_cannot_chmod_warns_instead_of_dying(self):
+        # COWBELL_STATE_DIR naming a dir the user cannot chmod must warn, not traceback.
+        self.state.mkdir(parents=True)
+        os.chmod(self.state, 0o755)
+        err = io.StringIO()
+        with mock.patch("cowbell.os.chmod", side_effect=PermissionError(13, "Permission denied")), \
+             contextlib.redirect_stderr(err):
+            self.assertEqual(hm.state_dir(), self.state)
+            self.assertEqual(hm.load_roster(), [])          # the command path still works
+        self.assertIn(f"cowbell: could not tighten {self.state} to 0700:", err.getvalue())
+        self.assertEqual(1, err.getvalue().count("could not tighten"))  # once per process, not per frame
 
     def test_seed_names_droid_and_devin(self):
         import tomllib
@@ -1897,6 +1926,8 @@ class DebugLog(unittest.TestCase):
         self.log = Path(self.tmp.name) / "debug.log"
         hm.trace.reset()
         self.addCleanup(hm.trace.reset)
+        _disarm_herdr_breaker()  # test_herdr_call_is_timed drives the real adapter
+        self.addCleanup(_disarm_herdr_breaker)
 
     def test_off_writes_nothing(self):
         env = {k: v for k, v in os.environ.items() if k != "COWBELL_DEBUG"}
@@ -1922,6 +1953,187 @@ class DebugLog(unittest.TestCase):
                 hm.trace.event("herdr", argv="pane list")
         self.assertTrue((self.log.parent / "debug.log.1").is_file())
         self.assertIn("pane list", self.log.read_text())
+
+    def test_log_is_born_private_not_chmodded_after(self):
+        old = os.umask(0)  # the widest umask: only the open mode can make it 0600
+        self.addCleanup(os.umask, old)
+        with mock.patch.dict(os.environ, {"COWBELL_DEBUG": "1", "COWBELL_DEBUG_LOG": str(self.log)}):
+            with mock.patch("cowbell.os.chmod", side_effect=AssertionError("chmod after open")):
+                hm.trace.event("frame", ms=1)
+        self.assertEqual(self.log.stat().st_mode & 0o777, 0o600)
+
+    def test_a_loose_old_log_is_tightened(self):
+        self.log.write_text("old\n")
+        os.chmod(self.log, 0o644)
+        with mock.patch.dict(os.environ, {"COWBELL_DEBUG": "1", "COWBELL_DEBUG_LOG": str(self.log)}):
+            hm.trace.event("frame", ms=1)
+        self.assertEqual(self.log.stat().st_mode & 0o777, 0o600)
+
+    def test_a_fifo_at_the_log_path_does_not_hang_the_launch(self):
+        os.mkfifo(self.log)
+        with mock.patch.dict(os.environ, {"COWBELL_DEBUG": "1", "COWBELL_DEBUG_LOG": str(self.log)}):
+            hm.trace.event("frame", ms=1)  # ENXIO: tracing goes dead, nothing blocks
+        self.assertTrue(hm.trace._dead)
+
+    def test_argv_secrets_never_reach_the_log(self):
+        key, tok, env, prompt = "sk-canaryAAAA1111", "ghp_canaryBBBB2222", "canaryenvCCCC3333", "canaryprompt DDDD4444"
+        argv = ["/opt/bin/probeagent", "--model", "m1", "--api-key", key, f"--auth-token={tok}",
+                "--append-system-prompt", prompt, f"PROBE_TOKEN={env}", "--", "--api-key", "afterdd5555"]
+        with mock.patch.dict(os.environ, {"COWBELL_DEBUG": "1", "COWBELL_DEBUG_LOG": str(self.log)}):
+            hm.trace.event("exec", cmd=hm.shell_join(hm.redact_argv(argv)))
+            hm.trace.event("herdr", argv=" ".join(hm.redact_argv(["pane", "run", "--token", tok])))
+            hm.trace.event("check", detail=hm.redact_text(f"ok token={key} via https://u:{env}@host/p Bearer {tok}"))
+        text = self.log.read_text()
+        for canary in (key, tok, env, "canaryprompt", "DDDD4444", "afterdd5555"):
+            self.assertNotIn(canary, text)
+        for kept in ("probeagent", "--model", "m1", "--api-key", "--auth-token", "--append-system-prompt",
+                     "PROBE_TOKEN=", "--", "https://", "@host/p", "pane run"):
+            self.assertIn(kept, text)
+        self.assertNotIn("/opt/bin", text)  # basename only
+
+    def test_redact_argv_shape(self):
+        self.assertEqual(hm.redact_argv(["/x/y/agent", "--model", "m", "--password", "p", "-k", "v", "--", "a", "b"]),
+                         ["agent", "--model", "m", "--password", hm.REDACT, "-k", "v", "--", hm.REDACT, hm.REDACT])
+        self.assertEqual(hm.redact_argv(["env", "A_SECRET=1", "true"]), ["env", f"A_SECRET={hm.REDACT}", "true"])
+        self.assertEqual(hm.redact_argv(["agent", "--api-key=zz"]), ["agent", f"--api-key={hm.REDACT}"])
+        self.assertEqual(hm.redact_argv(["agent", "--x", "sk-abcd1234"]), ["agent", "--x", hm.REDACT])
+
+    def test_a_boolean_flag_does_not_eat_the_double_dash(self):
+        # "bypass" holds "pass": it is no secret flag, and `--` after it still ends the options
+        self.assertEqual(
+            hm.redact_argv(["agent", "--dangerously-bypass-approvals-and-sandbox", "--", "plainwordAAAA1"]),
+            ["agent", "--dangerously-bypass-approvals-and-sandbox", "--", hm.REDACT])
+        self.assertEqual(hm.redact_argv(["agent", "--api-key", "--", "plainwordBBBB2"]),
+                         ["agent", "--api-key", "--", hm.REDACT])
+        self.assertEqual(hm.redact_argv(["agent", "--apikey", "zz", "--accessToken=zz", "--system-prompt", "zz"]),
+                         ["agent", "--apikey", hm.REDACT, f"--accessToken={hm.REDACT}", "--system-prompt", hm.REDACT])
+        # free text: a non-secret flag consumes nothing, so the secret flag after it is still masked
+        self.assertEqual(hm.redact_text("run --dangerously-bypass-x --token plainwordCCCC3 now"),
+                         f"run --dangerously-bypass-x --token {hm.REDACT} now")
+        self.assertNotIn("tailDDDD4", hm.redact_text("go --prompt 'It'\"'\"'s a tailDDDD4' done"))
+
+    def test_plural_and_longer_secret_flag_names_still_mask(self):
+        # _SECRET_PART matches whole parts only; plurals and longer forms must not slip through
+        for flag in ("--api-keys", "--tokens", "--secrets", "--passwords", "--passcode", "--authentication"):
+            self.assertEqual(hm.redact_argv(["agent", flag, "plainwordIIII9"]),
+                             ["agent", flag, hm.REDACT], flag)
+        self.assertEqual(hm.redact_argv(["agent", "--dangerously-bypass-approvals-and-sandbox", "plainwordJJJJ8"]),
+                         ["agent", "--dangerously-bypass-approvals-and-sandbox", "plainwordJJJJ8"])
+
+    def test_an_instructions_flag_masks_its_value(self):
+        # a flag that carries a prompt by another name is still a prompt (R3-a)
+        self.assertEqual(hm.redact_argv(["agent", "--instructions", "never-share-KKKK1"]),
+                         ["agent", "--instructions", hm.REDACT])
+
+    def test_redact_launch_masks_the_passthrough_words(self):
+        extra = ["plainwordEEEE5", "--model", "It's tailFFFF6"]
+        cmd = ["/opt/bin/agent", "--effort", "high", *extra, "--name", "seat"]
+        self.assertEqual(hm.redact_launch(cmd, extra),
+                         ["agent", "--effort", "high", hm.REDACT, hm.REDACT, hm.REDACT, "--name", "seat"])
+        self.assertEqual(hm.redact_launch(cmd, []), hm.redact_argv(cmd))
+
+    def _traced(self):
+        return mock.patch.dict(os.environ, {"COWBELL_DEBUG": "1", "COWBELL_DEBUG_LOG": str(self.log)})
+
+    def test_passthrough_words_never_reach_the_exec_spawn_or_raise_events(self):
+        # none of these words has a credential shape or a sensitive name
+        extra = ["plainwordGGGG7", "--model", "It's tailHHHH8 here"]
+        grok = hm.harness_by_id(CAT, "grok")
+        canaries = ("plainwordGGGG7", "tailHHHH8", "It's")
+        with self._traced(), contextlib.redirect_stdout(io.StringIO()):
+            with mock.patch.object(hm, "_here_exe", return_value="/bin/true"), \
+                 mock.patch.object(hm, "_record_here"), \
+                 mock.patch("cowbell.subprocess.Popen", return_value=mock.Mock(pid=4242)):
+                hm.spawn_here(CAT, grok, "t", ROOT, hm.Ctx(cwd=ROOT), extra=extra)
+            with mock.patch.object(hm, "_here_exe", return_value="/bin/true"), \
+                 mock.patch.object(hm, "_record_here"), \
+                 mock.patch.object(hm.os, "chdir"), \
+                 mock.patch.object(hm.os, "getcwd", return_value=hm._expected_cwd(grok, hm.launch_root(CAT, ROOT, grok))), \
+                 mock.patch.object(hm.os, "execv"):
+                hm.exec_here(CAT, grok, "t", ROOT, hm.Ctx(cwd=ROOT), extra=extra)
+        text = self.log.read_text()
+        self.assertIn(" spawn ", text)
+        self.assertIn(" exec ", text)
+        for canary in canaries:
+            self.assertNotIn(canary, text)
+
+    def test_pane_run_trace_hides_words_with_no_credential_shape(self):
+        extra = ["plainwordIIII9", "--model", "It's tailJJJJ0 here"]
+        grok = hm.harness_by_id(CAT, "grok")
+        ok = mock.Mock(returncode=0, stdout="", stderr="")
+        pane = {"pane_id": "w1C:p1", "tab_id": "w1C:t1", "workspace_id": "w1C"}
+        with self._traced(), mock.patch("cowbell.subprocess.run", return_value=ok) as run:
+            with mock.patch.object(hm, "wait_shell"), mock.patch.object(hm, "save_roster"), \
+                 mock.patch.object(hm, "load_roster", return_value=[]), \
+                 mock.patch.object(hm, "report_identity"), mock.patch.object(hm, "mark_harness"):
+                hm.raise_harness(CAT, grok, "t", ROOT, hm.Ctx(cwd=ROOT), extra=extra, reuse_pane=pane)
+        ran = [c.args[0] for c in run.call_args_list if c.args[0][1:3] == ["pane", "run"]]
+        self.assertEqual(len(ran), 1)
+        self.assertIn("plainwordIIII9", ran[0][-1])  # the pane itself still gets the real line
+        text = self.log.read_text()
+        self.assertIn("pane run", text)
+        self.assertIn(" raise ", text)
+        for canary in ("plainwordIIII9", "tailJJJJ0", "It's"):
+            self.assertNotIn(canary, text)
+
+    def test_the_sheet_command_is_not_redacted(self):
+        # redaction is for the trace only: shell_join of the real argv still carries every word
+        argv = ["agent", "--api-key", "sk-real1234"]
+        self.assertIn("sk-real1234", hm.shell_join(argv))
+
+    def test_accept_file_is_born_private_even_over_a_loose_tmp(self):
+        old = os.umask(0)
+        self.addCleanup(os.umask, old)
+        with mock.patch.dict(os.environ, {"COWBELL_STATE_DIR": self.tmp.name}):
+            stale = hm.accept_path().with_suffix(".tmp")
+            stale.write_text("{}")
+            os.chmod(stale, 0o644)
+            row = {"id": "x", "check": ["sh", "-c", "echo PASS x"]}
+            with mock.patch("cowbell.os.chmod", side_effect=AssertionError("chmod after open")):
+                hm.run_check(row)
+            self.assertEqual(hm.accept_path().stat().st_mode & 0o777, 0o600)
+
+    def test_roster_is_born_private(self):
+        old = os.umask(0)
+        self.addCleanup(os.umask, old)
+        with mock.patch.dict(os.environ, {"COWBELL_STATE_DIR": self.tmp.name}):
+            hm.save_roster([{"id": "x", "name": "seat", "cwd": "/w"}])
+            self.assertEqual(hm.roster_path().stat().st_mode & 0o777, 0o600)
+            self.assertEqual(Path(self.tmp.name).stat().st_mode & 0o777, 0o700)
+
+    def test_a_directory_at_the_accept_tmp_is_a_clean_refusal(self):
+        with mock.patch.dict(os.environ, {"COWBELL_STATE_DIR": self.tmp.name}):
+            hm.accept_path().with_suffix(".tmp").mkdir()
+            with self.assertRaises(SystemExit) as cm:
+                hm.run_check({"id": "x", "check": ["sh", "-c", "echo PASS x"]})
+        self.assertIn("accept.tmp", str(cm.exception))
+
+    def test_a_tmp_planted_after_the_unlink_is_never_followed(self):
+        victim = Path(self.tmp.name) / "victim"
+        victim.write_text("keep")
+        with mock.patch.dict(os.environ, {"COWBELL_STATE_DIR": self.tmp.name}):
+            hm.accept_path().with_suffix(".tmp").symlink_to(victim)
+            with mock.patch.object(Path, "unlink"):  # the plant survives the unlink: O_EXCL|O_NOFOLLOW refuses it
+                with self.assertRaises(SystemExit):
+                    hm.run_check({"id": "x", "check": ["sh", "-c", "echo PASS x"]})
+        self.assertEqual(victim.read_text(), "keep")
+
+    def test_a_symlink_at_the_log_path_is_not_followed_or_chmodded(self):
+        victim = Path(self.tmp.name) / "victim.log"
+        victim.write_text("keep\n")
+        os.chmod(victim, 0o644)
+        self.log.symlink_to(victim)
+        with self._traced():
+            hm.trace.event("frame", ms=1)
+        self.assertTrue(hm.trace._dead)
+        self.assertEqual(victim.read_text(), "keep\n")
+        self.assertEqual(victim.stat().st_mode & 0o777, 0o644)
+
+    def test_a_non_regular_log_is_refused_before_any_chmod(self):
+        with mock.patch.dict(os.environ, {"COWBELL_DEBUG": "1", "COWBELL_DEBUG_LOG": os.devnull}):
+            with mock.patch.object(hm.os, "fchmod", side_effect=AssertionError("fchmod on a device")):
+                hm.trace.event("frame", ms=1)  # opens fine, fstat says character device: refused
+        self.assertTrue(hm.trace._dead)
 
     def test_herdr_call_is_timed(self):
         ok = mock.Mock(returncode=0, stdout='{"result": {"snapshot": {}}}', stderr="")
@@ -2766,6 +2978,8 @@ class ExtensionPoints(unittest.TestCase):
 
     def setUp(self):
         self._ext = dict(hm.EXT)
+        _disarm_herdr_breaker()  # a timed-out hm.herdr call below trips the breaker
+        self.addCleanup(_disarm_herdr_breaker)
 
     def tearDown(self):
         hm.EXT.clear(); hm.EXT.update(self._ext)
@@ -2856,6 +3070,8 @@ class SessionHistory(unittest.TestCase):
         (gdir / "chat_history.jsonl").write_text(
             json.dumps({"type": "system", "content": "you are grok"}) + "\n" +
             json.dumps({"type": "user", "content": [{"type": "text", "text": "<user_query>ship it</user_query>"}]}) + "\n")
+        _disarm_herdr_breaker()  # the timeout test below drives the real adapter
+        self.addCleanup(_disarm_herdr_breaker)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -2880,6 +3096,26 @@ class SessionHistory(unittest.TestCase):
 
     def test_malformed_file_does_not_break_discovery(self):
         self.assertIn("broken", {r["session_id"] for r in self.rows()})
+
+    def test_fifo_session_file_is_a_quiet_miss_not_a_hang(self):
+        os.mkfifo(self.claude_dir / "fifo.jsonl")
+        hit = hm._claude_hit(self.claude_dir / "fifo.jsonl")
+        self.assertEqual(hit["session_id"], "fifo")
+        self.assertEqual(hit["utterance"], "")
+        got = {(r["harness"], r["session_id"]) for r in self.rows()}
+        self.assertIn(("claude", "fifo"), got)            # an empty row, not a blocked scan
+
+    def test_claude_hit_decodes_bad_utf8_in_a_valid_line(self):
+        f = self.claude_dir / "sess-c.jsonl"
+        f.write_bytes(b'{"type": "user", "timestamp": "2026-09-03T10:00:00Z",'
+                      b'"message": {"role": "user", "content": "caf\xff fix"}}\n')
+        self.assertIn("caf", hm._claude_hit(f)["utterance"])
+
+    def test_grok_hit_decodes_bad_utf8_in_a_valid_line(self):
+        gdir = hm.grok_store(self.root, self.home) / "02b"
+        gdir.mkdir(parents=True)
+        (gdir / "chat_history.jsonl").write_bytes(b'{"type": "user", "content": "caf\xff work"}\n')
+        self.assertIn("caf", hm._grok_hit(gdir)["utterance"])
 
     def test_missing_store_is_quiet(self):
         self.assertEqual(hm.discover_sessions(fx("nowhere"), self.cat, home=self.home), [])
@@ -2956,6 +3192,35 @@ class SessionHistory(unittest.TestCase):
         with mock.patch("pwd.getpwnam", side_effect=KeyError), self.assertRaises(SystemExit) as error:
             hm.launch_history(cat, self.root)
         self.assertIn("unix_user 'missing' is not on this host", str(error.exception))
+
+    def test_a_timed_out_as_user_lookup_yields_no_history_not_a_traceback(self):
+        cat = {**self.cat, "places": {"lobby": {"cwd": self.root, "unix_user": "guest"}}}
+        guest_home = os.path.join(self.root, "guest-home")
+        pw = mock.Mock(pw_dir=guest_home, pw_uid=4242, pw_name="guest")
+        with mock.patch("pwd.getpwnam", return_value=pw), \
+             mock.patch.object(hm, "_home_ok", return_value=True), \
+             mock.patch.object(hm.os, "geteuid", return_value=501), \
+             mock.patch.object(hm.shutil, "which", return_value="/usr/local/bin/agent-run"), \
+             mock.patch.object(hm.subprocess, "run",
+                               side_effect=hm.subprocess.TimeoutExpired(cmd="x", timeout=15)):
+            self.assertEqual(hm.launch_history(cat, self.root), [])
+
+    def test_a_row_with_no_id_is_skipped_not_a_keyerror(self):
+        # the load tolerates an id-less row (catalog --check names it); launch paths skip it
+        cat = {"harness": [{"kind": "true", "check": ["true"]}]}
+        self.assertEqual(hm.cmd_accept(cat, []), 0)
+        ctx = mock.Mock()
+        with mock.patch.object(hm, "choose", return_value=None):
+            self.assertFalse(hm.wizard(ctx, cat, self.root))
+
+    def test_a_herdr_timeout_marks_the_server_down(self):
+        down = hm.subprocess.TimeoutExpired(cmd="herdr", timeout=5)
+        with mock.patch.object(hm.subprocess, "run", side_effect=down) as run:
+            with self.assertRaises(hm.HerdrError):
+                hm.herdr("pane", "list")
+            with self.assertRaises(hm.HerdrError):
+                hm.herdr("workspace", "list")
+        self.assertEqual(run.call_count, 1)  # the second call never left the process
 
     def test_internal_history_command_emits_metadata_rows(self):
         import subprocess
@@ -3763,11 +4028,12 @@ class TierWalls(unittest.TestCase):
             stack.enter_context(mock.patch.object(hm, "pick_workspace", return_value="w1"))
             stack.enter_context(mock.patch.object(hm, "create_tab",
                                                   return_value={"pane_id": "w1:p9", "tab_id": "w1:t9"}))
-            stack.enter_context(mock.patch.object(hm, "herdr", side_effect=lambda *a, **k: ran.append(a) or {}))
+            stack.enter_context(mock.patch.object(hm, "herdr", side_effect=lambda *a, **k: ran.append((a, k)) or {}))
             with self.assertRaises(SystemExit):
                 hm.raise_harness(cat, h, "seat", bad, hm.Ctx(cwd=self.house))
-        self.assertIn(("tab", "close", "w1:t9"), ran)
-        self.assertFalse(any(a[:2] == ("pane", "run") for a in ran))
+        close = next(k for a, k in ran if a == ("tab", "close", "w1:t9"))
+        self.assertGreater(close.get("timeout", 0), hm.HERDR_TIMEOUT)  # survives the tick-only breaker
+        self.assertFalse(any(a[:2] == ("pane", "run") for a, k in ran))
 
     def test_history_strips_control_characters_from_titles(self):
         rows, _ = self._history([{"session_id": "s1", "cwd": self.house, "title": "\x1b]52;c;ZXZpbA==\x07Fix tests",
@@ -4766,6 +5032,292 @@ class CatalogCheck(unittest.TestCase):
         self.assertIn("place lab: allow_harness names unknown harness 'ghost'", out)
 
 
+class StrangerCatalogs(unittest.TestCase):
+    """`catalog --check` on the first files a stranger hands it: a named problem or a clean
+    ok, never a traceback. `catalog` reads the same loader, so its verdicts match."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.cfg, self.state = base / "cfg" / "cowbell", base / "state" / "cowbell"
+        self.cfg.mkdir(parents=True)
+        self.state.mkdir(parents=True)
+        self.seed_root = base / "seed"
+        self.seed_root.mkdir()
+        (self.seed_root / "harnesses.toml").write_text('schema = 1\n[[harness]]\nid = "claude"\n')
+        (self.state / "seed-fill.json").write_text(
+            json.dumps({"schema": 1, "ids": list(hm.SEED_FILL_IDS)}))
+        self.catalog = self.cfg / "harnesses.toml"
+        self.env = {
+            "COWBELL_CONFIG_DIR": str(self.cfg),
+            "COWBELL_STATE_DIR": str(self.state),
+            "HERDR_PLUGIN_ROOT": str(self.seed_root),
+            "HERDR_PLUGIN_CONFIG_DIR": str(base / "old-cfg"),
+            "HERDR_PLUGIN_STATE_DIR": str(base / "old-state"),
+            "COWBELL_MODE": "here",
+        }
+        self.saved = {k: os.environ.get(k) for k in self.env}
+        os.environ.update(self.env)
+        self._installed = mock.patch.object(hm, "installed", return_value=False)
+        self._installed.start()
+        self._trust = mock.patch.object(hm, "trust_available", return_value=False)
+        self._trust.start()
+        self._server_up = hm.server_up
+        hm.server_up = lambda: False
+
+    def tearDown(self):
+        hm.server_up = self._server_up
+        self._trust.stop()
+        self._installed.stop()
+        for k, v in self.saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        self.tmp.cleanup()
+
+    def check(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = hm.main(list(argv))
+        return rc, out.getvalue() + err.getvalue()
+
+    def check3(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = hm.main(list(argv))
+        return rc, out.getvalue(), err.getvalue()
+
+    def refused(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit) as cm:
+                hm.main(list(argv))
+        return str(cm.exception.code), out.getvalue() + err.getvalue()
+
+    def test_empty_comments_and_defaults_only_are_clean(self):
+        for text in ("harness = []\n", '[defaults]\nlane = "yellow"\n'):
+            with self.subTest(text=text):
+                self.catalog.write_text(text)
+                rc, out = self.check("catalog", "--check")
+                self.assertEqual(rc, 0, out)
+                self.assertIn("ok: 0 harnesses", out)
+
+    def test_an_empty_catalog_file_is_a_clean_refusal(self):
+        # a file that parses to no keys at all (truncated, comments-only) is not a
+        # catalog — cowbell never writes one — so every read refuses it by name.
+        for text in ("", "# just a note\n", "   \n"):
+            with self.subTest(text=text):
+                self.catalog.write_text(text)
+                msg, out = self.refused("catalog", "--check")
+                self.assertTrue(msg.startswith("cowbell: "), msg)
+                self.assertIn("empty catalog", msg)
+                self.assertNotIn("Traceback", out)
+                same, _ = self.refused("catalog")
+                self.assertEqual(msg, same)
+
+    def test_malformed_toml_is_one_clean_refusal(self):
+        self.catalog.write_text('[[harness]]\nid = \n')
+        msg, out = self.refused("catalog", "--check")
+        self.assertTrue(msg.startswith("cowbell: "), msg)
+        self.assertIn("harnesses.toml", msg)
+        self.assertNotIn("Traceback", out)
+        same, _ = self.refused("catalog")   # the same loader refuses plain `catalog`
+        self.assertEqual(msg, same)
+
+    def test_row_without_id_is_named_not_a_keyerror(self):
+        self.catalog.write_text('schema = 1\n[[harness]]\nkind = "claude"\ntitle = "No id"\n')
+        rc, out = self.check("catalog", "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("harness row with no id", out)
+        rc2, out2 = self.check("catalog")   # plain `catalog` shows the row, it does not crash
+        self.assertEqual(rc2, 0, out2)
+        self.assertIn("(missing id)", out2)
+
+    def test_duplicate_id_fails_by_name(self):
+        self.catalog.write_text('[[harness]]\nid = "a"\n[[harness]]\nid = "a"\n')
+        rc, out = self.check("catalog", "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("harness a: duplicate id", out)
+
+    def test_check_and_requires_must_be_argvs(self):
+        self.catalog.write_text(
+            '[[harness]]\nid = "a"\ncheck = "echo ok"\n'
+            '[[harness]]\nid = "b"\nrequires = "git"\n'
+            '[[harness]]\nid = "c"\nrequires = ["git", "status"]\n')
+        rc, out = self.check("catalog", "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("a: check must be one argv", out)
+        self.assertIn("b: requires must be a list of argvs", out)
+        self.assertIn("c: requires must be a list of argvs", out)
+
+    def test_wrong_shapes_are_named_not_tracebacks(self):
+        cases = [
+            ('[harness]\nid = "x"\n', "must be a list"),       # [harness] typo'd for [[harness]]
+            ('harness = "x"\n', "must be a list"),
+            ('harness = 5\n', "must be a list"),
+            ('harness = ["x"]\n', "must be a table"),        # a non-table row
+            ('defaults = "x"\n', "must be a table"),
+            ('places = "x"\n', "must be a table"),
+            ('[places.p]\nallow_harness = "x"\n', "must be a list"),
+            ('[places.p]\nallow_harness = [{x = 1}]\n', "must be a list of strings"),
+            ('[places.p]\ndefault_harness = ["a"]\n', "must be a string"),
+            ('schema = "x"\n', "schema must be an int"),
+            ('schema = true\n', "schema must be an int"),
+            ('[[harness]]\nid = 5\n', "must be a string"),
+            ('[[harness]]\ncommand = 5\n', "must be a string"),
+        ]
+        for text, want in cases:
+            with self.subTest(text=text):
+                self.catalog.write_text(text)
+                msg, out = self.refused("catalog", "--check")
+                self.assertTrue(msg.startswith("cowbell: "), (text, msg))
+                self.assertIn("harnesses.toml", msg)
+                self.assertIn(want, msg)
+                self.assertNotIn("Traceback", out)
+
+    def test_unknown_kind_is_just_uninstalled(self):
+        self.catalog.write_text('[[harness]]\nid = "x"\nkind = "definitely-not-a-real-cli-xyz"\n')
+        rc, out = self.check("catalog", "--check")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("ok: 1 harnesses", out)
+        self.assertIn("skip x: not installed", out)
+
+    def test_unknown_top_level_keys_are_tolerated(self):
+        self.catalog.write_text('schema = 1\nbogus = 1\n[strange]\nx = 1\n[[harness]]\nid = "a"\n')
+        rc, out = self.check("catalog", "--check")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("ok: 1 harnesses", out)
+
+    def test_unreadable_catalog_is_a_clean_refusal(self):
+        self.catalog.write_text('schema = 1\n')
+        real_open = os.open
+
+        def deny(path, *a, **k):
+            if str(path) == str(self.catalog):
+                raise PermissionError(13, "Permission denied")
+            return real_open(path, *a, **k)
+
+        with mock.patch.object(os, "open", side_effect=deny):
+            msg, out = self.refused("catalog", "--check")
+        self.assertEqual(msg, f"cowbell: {self.catalog}: Permission denied")
+        self.assertNotIn("Traceback", out)
+
+    def test_fifo_catalog_is_a_clean_refusal_not_a_hang(self):
+        os.mkfifo(self.catalog)
+        msg, out = self.refused("catalog", "--check")
+        self.assertTrue(msg.startswith("cowbell: "), msg)
+        self.assertIn("not a regular file", msg)
+        self.assertNotIn("Traceback", out)
+        same, _ = self.refused("catalog")   # plain `catalog` refuses the same way
+        self.assertEqual(msg, same)
+
+    def test_fifo_roster_is_a_clean_refusal_not_a_hang(self):
+        os.mkfifo(self.state / "roster.json")
+        with self.assertRaises(SystemExit) as cm:
+            hm.load_roster()
+        self.assertIn("not a regular file", str(cm.exception.code))
+        # and the tolerant schema sniff does not hang either
+        self.assertEqual(hm.roster_schema(self.state / "roster.json"), hm.SCHEMA)
+
+    def test_fifo_history_cache_is_a_clean_refusal_not_a_hang(self):
+        os.mkfifo(self.state / "history-cache.json")
+        hm.write_history_cache({"k": {"utterance": "x"}})         # returns, never blocks
+        self.assertFalse((self.state / "history-cache.json").is_file())
+        self.assertEqual(hm.history_cache(), {})                  # the reader refuses the same way
+
+    def test_history_cache_symlink_is_refused_not_followed(self):
+        # O_NOFOLLOW: a planted symlink at the cache path is refused, never written through (D4)
+        victim = Path(self.tmp.name) / "victim.txt"
+        victim.write_text("mine")
+        (self.state / "history-cache.json").symlink_to(victim)
+        hm.write_history_cache({"k": {"utterance": "x"}})
+        self.assertEqual(victim.read_text(), "mine")
+
+    def test_history_cache_round_trip_on_a_regular_file(self):
+        hm.write_history_cache({"k": {"utterance": "u", "session_id": "s"}})
+        self.assertEqual(hm.history_cache()["k"]["session_id"], "s")
+
+    def test_a_loose_old_history_cache_is_tightened(self):
+        cache = self.state / "history-cache.json"
+        cache.write_text("{}")
+        os.chmod(cache, 0o644)
+        hm.write_history_cache({"k": {"utterance": "u"}})
+        self.assertEqual(cache.stat().st_mode & 0o777, 0o600)
+
+    def test_truncated_roster_is_a_clean_refusal_not_a_traceback(self):
+        (self.state / "roster.json").write_text('{"schema": 1, "harnesses": [')
+        with self.assertRaises(SystemExit) as cm:
+            hm.load_roster()
+        self.assertIn("roster.json", str(cm.exception.code))
+
+    def test_bad_utf8_catalog_is_named_without_a_codec_dump(self):
+        self.catalog.write_bytes(b'schema = 1\nname = "\xff"\n')
+        msg, out = self.refused("catalog", "--check")
+        self.assertEqual(msg, f"cowbell: {self.catalog}: not valid UTF-8")
+        self.assertNotIn("Traceback", out)
+
+    def test_check_writable_names_a_non_int_schema_without_an_upgrade_nudge(self):
+        with self.assertRaises(hm.SchemaError) as cm:
+            hm.check_writable("two", "harnesses.toml")
+        self.assertEqual(str(cm.exception.code), "cowbell: harnesses.toml: schema must be an int")
+        with self.assertRaises(hm.SchemaError) as cm:            # a bool is not an int either
+            hm.check_writable(True, "harnesses.toml")
+        self.assertIn("schema must be an int", str(cm.exception.code))
+        with self.assertRaises(hm.SchemaError) as cm:            # a real int still gets the upgrade line
+            hm.check_writable(hm.SCHEMA + 1, "harnesses.toml")
+        self.assertIn("Upgrade cowbell", str(cm.exception.code))
+
+    def test_schema_far_newer_is_named_by_check(self):
+        self.catalog.write_text('schema = 99\n[[harness]]\nid = "a"\nkind = "zzz-none"\n')
+        rc, out, err = self.check3("catalog", "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL catalog is schema 99", out)
+        self.assertIn("checks up to schema 2", out)
+        self.assertEqual([l for l in err.splitlines() if l.startswith("cowbell:")],
+                         ["cowbell: check failed (1 problem)"])
+        rc2, _ = self.check("catalog")      # the newer file still reads for listing
+        self.assertEqual(rc2, 0)
+
+    def test_schema_one_rev_newer_reads_with_a_warn(self):
+        self.catalog.write_text('schema = 2\n[[harness]]\nid = "a"\nkind = "zzz-none"\n')
+        rc, out = self.check("catalog", "--check")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("warn catalog is schema 2; this cowbell writes schema 1"
+                      " (newer file: read, never rewritten)", out)
+        self.assertIn("ok: 1 harnesses", out)
+
+    def test_schema_not_positive_is_named_by_check(self):
+        self.catalog.write_text('schema = 0\n')
+        rc, out, err = self.check3("catalog", "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("schema 0 must be a positive int", out)
+        self.assertIn("cowbell: check failed (1 problem)", err)
+
+    def test_check_failed_summary_counts_every_problem(self):
+        self.catalog.write_text('[[harness]]\nid = "a"\negress = "sideways"\n'
+                                '[[harness]]\nid = "a"\nkind = "zzz-none"\n')
+        rc, out, err = self.check3("catalog", "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("duplicate id", out)
+        self.assertIn("unknown egress", out)
+        self.assertIn("cowbell: check failed (2 problems)", err)
+
+    def test_place_allow_and_default_refuse_non_string_members(self):
+        # before this, [places.*] allow_harness = [{x=1}] / a list default_harness
+        # crashed TypeError in scoped_catalog/set(allow) on the picker path
+        for text, want in (
+            ('[places.p]\nallow_harness = [{x = 1}]\n', "allow_harness must be a list of strings"),
+            ('[places.p]\ndefault_harness = ["a"]\n', "default_harness must be a string"),
+        ):
+            with self.subTest(text=text):
+                self.catalog.write_text(text)
+                msg, out = self.refused("catalog", "--check")
+                self.assertTrue(msg.startswith("cowbell: "), msg)
+                self.assertIn(want, msg)
+                self.assertNotIn("Traceback", out)
+
+
 class FlagProbe(unittest.TestCase):
     """a harness's declared args are probed in its help, never launched."""
 
@@ -4801,6 +5353,10 @@ class FlagProbe(unittest.TestCase):
 
 class SubprocessTimeouts(unittest.TestCase):
     """A hung herdr or trust checker ends in a bounded wait, never an uncaught exception."""
+
+    def setUp(self):
+        _disarm_herdr_breaker()  # a prior test's timeout must not skip this one's calls
+        self.addCleanup(_disarm_herdr_breaker)  # and this one's trip must not skip a later test's
 
     def _hang(self, argv, **kw):
         self.kw = kw
@@ -4893,13 +5449,11 @@ class RequiresCheck(unittest.TestCase):
         self.assertFalse(hm.accepted(row))
 
     def test_check_gets_a_timeout_and_expiry_fails_closed(self):
-        import subprocess
         proc = mock.Mock(returncode=0, stdout="PASS x\n", stderr="")
-        with mock.patch("cowbell.subprocess.run", return_value=proc) as run:
+        with mock.patch("cowbell.run_bounded", return_value=proc) as run:
             hm.run_check(self.row)
-        self.assertEqual(run.call_args.kwargs["timeout"], 5)
-        hung = subprocess.TimeoutExpired(self.row["check"], 5)
-        with mock.patch("cowbell.subprocess.run", side_effect=hung):
+        self.assertEqual(run.call_args.args[1], 5)
+        with mock.patch("cowbell.run_bounded", return_value=None):  # the bound was hit
             ok, last = hm.run_check(self.row)
         self.assertFalse(ok)
         self.assertIn("timed out", last)
@@ -5061,6 +5615,171 @@ class RequiresCheck(unittest.TestCase):
         stored["local-x"]["ts"] = time.time() - hm.ACCEPT_MAX_AGE - 1
         hm.accept_path().write_text(json.dumps(stored) + "\n")
         self.assertIn("unproven", visible())
+
+
+class BoundedSubprocess(unittest.TestCase):
+    """No subprocess cowbell runs for its own bookkeeping may hang the picker.
+    Every subprocess.run carries timeout=; the rest go through run_bounded, which
+    kills the child's whole group on a captured call and the child alone on an
+    attached one."""
+
+    SRC = Path(__file__).resolve().parent.parent / "cowbell.py"
+
+    def setUp(self):
+        os.environ["COWBELL_STATE_DIR"] = tempfile.mkdtemp()
+
+    def tearDown(self):
+        os.environ.pop("COWBELL_STATE_DIR", None)
+
+    def test_every_subprocess_run_carries_a_timeout(self):
+        bad = []
+        for node in ast.walk(ast.parse(self.SRC.read_text())):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            f = node.func
+            if (f.attr == "run" and isinstance(f.value, ast.Name) and f.value.id == "subprocess"
+                    and not any(k.arg == "timeout" for k in node.keywords)):
+                bad.append(f"line {node.lineno}")
+        self.assertEqual(bad, [])
+
+    def test_only_the_named_handoffs_spawn_outside_run(self):
+        # exec_here (os.execv) replaces this process; spawn_here (subprocess.Popen)
+        # detaches a session leader. run_bounded is the only other Popen site —
+        # it is the bound. Any new unbounded spawn point fails here.
+        src = self.SRC.read_text()
+        self.assertEqual(src.count("subprocess.Popen("), 2)   # run_bounded, spawn_here
+        self.assertEqual(src.count("os.execv("), 1)           # exec_here
+
+    def test_a_hung_check_returns_inside_the_bound(self):
+        row = {"id": "hang", "kind": "sh", "check": ["sh", "-c", "sleep 600 & wait"]}
+        t0 = time.monotonic()
+        with mock.patch.object(hm, "CHECK_TIMEOUT", 0.5):
+            ok, last = hm.run_check(row)
+        self.assertLess(time.monotonic() - t0, 10)
+        self.assertFalse(ok)
+        self.assertIn("timed out", last)
+
+    def test_a_grandchild_holding_the_pipe_is_killed_with_the_group(self):
+        # The child exits at once; a grandchild keeps the captured pipe open and
+        # would write a marker at +2s. Only a group kill keeps it unborn.
+        marker = Path(tempfile.mkdtemp()) / "born"
+        row = {"id": "hang", "kind": "sh",
+               "check": ["sh", "-c", f"(sleep 2; touch {marker}) & exit 0"]}
+        t0 = time.monotonic()
+        with mock.patch.object(hm, "CHECK_TIMEOUT", 0.5):
+            hm.run_check(row)
+        self.assertLess(time.monotonic() - t0, 10)
+        time.sleep(3)
+        self.assertFalse(marker.exists())
+
+    def test_a_missing_check_binary_is_a_clean_failure(self):
+        row = {"id": "gone", "kind": "sh", "check": ["/nonexistent/cowbell-no-such-bin"]}
+        ok, last = hm.run_check(row)
+        self.assertFalse(ok)
+        self.assertIn("No such file", last)
+
+    def test_a_str_check_is_refused_as_the_validator_refuses_it(self):
+        for bad in ("true", "no such binary", ["true", 1], []):
+            ok, last = hm.run_check({"id": "strck", "kind": "sh", "check": bad})
+            self.assertFalse(ok, bad)
+            self.assertEqual(last, "check must be one argv, a list of strings", bad)
+
+    def test_a_missing_requires_binary_refuses_cleanly(self):
+        row = {"id": "gone", "requires": [["/nonexistent/cowbell-no-such-bin"]]}
+        with self.assertRaises(SystemExit) as e:
+            hm.run_requires(row)
+        self.assertIn("No such file", str(e.exception))
+
+    def test_a_str_requires_is_refused_as_the_validator_refuses_it(self):
+        want = "cowbell: refused — x: requires must be a list of argvs (lists of strings)"
+        for bad in ("true", ["true"], [["true"], "true"], [["true", 1]], [[]], 3):
+            with self.assertRaises(SystemExit) as e:
+                hm.run_requires({"id": "x", "requires": bad})
+            self.assertEqual(str(e.exception), want, bad)
+
+    def test_requires_is_checked_whole_before_any_entry_runs(self):
+        with tempfile.TemporaryDirectory() as d:
+            mark = os.path.join(d, "ran")
+            with self.assertRaises(SystemExit):
+                hm.run_requires({"id": "x", "requires": [["touch", mark], "true"]})
+            self.assertFalse(os.path.exists(mark))
+        hm.run_requires({"id": "x", "requires": [["true"]]})
+        hm.run_requires({"id": "x", "requires": []})
+        hm.run_requires({"id": "x"})
+
+    def test_a_nul_byte_in_argv_is_a_clean_failure(self):
+        proc = hm.run_bounded(["true\0x"], 5)
+        self.assertEqual(proc.returncode, 127)
+        self.assertTrue(proc.stderr)
+        ok, _ = hm.run_check({"id": "nul", "kind": "sh", "check": ["true\0x"]})
+        self.assertFalse(ok)
+        with self.assertRaises(SystemExit):
+            hm.run_requires({"id": "nul", "requires": [["true\0x"]]})
+
+    def test_a_captured_child_reads_eof_on_stdin(self):
+        # Hand this process a stdin with data waiting: an inherited fd 0 would
+        # let the child steal it; DEVNULL reads EOF at once.
+        r, w = os.pipe()
+        os.write(w, b"keystrokes\n")
+        saved = os.dup(0)
+        os.dup2(r, 0)
+        try:
+            proc = hm.run_bounded(["sh", "-c", "if read x; then echo data; else echo eof; fi"], 5)
+        finally:
+            os.dup2(saved, 0)
+            for fd in (saved, r, w):
+                os.close(fd)
+        self.assertEqual(proc.stdout.strip(), "eof")
+
+    def test_an_interrupt_during_a_captured_run_leaves_no_orphan_group(self):
+        # Ctrl-C does not reach a session leader, so run_bounded must kill the
+        # group itself. The interrupt is injected at communicate(), once the
+        # grandchild has written its pid; no real signal is sent to this process.
+        pidfile = Path(tempfile.mkdtemp()) / "gpid"
+        real = subprocess.Popen.communicate
+
+        def interrupted(self_, *a, **kw):
+            for _ in range(100):
+                if pidfile.exists() and pidfile.read_text().endswith("\n"):
+                    break
+                time.sleep(0.05)
+            raise KeyboardInterrupt
+
+        gpid = None
+        try:
+            with mock.patch.object(subprocess.Popen, "communicate", interrupted):
+                with self.assertRaises(KeyboardInterrupt):
+                    hm.run_bounded(["sh", "-c", f"sleep 600 & echo $! > {pidfile}; wait"], 30)
+            gpid = int(pidfile.read_text())
+            for _ in range(100):  # init reaps the orphaned grandchild
+                try:
+                    os.kill(gpid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail(f"grandchild {gpid} survived the interrupt")
+        finally:
+            if gpid:
+                with contextlib.suppress(OSError):
+                    os.kill(gpid, signal.SIGKILL)
+        self.assertIs(subprocess.Popen.communicate, real)
+
+    def test_an_interrupt_during_an_attached_run_does_not_killpg(self):
+        with mock.patch.object(hm.os, "killpg") as killpg, \
+                mock.patch.object(subprocess.Popen, "wait", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                hm.run_bounded(["true"], 5, attached=True)
+        killpg.assert_not_called()
+
+    def test_a_hung_requires_times_out_without_the_tty(self):
+        row = {"id": "hang", "requires": [["sh", "-c", "sleep 600"]]}
+        t0 = time.monotonic()
+        with mock.patch.object(hm, "REQUIRES_TIMEOUT", 0.5):
+            with self.assertRaises(SystemExit) as e:
+                hm.run_requires(row)
+        self.assertLess(time.monotonic() - t0, 10)
+        self.assertIn("timed out", str(e.exception))
 
 
 if __name__ == "__main__":

@@ -175,6 +175,42 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Fix | Read the message, fix arguments or environment, and consult `cowbell catalog` / `cowbell sessions`. |
 | Source | `cowbell.py` |
 
+### catalog is schema {}; cowbell {} checks up to schema {} (upgrade cowbell)
+
+| | |
+|--|--|
+| Message | `catalog is schema {}; cowbell {} checks up to schema {} (upgrade cowbell)` |
+| Cause | The catalog's `schema` is more than one revision ahead of this cowbell, so `cowbell catalog --check` cannot vouch for it. |
+| Fix | Upgrade cowbell. Editing the file does not help. |
+| Source | `cowbell.py` |
+
+### catalog is schema {}; this cowbell writes schema {} (newer file: read, never rewritten)
+
+| | |
+|--|--|
+| Message | `catalog is schema {}; this cowbell writes schema {} (newer file: read, never rewritten)` |
+| Cause | The catalog is one schema revision newer than this cowbell. It is read, never rewritten; this is a warning, not a failure. |
+| Fix | Nothing to edit. Upgrade cowbell before you add or change a harness, since writes are refused until then. |
+| Source | `cowbell.py` |
+
+### catalog schema {} must be a positive int
+
+| | |
+|--|--|
+| Message | `catalog schema {} must be a positive int` |
+| Cause | The harness catalog fails `cowbell catalog --check` validation. |
+| Fix | Edit `harnesses.toml` to satisfy the constraint named in the message. |
+| Source | `cowbell.py` |
+
+### check failed ({} {})
+
+| | |
+|--|--|
+| Message | `cowbell: check failed ({} {})` |
+| Cause | `cowbell catalog --check` printed one or more `FAIL` lines on stdout. |
+| Fix | Read the `FAIL` lines above this one and fix each in `harnesses.toml`. |
+| Source | `cowbell.py` |
+
 ### checking {} (no pass in the last 7 days)
 
 | | |
@@ -191,6 +227,15 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Message | `cowbell: could not download {}: {}` |
 | Cause | `cowbell font install` could not fetch the pinned icon font. |
 | Fix | Check connectivity and retry `cowbell font install`; the URL and sha256 are pinned in source. |
+| Source | `cowbell.py` |
+
+### could not tighten {} to 0700: {}
+
+| | |
+|--|--|
+| Message | `cowbell: could not tighten {} to 0700: {}` |
+| Cause | The config or state dir exists with looser permissions and cowbell could not chmod it to owner-only (commonly a `COWBELL_CONFIG_DIR`/`COWBELL_STATE_DIR` naming a directory you do not own). Warning only; the command continues. |
+| Fix | Point the env var at a directory you own, or tighten it yourself with `chmod 700`. |
 | Source | `cowbell.py` |
 
 ### harness needs an id
@@ -441,8 +486,8 @@ CI enforces that every template extracted from source appears below (see `tests/
 | | |
 |--|--|
 | Message | `cowbell: refused — {} failed its check: {}` |
-| Cause | The harness row's `check` argv exited non-zero; the detail is the check's last output line. |
-| Fix | Fix what the check verifies, or adjust `check` in `harnesses.toml`; a pass is recorded for 7 days. |
+| Cause | The harness row's `check` argv exited non-zero; the detail is the check's last output line. A `check` that is not one argv (a bare string, an empty list, or a list holding non-strings) is refused here too, with the detail `check must be one argv, a list of strings`, the rule `cowbell catalog --check` reports. |
+| Fix | Fix what the check verifies, or adjust `check` in `harnesses.toml` (a list of strings, for example `["model-server", "accept"]`); a pass is recorded for 7 days. |
 | Source | `cowbell.py` |
 
 ### refused — {} names a wall but no unix_user of its own; the level tha...
@@ -463,6 +508,15 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Fix | Use a lower-privilege lane, a different directory, or adjust trust/policy for this tree. |
 | Source | `cowbell.py` |
 
+### refused — {}: requires must be a list of argvs (lists of strings)
+
+| | |
+|--|--|
+| Message | `cowbell: refused — {}: requires must be a list of argvs (lists of strings)` |
+| Cause | The harness's `requires` is not a list of argvs: a bare string (as the whole value or as an entry), an empty entry, or an entry holding non-strings. It is checked whole, so no entry runs. `cowbell catalog --check` reports the same rule as `harness {}: requires must be a list of argvs (lists of strings)`. |
+| Fix | Make `requires` a list of argvs, each a list of strings: `requires = [["model-server", "status"]]`. |
+| Source | `cowbell.py` |
+
 ### refused — {} requires {!r}, which exited {}
 
 | | |
@@ -470,6 +524,24 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Message | `cowbell: refused — {} requires {!r}, which exited {}` |
 | Cause | A `requires` argv on the harness exited non-zero, so the launch was refused before it began. |
 | Fix | Make the named command succeed, or remove it from `requires` in `harnesses.toml`. |
+| Source | `cowbell.py` |
+
+### refused — {} requires {!r}, which timed out after {}s
+
+| | |
+|--|--|
+| Message | `cowbell: refused — {} requires {!r}, which timed out after {}s` |
+| Cause | A `requires` argv on the harness did not finish inside its bound, so the launch was refused rather than hang the picker. |
+| Fix | Make the named command finish faster, or remove it from `requires` in `harnesses.toml`. |
+| Source | `cowbell.py` |
+
+### refused — {} requires {!r}: {}
+
+| | |
+|--|--|
+| Message | `cowbell: refused — {} requires {!r}: {}` |
+| Cause | A `requires` argv on the harness could not start at all; the trailing text is the OS error (usually a missing binary). |
+| Fix | Install the named command, or remove it from `requires` in `harnesses.toml`. |
 | Source | `cowbell.py` |
 
 ### refused — {} resolved to {} after the change of directory
@@ -733,6 +805,33 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Fix | Run `cowbell catalog`, install the agent CLI, or adjust harness/place settings. |
 | Source | `cowbell.py` |
 
+### {}: empty catalog
+
+| | |
+|--|--|
+| Message | `cowbell: {}: empty catalog` |
+| Cause | The catalog file parses to no keys at all — truncated to zero bytes, or left comments-only. |
+| Fix | Restore the rows from the seed `harnesses.toml` that ships with cowbell, or delete the file and cowbell copies the seed in on next run. |
+| Source | `cowbell.py` |
+
+### {}: {}
+
+| | |
+|--|--|
+| Message | `cowbell: {}: {}` |
+| Cause | A state or catalog file could not be opened or parsed; the first slot names the file, the second the OS or format error (for example `not a regular file` on a fifo or device, `Permission denied`, `not valid UTF-8`). |
+| Fix | Replace the named file with a regular file cowbell can read, or remove it and let cowbell recreate it. |
+| Source | `cowbell.py` |
+
+### {}: schema must be an int
+
+| | |
+|--|--|
+| Message | `cowbell: {}: schema must be an int` |
+| Cause | The named file's `schema` is not an integer (for example `schema = "two"` or `schema = true` in a catalog, or a string in `roster.json`/`pins.json`). |
+| Fix | Set `schema` to an integer — this cowbell writes `schema = 1` — or remove the file and let cowbell recreate it. |
+| Source | `cowbell.py` |
+
 ### enter <name>
 
 | | |
@@ -765,8 +864,8 @@ CI enforces that every template extracted from source appears below (see `tests/
 | | |
 |--|--|
 | Message | `harness {}: check must be one argv, a list of strings` |
-| Cause | The harness catalog fails `cowbell catalog --check` validation. |
-| Fix | Edit `harnesses.toml` to satisfy the constraint named in the message. |
+| Cause | The row's `check` is not a non-empty list of strings. A bare string is refused, not wrapped into one argv; at launch the same rule refuses the row (see `failed its check`). |
+| Fix | Write `check = ["model-server", "accept"]`, not `check = "model-server accept"`. |
 | Source | `cowbell.py` |
 
 ### harness {}: duplicate id
@@ -828,8 +927,8 @@ CI enforces that every template extracted from source appears below (see `tests/
 | | |
 |--|--|
 | Message | `harness {}: requires must be a list of argvs (lists of strings)` |
-| Cause | The harness catalog fails `cowbell catalog --check` validation. |
-| Fix | Edit `harnesses.toml` to satisfy the constraint named in the message. |
+| Cause | The row's `requires` is not a list of non-empty lists of strings. A bare string, as the whole value or as an entry, is refused, not wrapped into one argv; at launch the same rule refuses the row (see `requires must be a list of argvs`). |
+| Fix | Write `requires = [["model-server", "status"]]`, not `requires = "model-server status"` or `requires = ["model-server"]`. |
 | Source | `cowbell.py` |
 
 ### harness {}: unknown egress {!r}
@@ -893,6 +992,15 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Message | `herdr {} timed out after {}s` |
 | Cause | The herdr CLI failed, timed out, or returned unexpected output. |
 | Fix | Confirm herdr is installed, the socket is reachable, and server commands succeed outside cowbell. |
+| Source | `cowbell.py` |
+
+### herdr {} skipped: marked down after a timeout
+
+| | |
+|--|--|
+| Message | `herdr {} skipped: marked down after a timeout` |
+| Cause | A herdr call timed out, so cowbell skips further calls for about 30 seconds instead of waiting on each one. |
+| Fix | Restart or unstick the herdr server; cowbell resumes calling it after the short window. |
 | Source | `cowbell.py` |
 
 ### herdr {}: non-JSON output: {}

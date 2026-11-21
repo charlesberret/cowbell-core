@@ -45,6 +45,8 @@ import json
 import os
 import re
 import shutil
+import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -60,7 +62,7 @@ try:
 except ImportError:  # pragma: no cover
     tomllib = None
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 PLUGIN_ID = "herdr-cowbell"  # only to find config and state that 0.1–0.3 kept in herdr's plugin dirs
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 LANES = ("green", "yellow", "red")
@@ -157,12 +159,191 @@ class Trace:
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.is_file() and path.stat().st_size > DEBUG_LOG_MAX:
             os.replace(path, path.with_name(path.name + ".1"))
-        self._fh = open(path, "a", encoding="utf-8")
-        os.chmod(path, 0o600)
+        # 0600 at os.open creation, never a umask-mode window; O_NONBLOCK so a fifo
+        # planted at the log path fails ENXIO instead of hanging the launch.
+        # O_NOFOLLOW: a symlink planted at the log path is refused, never opened and fchmod'd.
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK | os.O_NOFOLLOW, 0o600)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):  # as _open_regular: a fifo, socket or device is no log
+                raise OSError("not a regular file")
+            os.fchmod(fd, 0o600)  # a log left by an older run keeps its old mode otherwise
+            self._fh = os.fdopen(fd, "a", encoding="utf-8")
+        except BaseException:
+            os.close(fd)
+            raise
         return self._fh
 
 
 trace = Trace()
+
+
+# --- redaction ----------------------------------------------------------------
+# The trace is opt-in debugging, not a credential store: argv and free text go
+# through these first. Flag names and the executable basename survive so the
+# event still reads as a command line; every value that could carry a secret is
+# masked. The launch sheet's printed command is the product and is never redacted.
+REDACT = "***"
+# A flag is sensitive when one of its dash/underscore/dot-separated parts names a secret:
+# --api-key, --auth-token, --system-prompt, --apikey. A substring test also caught
+# --dangerously-bypass-approvals-and-sandbox ("bypass" holds "pass"), a boolean flag.
+_SECRET_PART = re.compile(
+    r"(?:key|token|secret|prompt|instruction)s?$|^(?:pass(?:word|wd|phrase|code)?s?|o?auth(?:entication|orization)?|bearer|credentials?)$", re.I)
+_FLAG_NAME_ONLY = re.compile(r"(?<![\w-])-{1,2}[A-Za-z][\w.-]*")
+# one shell word: quoted runs and escapes join, so 'It'"'"'s a prompt' is masked whole
+_FLAG_SEP_VALUE = re.compile(r"(=|[ \t]+)((?:'[^']*'|\"(?:[^\"\\]|\\.)*\"|\\.|[^\s'\"\\])+)")
+_ENV_ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=")
+# the name prefix before the secret word is optional so a name that starts with it
+# (instructions=x, token=x) masks like one that only carries it (api_token=x);
+# keyword-anywhere-in-name (unlike _SECRET_PART's whole-part rule) also catches
+# safe-side names like author=/keyboard= — intentional, pinned in test_rc_redact.
+#
+# _mask_name_values (below) replaced a single backtracking regex here: a dotted run
+# with no keyword (e.g. 'a.'*50000) made the old \b(prefix?)(keyword)[\w.]*= pattern
+# retry its whole backtrack at every "a", O(n^2) on argv a launcher must not hang on.
+_NAME_RUN = re.compile(r"[\w.]+")
+_KEYWORD = re.compile(r"key|token|secret|pass|auth|bearer|credential|prompt|instruction", re.I)
+_NAME_START_CHAR = re.compile(r"[A-Za-z_]", re.I)  # re.I matches the same 4 exotic codepoints the old pattern did
+_URL_USERINFO = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]{1,15}://)[^/\s@'\"]+@")
+_CRED_SHAPE = re.compile(
+    r"\b(?:sk|pk)-[0-9A-Za-z_-]{4,}"
+    r"|\bgh[pousr]_[0-9A-Za-z]{4,}"
+    r"|\bgithub_pat_[0-9A-Za-z_]{6,}"
+    r"|\bBearer[ \t]+[^\s'\"]+", re.I)
+
+
+def _sensitive_flag(flag: str) -> bool:
+    """True when a flag name (dashes included) names a secret by one of its whole parts."""
+    return any(_SECRET_PART.search(part) for part in re.split(r"[-_.]+", flag.lstrip("-")) if part)
+
+
+def _mask_flag_values(s: str) -> str:
+    """Mask the value after each sensitive flag in free text. A flag consumes only its own
+    value, so `--bypass --token abc` still masks abc; a bare -- is never a value."""
+    out: list[str] = []
+    pos = 0
+    for m in _FLAG_NAME_ONLY.finditer(s):
+        if m.start() < pos or not _sensitive_flag(m[0]):
+            continue
+        vm = _FLAG_SEP_VALUE.match(s, m.end())
+        if not vm or vm[2] == "--":
+            continue
+        out += [s[pos:m.end()], vm[1], REDACT]
+        pos = vm.end()
+    out.append(s[pos:])
+    return "".join(out)
+
+
+def _name_value_mask_start(name: str):
+    """Smallest index in `name` (a run of [\\w.] chars) a NAME=value match could start
+    at: index 0 if it's a letter/underscore, else the first letter/underscore right
+    after a '.' — the only two places \\b plus the old pattern's required first
+    character could land. A smaller start always sees a superset of a larger one's
+    text, so if this earliest start's tail has no keyword, no later start would
+    either; one check replaces the old per-position backtrack."""
+    if name and _NAME_START_CHAR.match(name[0]):
+        return 0
+    for i in range(1, len(name)):
+        if name[i - 1] == "." and _NAME_START_CHAR.match(name[i]):
+            return i
+    return None
+
+
+def _mask_name_values(s: str) -> str:
+    """Mask the value of every NAME=value word whose name carries a secret keyword
+    (api_token=x, model.instructions=x, author=x — see _NAME_START_CHAR comment above).
+    Linear: runs of [\\w.] chars are found once (plain `+`, no backtracking), and a
+    masked run's value — which can itself contain '=' — is skipped whole, exactly as
+    the old regex's greedy value consumed it, so nothing inside is rematched."""
+    runs = list(_NAME_RUN.finditer(s))
+    out: list[str] = []
+    pos = 0
+    i = 0
+    n = len(runs)
+    while i < n:
+        m = runs[i]
+        a, b = m.start(), m.end()
+        if b < len(s) and s[b] == "=":
+            start = _name_value_mask_start(s[a:b])
+            if start is not None and _KEYWORD.search(s[a + start:b]):
+                c = b + 1
+                while c < len(s) and not s[c].isspace() and s[c] not in "'\"":
+                    c += 1
+                out.append(s[pos:b + 1])
+                out.append(REDACT)
+                pos = c
+                i += 1
+                while i < n and runs[i].start() < pos:
+                    i += 1
+                continue
+        i += 1
+    out.append(s[pos:])
+    return "".join(out)
+
+
+def redact_text(s: str) -> str:
+    """Mask credential shapes inside free text (check output, herdr errors): userinfo,
+    sensitive flag values, NAME=value, and token-shaped words. Context around them survives.
+    Other words are not masked: free text has no structure to tell a secret from prose
+    (docs/debug-trace.md)."""
+    s = _URL_USERINFO.sub(r"\g<1>***@", s)
+    s = _mask_flag_values(s)
+    s = _mask_name_values(s)
+    return _CRED_SHAPE.sub(REDACT, s)
+
+
+def redact_argv(argv) -> list[str]:
+    """argv safe to log: basename of the executable and flag names stay; everything
+    past a literal --, the value of a sensitive flag, and every NAME=value word is
+    masked, and credential shapes inside a word are masked too."""
+    out: list[str] = []
+    after_dd = False   # a literal "--" masks the rest of the line
+    flag_val = False   # previous word was a sensitive flag taking its value next
+    for i, word in enumerate(argv):
+        w = str(word)
+        if i == 0:
+            out.append(redact_text(os.path.basename(w) or w))
+            continue
+        if after_dd:
+            out.append(REDACT)
+            continue
+        if flag_val and w != "--":  # a bare -- ends the options; it is never a flag's value
+            out.append(REDACT)
+            flag_val = False
+            continue
+        flag_val = False
+        if w == "--":
+            after_dd = True
+        elif _ENV_ASSIGN.match(w):
+            w = f"{_ENV_ASSIGN.match(w).group(1)}={REDACT}"
+        elif w.startswith("-"):
+            flag, eq, val = w.partition("=")
+            if _sensitive_flag(flag):
+                if eq:
+                    w = f"{flag}={REDACT}"
+                else:
+                    flag_val = True
+            elif eq:
+                w = f"{flag}={redact_text(val)}"
+        else:
+            w = redact_text(w)
+        out.append(w)
+    return out
+
+
+def redact_launch(cmd, passthrough) -> list[str]:
+    """redact_argv for a launch command, plus the words typed after `--` in `cowbell new`.
+    split_passthrough drops that `--`, so they ride in the command as ordinary words:
+    find the run by position (its last occurrence) and mask every word of it."""
+    out = redact_argv(cmd)
+    words = [str(w) for w in cmd]
+    tail = [str(w) for w in passthrough or []]
+    n = len(tail)
+    if n:
+        for i in range(len(words) - n, 0, -1):
+            if words[i:i + n] == tail:
+                out[i:i + n] = [REDACT] * n
+                break
+    return out
 
 
 class HerdrError(RuntimeError):
@@ -253,12 +434,27 @@ class SchemaError(SystemExit):
     pass
 
 
+_TIGHTEN_WARNED: set = set()
+
+
+def _warn_tighten_once(p: Path, e: OSError) -> None:
+    """Warn once per path per process — config_dir/state_dir run every picker frame."""
+    if str(p) not in _TIGHTEN_WARNED:
+        _TIGHTEN_WARNED.add(str(p))
+        print(f"cowbell: could not tighten {p} to 0700: {e}", file=sys.stderr)
+
+
 def config_dir() -> Path:
     """~/.config/cowbell (COWBELL_CONFIG_DIR, then XDG_CONFIG_HOME). Shared by the plugin and the CLI."""
     base = os.environ.get("COWBELL_CONFIG_DIR") or \
         Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser() / "cowbell"
     p = Path(base).expanduser()
-    p.mkdir(parents=True, exist_ok=True)
+    p.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if p.is_dir() and not p.is_symlink() and p.stat().st_mode & 0o777 != 0o700:
+        try:
+            os.chmod(p, 0o700)  # the catalog can carry secrets in check/requires argv
+        except OSError as e:
+            _warn_tighten_once(p, e)
     return p
 
 
@@ -267,7 +463,12 @@ def state_dir() -> Path:
     base = os.environ.get("COWBELL_STATE_DIR") or \
         Path(os.environ.get("XDG_STATE_HOME") or "~/.local/state").expanduser() / "cowbell"
     p = Path(base).expanduser()
-    p.mkdir(parents=True, exist_ok=True)
+    p.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if p.is_dir() and not p.is_symlink() and p.stat().st_mode & 0o777 != 0o700:
+        try:
+            os.chmod(p, 0o700)  # roster, accept.json and debug.log live here — owner only
+        except OSError as e:
+            _warn_tighten_once(p, e)
     return p
 
 
@@ -301,9 +502,46 @@ def migrate_file(new: Path, old: Path) -> bool:
 
 def check_writable(schema, what: str) -> None:
     """A file written by a newer cowbell is read, never overwritten."""
-    if isinstance(schema, int) and schema > SCHEMA:
+    if isinstance(schema, bool) or not isinstance(schema, int):
+        raise SchemaError(f"cowbell: {what}: schema must be an int")
+    if schema > SCHEMA:
         raise SchemaError(f"cowbell: {what} is schema {schema}; cowbell {__version__} writes schema {SCHEMA}. "
                           f"Upgrade cowbell before changing it.")
+
+
+def _open_regular(path: Path):
+    """open() that cannot hang on a fifo: O_NONBLOCK returns at once without a writer,
+    then fstat refuses anything that is not a regular file (fifo, socket, device)."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("not a regular file")
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _open_regular_write(path: Path):
+    """Write side of _open_regular: O_NONBLOCK answers ENXIO at once on a fifo
+    with no reader instead of blocking, then fstat refuses non-regular files."""
+    fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("not a regular file")
+        os.fchmod(fd, 0o600)  # a file left by an older run keeps its old mode otherwise
+        return os.fdopen(fd, "wb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _file_error(e: Exception) -> str:
+    """One clause for a file cowbell refuses: the OS reason without the path
+    repeated, a plain verdict on undecodable bytes, or the parser's detail."""
+    if isinstance(e, UnicodeDecodeError):
+        return "not valid UTF-8"
+    return getattr(e, "strerror", None) or str(e)
 
 
 def roster_path() -> Path:
@@ -337,7 +575,8 @@ def _seed_fill_considered() -> set[str]:
     if not p.is_file():
         return set()
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        with _open_regular(p) as fh:
+            data = json.loads(fh.read())
     except (OSError, ValueError):
         return set()
     ids = data.get("ids") if isinstance(data, dict) else None
@@ -361,14 +600,15 @@ def fill_missing_seed_kinds(path: Path) -> None:
     if not seed or not seed.is_file():
         return
     try:
-        with open(seed, "rb") as fh:
+        with _open_regular(seed) as fh:
             seed_cat = tomllib.load(fh)
-        with open(path, "rb") as fh:
+        with _open_regular(path) as fh:
             house = tomllib.load(fh)
     except (OSError, tomllib.TOMLDecodeError):
         return
     by_id = {h["id"]: h for h in (seed_cat.get("harness") or []) if h.get("id")}
-    have = {h.get("id") for h in (house.get("harness") or [])}
+    rows = house.get("harness")
+    have = {h.get("id") for h in rows if isinstance(h, dict)} if isinstance(rows, list) else set()
     now = set(considered)
     for hid in pending:
         rec = by_id.get(hid)
@@ -378,13 +618,16 @@ def fill_missing_seed_kinds(path: Path) -> None:
             now.add(hid)
             continue
         if installed(rec):
-            harness_insert({
-                "id": rec["id"],
-                "kind": rec.get("kind") or rec["id"],
-                "title": rec.get("title") or rec["id"],
-                "models": rec.get("models") or [],
-                "resume": rec.get("resume") or [],
-            }, path=path)
+            try:  # a newer-schema catalog is read, never overwritten — skip the fill
+                harness_insert({
+                    "id": rec["id"],
+                    "kind": rec.get("kind") or rec["id"],
+                    "title": rec.get("title") or rec["id"],
+                    "models": rec.get("models") or [],
+                    "resume": rec.get("resume") or [],
+                }, path=path)
+            except SchemaError:
+                pass
         now.add(hid)
     if now != considered:
         _seed_fill_record(now)
@@ -488,8 +731,10 @@ def unbind_sitting(row: dict) -> None:
 
 
 def git_root(path: str) -> str | None:
-    proc = subprocess.run(["git", "-C", path, "rev-parse", "--show-toplevel"], capture_output=True, text=True)
-    return proc.stdout.strip() or None if proc.returncode == 0 else None
+    proc = run_bounded(["git", "-C", path, "rev-parse", "--show-toplevel"], GIT_TIMEOUT)
+    if proc is None or proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
 
 
 def seat_file(root: str, home: str | None = None) -> Path | None:
@@ -752,23 +997,65 @@ def prompt_flag(h: dict) -> str | None:
     return h.get("system_prompt_flag") or h.get("seat_flag")
 
 
+def catalog_shape_error(cat: dict) -> str | None:
+    """The first structure no command can read, in one clause, or None. These refuse the load;
+    `catalog --check` reports the row-level problems that come after."""
+    for key in ("defaults", "lanes", "places"):
+        if key in cat and not isinstance(cat[key], dict):
+            return f"{key} must be a table"
+    if "schema" in cat and (isinstance(cat["schema"], bool) or not isinstance(cat["schema"], int)):
+        return "schema must be an int"
+    for name, lane in (cat.get("lanes") or {}).items():
+        if not isinstance(lane, dict):
+            return f"lanes.{name} must be a table"
+    for name, pl in (cat.get("places") or {}).items():
+        if not isinstance(pl, dict):
+            return f"places.{name} must be a table"
+        if "allow_harness" in pl and not isinstance(pl["allow_harness"], list):
+            return f"places.{name}.allow_harness must be a list"
+        if isinstance(pl.get("allow_harness"), list) and not all(
+                isinstance(x, str) for x in pl["allow_harness"]):
+            return f"places.{name}.allow_harness must be a list of strings"
+        if "default_harness" in pl and not isinstance(pl["default_harness"], str):
+            return f"places.{name}.default_harness must be a string"
+    if "harness" in cat and not isinstance(cat["harness"], list):
+        return "harness must be a list of [[harness]] tables"
+    for h in cat.get("harness") or []:
+        if not isinstance(h, dict):
+            return "each [[harness]] row must be a table"
+        for key in ("id", "kind", "command", "trust_tool"):
+            if key in h and not isinstance(h[key], str):
+                return f"harness {key} must be a string"
+    return None
+
+
 def load_catalog() -> dict:
     if tomllib is None:
         raise SystemExit("cowbell: python >= 3.11 required (tomllib)")
     p = catalog_path()
     if not p.exists():
         raise SystemExit(f"cowbell: no catalog at {p}")
-    with open(p, "rb") as fh:
-        cat = tomllib.load(fh)
+    try:
+        with _open_regular(p) as fh:
+            cat = tomllib.load(fh)
+    except (OSError, ValueError) as e:  # ValueError covers TOMLDecodeError and bad UTF-8
+        detail = f"{p}: {_file_error(e)}"
+        raise SystemExit(f"cowbell: {detail}")
+    if not cat:
+        raise SystemExit(f"cowbell: {p}: empty catalog")
+    shape = catalog_shape_error(cat)
+    if shape:
+        detail = f"{p}: {shape}"
+        raise SystemExit(f"cowbell: {detail}")
     cat.setdefault("schema", 1)  # a catalog without the key predates it and is schema 1
     cat.setdefault("defaults", {})
     cat.setdefault("lanes", {})
     apply_ext(cat)
     for h in cat.get("harness", []):
-        h.setdefault("kind", h["id"])
+        h.setdefault("kind", h.get("id") or "")
         h.setdefault("family", h["kind"])
         h.setdefault("egress", "vendor")
-        h.setdefault("trust_tool", h["id"])
+        h.setdefault("trust_tool", h.get("id") or h["kind"])
         h.setdefault("models", [])
         h.setdefault("resume", [])
         if "command" in h:
@@ -817,16 +1104,16 @@ def scoped_catalog(cat: dict, place: dict | None) -> dict:
     allow = place.get("allow_harness")
     if allow is not None:
         allowed = set(allow)
-        out["harness"] = [h for h in cat.get("harness", []) if h["id"] in allowed]
+        out["harness"] = [h for h in cat.get("harness", []) if h.get("id") in allowed]
         # keep allow_harness order so a default guest door can sit first
         order = {hid: i for i, hid in enumerate(allow)}
-        out["harness"].sort(key=lambda h: order.get(h["id"], len(order)))
+        out["harness"].sort(key=lambda h: order.get(h.get("id"), len(order)))
     return out
 
 
 def harness_by_id(cat: dict, hid: str) -> dict | None:
     for h in cat.get("harness", []):
-        if h["id"] == hid:
+        if h.get("id") == hid:
             return h
     return None
 
@@ -852,7 +1139,8 @@ def accept_path() -> Path:
 
 def load_accepts() -> dict:
     try:
-        data = json.loads(accept_path().read_text())
+        with _open_regular(accept_path()) as fh:
+            data = json.loads(fh.read())
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
@@ -877,31 +1165,129 @@ def unavailable_reason(h: dict) -> str:
     return ""
 
 
+# Subprocess bounds: nothing cowbell runs for its own bookkeeping may hang the
+# picker. Every call goes through run_bounded or passes an explicit timeout.
+REQUIRES_TIMEOUT = 60   # a requires argv may start a model server; give it a minute
+CHECK_TIMEOUT = 5       # one argv, run at launch when its last pass is stale
+GIT_TIMEOUT = 5
+PS_TIMEOUT = 5
+LSOF_TIMEOUT = 5
+KILL_GRACE = 2.0        # a killed child gets this long to be reaped, then the wait is abandoned
+
+
+def run_bounded(argv: list[str], timeout: float, attached: bool = False) -> subprocess.CompletedProcess | None:
+    """Run argv without ever waiting past `timeout` (+ KILL_GRACE to reap).
+
+    Captured (default): the child leads its own session, reads EOF on stdin and
+    has no controlling tty, so it cannot prompt; a timeout, or an interrupt such
+    as Ctrl-C (which a session leader does not receive), SIGKILLs the whole
+    process group, so a grandchild holding the captured pipe open cannot stretch
+    the wait or outlive us. Worst case: timeout + KILL_GRACE. Attached: the child
+    inherits this terminal — a sudo prompt on the tty still works — and a timeout
+    kills the child alone, never the group; worst case: timeout + 2 x KILL_GRACE
+    (terminate, then kill, each given KILL_GRACE to reap).
+    Returns the CompletedProcess, or None when the bound was hit. A binary that
+    will not start is rc 127 with the OS error on stderr, like a shell.
+    """
+    try:
+        proc = subprocess.Popen(
+            argv, start_new_session=not attached,
+            **({} if attached else {"stdin": subprocess.DEVNULL, "stdout": subprocess.PIPE,
+                                    "stderr": subprocess.PIPE, "text": True}),
+        )
+    except (OSError, ValueError) as e:  # ValueError: a NUL byte in argv
+        return subprocess.CompletedProcess(argv, 127, None if attached else "", str(e))
+    try:
+        if attached:
+            proc.wait(timeout=timeout)
+            return subprocess.CompletedProcess(argv, proc.returncode)
+        out, err = proc.communicate(timeout=timeout)
+        return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+    except subprocess.TimeoutExpired:
+        if attached:
+            proc.terminate()  # the tty is shared: never killpg on this path
+            try:
+                proc.wait(timeout=KILL_GRACE)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        else:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)  # the child led its own session: pgid == pid
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=KILL_GRACE)
+        except subprocess.TimeoutExpired:
+            pass  # a child that will not reap (D-state) is abandoned, never waited on
+        if not attached:
+            for fh in (proc.stdout, proc.stderr):
+                try:
+                    fh.close()
+                except OSError:
+                    pass
+        return None
+    except BaseException:
+        if not attached:  # Ctrl-C: start_new_session took the child out of our SIGINT group
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait(timeout=KILL_GRACE)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        raise
+
+
+def is_argv(v) -> bool:
+    """One argv: a non-empty list of strings. A bare str is not one; it is never wrapped or split."""
+    return isinstance(v, list) and bool(v) and all(isinstance(x, str) for x in v)
+
+
 def run_check(h: dict) -> tuple[bool, str]:
     """Run the row's check; record and return (passed, last line of its output)."""
-    try:
-        proc = subprocess.run(list(h["check"]), capture_output=True, text=True, timeout=5)
-        out = proc.stdout.strip().splitlines() or proc.stderr.strip().splitlines()  # the verdict is on stdout
+    ck = h.get("check")
+    argv = ck if is_argv(ck) else []
+    if not argv:  # a bare str is refused, as `catalog --check` refuses it: never wrapped, never split
+        ok, last = False, "check must be one argv, a list of strings"
+    elif (proc := run_bounded(argv, CHECK_TIMEOUT)) is None:
+        ok, last = False, f"check timed out after {CHECK_TIMEOUT:g}s"
+    else:
+        out = (proc.stdout or "").strip().splitlines() or (proc.stderr or "").strip().splitlines()  # verdict on stdout
         last = out[-1] if out else f"exit {proc.returncode}"
         ok = proc.returncode == 0
-    except subprocess.TimeoutExpired:
-        ok, last = False, "check timed out after 5s"
+
     accepts = load_accepts()
     accepts[h["id"]] = {"ok": ok, "ts": time.time(), "detail": last}
     tmp = accept_path().with_suffix(".tmp")
-    tmp.write_text(json.dumps(accepts, indent=2) + "\n")
-    os.chmod(tmp, 0o600)
-    tmp.replace(accept_path())
+    try:
+        tmp.unlink(missing_ok=True)  # a stale tmp keeps its old mode: start fresh so the
+        # 0600 in os.open is the creation mode, with no umask-mode window between opens.
+        # O_EXCL|O_NOFOLLOW: a tmp planted after the unlink is refused, never followed or reused.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(accepts, indent=2) + "\n")
+        tmp.replace(accept_path())
+    except OSError as e:
+        raise SystemExit(f"cowbell: {tmp}: {_file_error(e)}")
     return ok, last
 
 
 def run_requires(h: dict) -> None:
     """Run each `requires` argv in order, output to this terminal; the first failure refuses the launch."""
-    for argv in h.get("requires") or []:
-        trace.event("requires", harness=h.get("id", ""), cmd=shell_join(list(argv)))
-        rc = subprocess.run(list(argv)).returncode
-        if rc:
-            raise SystemExit(f"cowbell: refused — {h['id']} requires {shell_join(list(argv))!r}, which exited {rc}")
+    reqs = h.get("requires")
+    if reqs is None:
+        return
+    if not (isinstance(reqs, list) and all(is_argv(a) for a in reqs)):  # checked whole, before any entry runs
+        raise SystemExit(f"cowbell: refused — {h['id']}: requires must be a list of argvs (lists of strings)")
+    for argv in reqs:
+        trace.event("requires", harness=h.get("id", ""), cmd=shell_join(redact_argv(argv)))
+        proc = run_bounded(argv, REQUIRES_TIMEOUT, attached=True)
+        if proc is None:
+            raise SystemExit(
+                f"cowbell: refused — {h['id']} requires {shell_join(argv)!r}, "
+                f"which timed out after {REQUIRES_TIMEOUT:g}s")
+        if proc.returncode:
+            if proc.stderr:  # a binary that would not start carries the OS error here (rc 127)
+                raise SystemExit(f"cowbell: refused — {h['id']} requires {shell_join(argv)!r}: {proc.stderr.strip()}")
+            raise SystemExit(f"cowbell: refused — {h['id']} requires {shell_join(argv)!r}, which exited {proc.returncode}")
 
 
 def ensure_accepted(h: dict) -> None:
@@ -910,7 +1296,7 @@ def ensure_accepted(h: dict) -> None:
         return
     print(f"cowbell: checking {h['id']} (no pass in the last 7 days)", file=sys.stderr)
     ok, last = run_check(h)
-    trace.event("check", harness=h.get("id", ""), ok=ok, detail=last)
+    trace.event("check", harness=h.get("id", ""), ok=ok, detail=redact_text(last))
     if not ok:
         raise SystemExit(f"cowbell: refused — {h['id']} failed its check: {last}")
     print(f"cowbell: {last}", file=sys.stderr)
@@ -921,7 +1307,8 @@ def ensure_accepted(h: dict) -> None:
 def roster_schema(p: Path | None = None) -> int:
     p = p or roster_path()
     try:
-        data = json.loads(p.read_text())
+        with _open_regular(p) as fh:
+            data = json.loads(fh.read())
     except (OSError, ValueError):
         return SCHEMA
     return data.get("schema", 1) if isinstance(data, dict) else 1
@@ -931,7 +1318,11 @@ def load_roster() -> list[dict]:
     p = roster_path()
     if not p.exists():
         return []
-    data = json.loads(p.read_text())
+    try:
+        with _open_regular(p) as fh:
+            data = json.loads(fh.read())
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"cowbell: {p}: {_file_error(e)}")
     return data.get("harnesses", []) if isinstance(data, dict) else data
 
 
@@ -940,7 +1331,11 @@ def save_roster(rows: list[dict]) -> None:
     check_writable(roster_schema(p), str(p))
     rows.sort(key=lambda r: (r.get("cwd", ""), r.get("name", "")))
     tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps({"schema": SCHEMA, "harnesses": rows}, indent=2) + "\n")
+    # the roster holds raw argv, prompts included — born 0600 like accept.json and the debug log
+    tmp.unlink(missing_ok=True)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"schema": SCHEMA, "harnesses": rows}, indent=2) + "\n")
     os.replace(tmp, p)
 
 
@@ -955,7 +1350,8 @@ def _norm_root(root: str) -> str:
 def pins_schema(p: Path | None = None) -> int:
     p = p or pins_path()
     try:
-        data = json.loads(p.read_text())
+        with _open_regular(p) as fh:
+            data = json.loads(fh.read())
     except (OSError, ValueError):
         return SCHEMA
     return data.get("schema", SCHEMA) if isinstance(data, dict) else SCHEMA
@@ -967,7 +1363,8 @@ def load_pins() -> dict:
     if not p.exists():
         return {"schema": SCHEMA, "dirs": {}}
     try:
-        data = json.loads(p.read_text())
+        with _open_regular(p) as fh:
+            data = json.loads(fh.read())
     except (OSError, ValueError):
         return {"schema": SCHEMA, "dirs": {}}
     if not isinstance(data, dict):
@@ -1187,7 +1584,8 @@ DISPATCHED = re.compile(r"^(you are|act as|role:)\b", re.I)
 
 def history_cache() -> dict:
     try:
-        return json.loads((state_dir() / "history-cache.json").read_text())
+        with _open_regular(state_dir() / "history-cache.json") as fh:
+            return json.loads(fh.read().decode("utf-8", "replace"))
     except Exception:
         return {}
 
@@ -1196,7 +1594,8 @@ def write_history_cache(cache: dict) -> None:
     try:
         p = state_dir() / "history-cache.json"
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(cache)[:4_000_000])
+        with _open_regular_write(p) as fh:
+            fh.write(json.dumps(cache)[:4_000_000].encode("utf-8"))
     except OSError:
         pass  # a cache that cannot be written is a slow cowbell, not a broken one
 
@@ -1263,12 +1662,12 @@ def _claude_hit(f: Path) -> dict:
     """customTitle and the first real user line from one Claude session file."""
     hit = {"session_id": f.stem, "harness_title": "", "utterance": "", "started": "", "last": ""}
     try:
-        with open(f, "r", errors="replace") as fh:
-            for i, line in enumerate(fh):
+        with _open_regular(f) as fh:
+            for i, raw in enumerate(fh):
                 if i > 400:
                     break
                 try:
-                    d = json.loads(line)
+                    d = json.loads(raw.decode("utf-8", "replace"))
                 except ValueError:
                     continue
                 ts = d.get("timestamp") or ""
@@ -1336,7 +1735,8 @@ def grok_store(root: str, home: Path | None = None) -> Path:
 
 def _read_json(path: Path) -> dict:
     try:
-        data = json.loads(path.read_text(errors="replace"))
+        with _open_regular(path) as fh:
+            data = json.loads(fh.read().decode("utf-8", "replace"))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -1364,12 +1764,12 @@ def _grok_hit(d: Path) -> dict:
     if kept:
         return hit
     try:
-        with open(chat, "r", errors="replace") as fh:
+        with _open_regular(chat) as fh:
             for i, line in enumerate(fh):
                 if i > 40:
                     break
                 try:
-                    r = json.loads(line)
+                    r = json.loads(line.decode("utf-8", "replace"))
                 except ValueError:
                     continue
                 if r.get("type") == "user":
@@ -1462,11 +1862,16 @@ def launch_history(cat: dict, root: str) -> list[dict]:
         "harness": [{"id": h["id"]} for h in cat.get("harness", []) if h.get("id")],
     }
     t0 = time.perf_counter()
-    proc = subprocess.run(
-        prefix + [sys.executable, "-I", str(Path(__file__).resolve()), "_history"],
-        input=json.dumps({"root": os.path.realpath(root), "home": str(home), "cat": history_cat}),
-        capture_output=True, text=True, timeout=15,
-    )
+    try:
+        proc = subprocess.run(
+            prefix + [sys.executable, "-I", str(Path(__file__).resolve()), "_history"],
+            input=json.dumps({"root": os.path.realpath(root), "home": str(home), "cat": history_cat}),
+            capture_output=True, text=True, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        # a stalled as-user lookup must not crash a picker frame: no history for this place
+        trace.event("history", store="as-user", user=uid, ms=_ms(t0), err=type(e).__name__)
+        return []
     trace.event("history", store="as-user", user=uid, ms=_ms(t0), rc=proc.returncode)
     if proc.returncode:
         detail = (proc.stderr.strip().splitlines() or [f"exit {proc.returncode}"])[-1]
@@ -1494,7 +1899,7 @@ def discover_sessions(root: str, cat: dict, home: Path | None = None) -> list[di
     """Sessions this directory has seen, from the harnesses' own stores. [] when off."""
     if not history_on(cat):
         return []
-    ids = {h["id"] for h in cat.get("harness", [])}
+    ids = {h.get("id") for h in cat.get("harness", [])}
     cache, rows = history_cache(), []
     for hid, provider in HISTORY_PROVIDERS.items():
         if ids and hid not in ids:
@@ -1532,8 +1937,8 @@ def trust_available() -> bool:
 def trust_subject(root: str) -> str:
     if not trust_available():
         return "?"
-    proc = subprocess.run([EXT["trust_command"], "subject", root], capture_output=True, text=True)
-    return proc.stdout.strip() or "?"
+    proc = run_bounded([EXT["trust_command"], "subject", root], TRUST_TIMEOUT)
+    return (proc.stdout.strip() or "?") if proc else "?"
 
 
 def parse_match(text: str, code: int) -> dict:
@@ -1572,7 +1977,7 @@ def trust_match(tool: str, root: str) -> dict:
         trace.event("trust", tool=tool, ms=_ms(t0), verdict="unknown", rc=proc.returncode)
         return {"verdict": "unknown", "flag": "?", "exit": proc.returncode}
     verdict = parse_match(proc.stdout, proc.returncode)
-    trace.event("trust", tool=tool, ms=_ms(t0), verdict=verdict.get("verdict") or "unknown")
+    trace.event("trust", tool=tool, ms=_ms(t0), verdict=redact_text(verdict.get("verdict") or "unknown"))
     return verdict
 
 
@@ -1613,8 +2018,8 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
     # id; a kind several share (pi wrappers) stays the exe name.
     kind_id: dict[str, str] = {}
     for h in cat.get("harness", []):
-        prev = kind_id.setdefault(h["kind"], h["id"])
-        if prev != h["id"]:
+        prev = kind_id.setdefault(h["kind"], h.get("id"))
+        if prev != h.get("id"):
             kind_id[h["kind"]] = ""
 
     t_names, n_names = time.perf_counter(), 0
@@ -1655,7 +2060,7 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
         })
         seen_pane.add(a["pane_id"])
 
-    allowed = {h["id"] for h in cat.get("harness", [])}
+    allowed = {h.get("id") for h in cat.get("harness", [])}
     live_sids = {x.get("session_id") for x in live_rows if x.get("session_id")}
     cold_rows = []
     for r in rows_here:
@@ -1701,13 +2106,13 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
             for tool, v in zip(tools, pool.map(matcher, tools)):
                 verdicts[tool] = v
     for h in cat.get("harness", []):
-        row = {"harness": h["id"], "kind": h["kind"], "family": h["family"], "egress": h["egress"],
+        row = {"harness": h.get("id"), "kind": h["kind"], "family": h["family"], "egress": h["egress"],
                "title": h.get("title", ""), "installed": installed(h),
                "trust": verdicts.get(h["trust_tool"], {"verdict": "unknown"})}
         if h.get("check"):
             row["check"] = h["check"]
         startable.append(row)
-        if h["id"] not in present:
+        if h.get("id") not in present:
             absent.append(row)
     disambiguate_names(live_rows + cold_rows)
     return {"root": root, "subject": subject, "live": live_rows, "cold": cold_rows, "absent": absent,
@@ -2280,7 +2685,8 @@ def caller_is_agent(env=None) -> bool:
 def ps_table(text: str | None = None) -> dict[int, dict]:
     """pid -> {ppid, tty, argv}. `text` is `ps -axo pid=,ppid=,tty=,args=` output (for tests)."""
     if text is None:
-        text = subprocess.run(["ps", "-axo", "pid=,ppid=,tty=,args="], capture_output=True, text=True).stdout
+        proc = run_bounded(["ps", "-axo", "pid=,ppid=,tty=,args="], PS_TIMEOUT)
+        text = proc.stdout if proc else ""
     out = {}
     for line in text.splitlines():
         parts = line.split(None, 3)
@@ -2315,8 +2721,9 @@ def process_cwds(pids: list[int]) -> dict[int, str]:
     lsof = shutil.which("lsof") or next((x for x in ("/usr/sbin/lsof", "/usr/bin/lsof") if os.access(x, os.X_OK)), None)
     if not lsof:  # a spare PATH (launchd, a plugin host) often lacks /usr/sbin; no lsof means no cwds, not a crash
         return {}
-    proc = subprocess.run([lsof, "-a", "-d", "cwd", "-Fpn", "-p", ",".join(map(str, pids))],
-                          capture_output=True, text=True)
+    proc = run_bounded([lsof, "-a", "-d", "cwd", "-Fpn", "-p", ",".join(map(str, pids))], LSOF_TIMEOUT)
+    if proc is None:
+        return {}
     out, pid = {}, None
     for line in proc.stdout.splitlines():
         if line.startswith("p") and line[1:].isdigit():
@@ -2652,7 +3059,7 @@ def exec_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", la
     cmd = unix_confine(cat, root, cmd, h=h)
     exe = _here_exe(h, cmd)
     _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, None, name_source, extra, effort, dirs)
-    trace.event("exec", harness=h.get("id", ""), cmd=shell_join(cmd))
+    trace.event("exec", harness=h.get("id", ""), cmd=shell_join(redact_launch(cmd, extra)))
     sys.stdout.write("\x1b[H\x1b[2J" if sys.stdout.isatty() else "")
     print(f"  {paint(name, INK, bold=True)}  {paint(shell_join(cmd), MUTED)}  {paint(tilde(root), FAINT)}")
     sys.stdout.flush()
@@ -2690,7 +3097,7 @@ def spawn_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", l
         raise SystemExit(f"cowbell: refused — the launch folder moved under it ({e})")
     pane_id = f"pid:{proc.pid}"
     _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, pane_id, name_source, extra, effort, dirs)
-    trace.event("spawn", harness=h.get("id", ""), pid=proc.pid, cmd=shell_join(cmd))
+    trace.event("spawn", harness=h.get("id", ""), pid=proc.pid, cmd=shell_join(redact_launch(cmd, extra)))
     return {"pane_id": pane_id, "pid": proc.pid}
 
 
@@ -2796,37 +3203,53 @@ def herdr_bin() -> str:
 HERDR_TIMEOUT = 5.0  # seconds; a hung herdr server must not freeze the picker tick
 
 
-def herdr(*args: str, expect_json: bool = True, timeout: float = HERDR_TIMEOUT) -> dict:
+_HERDR_DOWN_UNTIL = 0.0  # one tick-fast timeout marks herdr down briefly, so a stalled CLI costs a frame ~5s, not 5s per call
+
+
+def herdr(*args: str, expect_json: bool = True, timeout: float = HERDR_TIMEOUT,
+          log_argv: list[str] | None = None) -> dict:
+    """Run the herdr CLI. `log_argv` is what the trace shows instead of `args` when one arg
+    packs words that only the caller can tell apart (a whole launch line to `pane run`)."""
+    global _HERDR_DOWN_UNTIL
+    # the breaker exists for the picker's ~5s tick; a caller that paid for a longer wait
+    # (agent start's 35s, launch cleanup) neither trips it nor is skipped by it.
+    # a sub-tick timeout still arms the full window — callers must pay the tick
+    tick = timeout <= HERDR_TIMEOUT
+    if tick and time.monotonic() < _HERDR_DOWN_UNTIL:
+        raise HerdrError(f"herdr {' '.join(args[:2])} skipped: marked down after a timeout")
     t0 = time.perf_counter()
+    shown = " ".join(redact_argv(args if log_argv is None else log_argv))
     try:
         proc = subprocess.run([herdr_bin(), *args], capture_output=True, text=True, check=False, timeout=timeout)
     except subprocess.TimeoutExpired as e:
-        trace.event("herdr", ms=_ms(t0), err="timeout", argv=" ".join(args))
+        if tick:
+            _HERDR_DOWN_UNTIL = time.monotonic() + 30
+        trace.event("herdr", ms=_ms(t0), err="timeout", argv=shown)
         raise HerdrError(f"herdr {' '.join(args[:2])} timed out after {timeout:g}s") from e
     except OSError as e:  # herdr not installed: standalone cowbell still works
-        trace.event("herdr", ms=_ms(t0), err="os", argv=" ".join(args))
+        trace.event("herdr", ms=_ms(t0), err="os", argv=shown)
         raise HerdrError(f"herdr unavailable: {e}") from e
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip()
-        trace.event("herdr", ms=_ms(t0), rc=proc.returncode, argv=" ".join(args), err=(err or "exit")[:120])
+        trace.event("herdr", ms=_ms(t0), rc=proc.returncode, argv=shown, err=redact_text(err or "exit")[:120])
         raise HerdrError(err or f"herdr {' '.join(args)} exited {proc.returncode}")
     out = (proc.stdout or "").strip()
     if not out:
-        trace.event("herdr", ms=_ms(t0), rc=0, argv=" ".join(args))
+        trace.event("herdr", ms=_ms(t0), rc=0, argv=shown)
         return {}
     try:
         payload = json.loads(out)
     except json.JSONDecodeError:
         if expect_json:
-            trace.event("herdr", ms=_ms(t0), err="json", argv=" ".join(args))
+            trace.event("herdr", ms=_ms(t0), err="json", argv=shown)
             raise HerdrError(f"herdr {' '.join(args)}: non-JSON output: {out[:120]}")
-        trace.event("herdr", ms=_ms(t0), rc=0, argv=" ".join(args))
+        trace.event("herdr", ms=_ms(t0), rc=0, argv=shown)
         return {"raw": out}
     if isinstance(payload, dict) and "error" in payload:
         e = payload["error"]
-        trace.event("herdr", ms=_ms(t0), err="payload", argv=" ".join(args))
+        trace.event("herdr", ms=_ms(t0), err="payload", argv=shown)
         raise HerdrError(e.get("message", str(e)) if isinstance(e, dict) else str(e))
-    trace.event("herdr", ms=_ms(t0), rc=0, argv=" ".join(args), bytes=len(out))
+    trace.event("herdr", ms=_ms(t0), rc=0, argv=shown, bytes=len(out))
     if isinstance(payload, dict) and "result" in payload:
         r = payload["result"]
         return r if isinstance(r, dict) else {"value": r}
@@ -3122,10 +3545,14 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
             if any(CONTROL.search(str(w)) for w in [*confined, root]):
                 raise SystemExit("cowbell: refused — a control character in the launch line or its folder")
             line = shell_join(confined)
+            # the trace gets the same line built from the masked argv, never the packed line
+            # re-parsed as free text (it cannot tell passthrough words, or an apostrophe, apart)
+            shown = shell_join(redact_launch(confined, extra))
             if confined != base:  # a reused pane may sit anywhere: start the drop in its folder, physically
                 q = shell_join([root])
                 line = f'cd -P -- {q} && [ "$(pwd -P)" = {q} ] && {line}'
-            herdr("pane", "run", pid, line, expect_json=False)
+                shown = f'cd -P -- {q} && [ "$(pwd -P)" = {q} ] && {shown}'
+            herdr("pane", "run", pid, line, expect_json=False, log_argv=["pane", "run", pid, shown])
         else:
             mode = "native"
             res = start_native(name, h["kind"], pid, argv)
@@ -3134,7 +3561,8 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
         trace.event("raise", phase="fail", how=how, pane=pid, ms=_ms(t0))
         if pane.get("tab_id") and not reuse_pane:  # do not leave an empty tab behind a failed or refused launch
             try:
-                herdr("tab", "close", pane["tab_id"])
+                # longer than HERDR_TIMEOUT so the cleanup still runs while a timed-out tick has herdr marked down
+                herdr("tab", "close", pane["tab_id"], timeout=HERDR_TIMEOUT * 2)
             except HerdrError:
                 pass
         raise
@@ -3164,7 +3592,7 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
             herdr("tab", "focus", pane["tab_id"])
         except HerdrError:
             pass
-    trace.event("raise", phase="done", how=how, mode=mode, pane=pid, ms=_ms(t0), cmd=shell_join(base))
+    trace.event("raise", phase="done", how=how, mode=mode, pane=pid, ms=_ms(t0), cmd=shell_join(redact_launch(base, extra)))
     return pane
 
 
@@ -4057,8 +4485,11 @@ def cmd_dispatch(ctx: Ctx, cat: dict, hid: str, assume_yes: bool) -> None:
 def cmd_catalog(cat: dict) -> None:
     print(f"{'harness':<16} {'kind':<8} {'egress':<7} {'installed':<9} {'badge':<10} title")
     for h in cat.get("harness", []):
-        print(f"{h['id']:<16} {h['kind']:<8} {GLYPH.get(h['egress'], '?') + ' ' + h['egress']:<7} "
-              f"{('yes' if accepted(h) else 'unproven') if installed(h) else 'no':<9} {trust_badge(h['trust_tool']):<10} {h.get('title', '')}")
+        egress = h.get("egress")
+        egress = egress if isinstance(egress, str) else repr(egress)
+        print(f"{(h.get('id') or '(missing id)'):<16} {h['kind']:<8} {GLYPH.get(egress, '?') + ' ' + egress:<7} "
+              f"{('yes' if accepted(h) else 'unproven') if installed(h) else 'no':<9} "
+              f"{trust_badge(h['trust_tool']):<10} {h.get('title', '')}")
     print(paint(LEGEND, FAINT))
 
 
@@ -4101,7 +4532,7 @@ def cmd_accept(cat: dict, ids: list[str]) -> int:
     for i in ids:
         if not harness_by_id(cat, i):
             raise SystemExit(f"cowbell: unknown harness {i!r} (see: cowbell catalog)")
-    rows = [harness_by_id(cat, i) for i in ids] if ids else [h for h in cat.get("harness", []) if h.get("check")]
+    rows = [harness_by_id(cat, i) for i in ids] if ids else [h for h in cat.get("harness", []) if h.get("check") and h.get("id")]
     if not rows:
         print("cowbell: no row has a check")
         return 0
@@ -4122,6 +4553,15 @@ def cmd_catalog_check(cat: dict) -> int:
     docs lag real argv — codex `-m` vs `--model` is the shape), not a failure.
     Not-installed or unprobeable harnesses are reported, not failed."""
     problems, warns, unchecked = [], [], []
+    # A file one schema rev ahead is a normal newer file (read, never rewritten; warn it);
+    # further ahead or not an int is not a readable catalog — name it.
+    schema = cat.get("schema", 1)
+    if isinstance(schema, bool) or not isinstance(schema, int) or schema < 1:
+        problems.append(f"catalog schema {schema} must be a positive int")
+    elif schema > SCHEMA + 1:
+        problems.append(f"catalog is schema {schema}; cowbell {__version__} checks up to schema {SCHEMA + 1} (upgrade cowbell)")
+    elif schema > SCHEMA:
+        warns.append(f"catalog is schema {schema}; this cowbell writes schema {SCHEMA} (newer file: read, never rewritten)")
     ids = set()
     for h in cat.get("harness", []):
         hid = h.get("id") or "(missing id)"
@@ -4132,7 +4572,7 @@ def cmd_catalog_check(cat: dict) -> int:
         ids.add(hid)
         if not h.get("kind"):
             problems.append(f"harness {hid}: missing kind")
-        if h.get("egress") and h["egress"] not in GLYPH:
+        if h.get("egress") and (not isinstance(h["egress"], str) or h["egress"] not in GLYPH):
             problems.append(f"harness {hid}: unknown egress {h['egress']!r}")
         if h.get("lane") and h["lane"] not in ("green", "yellow", "red"):
             problems.append(f"harness {hid}: unknown lane {h['lane']!r}")
@@ -4149,11 +4589,10 @@ def cmd_catalog_check(cat: dict) -> int:
         if h.get("effort") and not ef:
             problems.append(f"harness {hid}: effort {h['effort']!r} set but no effort_flag")
         ck = h.get("check")
-        if ck is not None and not (isinstance(ck, list) and ck and all(isinstance(x, str) for x in ck)):
+        if ck is not None and not is_argv(ck):
             problems.append(f"harness {hid}: check must be one argv, a list of strings")
         rq = h.get("requires")
-        if rq is not None and not (isinstance(rq, list) and all(
-                isinstance(a, list) and a and all(isinstance(x, str) for x in a) for a in rq)):
+        if rq is not None and not (isinstance(rq, list) and all(is_argv(a) for a in rq)):
             problems.append(f"harness {hid}: requires must be a list of argvs (lists of strings)")
         if not installed(h):
             unchecked.append(hid)
@@ -4177,6 +4616,8 @@ def cmd_catalog_check(cat: dict) -> int:
     for hid in unchecked:
         print(f"  skip {hid}: not installed")
     if problems:
+        n = len(problems)
+        print(f"cowbell: check failed ({n} {'problem' if n == 1 else 'problems'})", file=sys.stderr)
         return 1
     print(f"  ok: {len(ids)} harnesses, {len(cat.get('places') or {})} places")
     return 0
@@ -4351,8 +4792,11 @@ def _format_harness_block(h: dict) -> str:
 def _file_schema(path: Path) -> int:
     if tomllib is None:
         raise SystemExit("cowbell: python >= 3.11 required (tomllib)")
-    with open(path, "rb") as fh:
-        data = tomllib.load(fh)
+    try:
+        with _open_regular(path) as fh:
+            data = tomllib.load(fh)
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"cowbell: {path}: {_file_error(e)}")
     return data.get("schema", 1) if isinstance(data, dict) else 1
 
 
@@ -4388,7 +4832,11 @@ def _commit_catalog(path: Path, new_text: str) -> None:
     if not path.is_file():
         raise SystemExit(f"cowbell: no catalog at {path}")
     check_writable(_file_schema(path), str(path))
-    old = path.read_text(encoding="utf-8")
+    try:
+        with _open_regular(path) as fh:
+            old = fh.read().decode("utf-8")
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"cowbell: {path}: {_file_error(e)}")
     if old == new_text:
         return
     _backup_timestamped(path)
@@ -4402,7 +4850,11 @@ def _catalog_text(path: Path | None) -> tuple[Path, str]:
     p = Path(path) if path is not None else catalog_path()
     if not p.is_file():
         raise SystemExit(f"cowbell: no catalog at {p}")
-    return p, p.read_text(encoding="utf-8")
+    try:
+        with _open_regular(p) as fh:
+            return p, fh.read().decode("utf-8")
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"cowbell: {p}: {_file_error(e)}")
 
 
 def _find_block(spans: list[dict], hid: str) -> dict | None:
@@ -6006,7 +6458,7 @@ def edit_sitting(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
 
 def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
     """New with options: pick an agent, then its launch sheet, then optional save-as."""
-    hs = [h for h in cat.get("harness", [])]
+    hs = [h for h in cat.get("harness", []) if h.get("id")]  # a row with no id is named by catalog --check, never launchable
     with ThreadPoolExecutor(max_workers=8) as pool:
         verdicts = dict(zip([h["id"] for h in hs], pool.map(lambda h: trust_match(h["trust_tool"], root), hs)))
     note = {"blocked": paint("  ⊘ blocked here", RED), "overprivilege": paint("  ! more reach than needed", FAINT)}
@@ -6464,7 +6916,7 @@ def take_debug(argv: list[str]) -> list[str]:
 def main(argv: list[str]) -> int:
     argv = take_debug(list(argv))
     if trace.enabled():
-        trace.event("start", argv=" ".join(argv) or "(default)", cwd=os.getcwd())
+        trace.event("start", argv=" ".join(redact_argv(argv)) or "(default)", cwd=os.getcwd())
     if argv and argv[0] in ("-h", "--help"):
         print(__doc__); return 0
     if argv and argv[0] in ("-V", "--version"):

@@ -48,35 +48,61 @@ cowbell is for people who run several coding-agent CLIs (Claude Code, Codex, Gro
 
 It is mouse-first: click or arrow to a row, Enter or the ⏎ button to open it, Esc to close. A digit jumps to its row, and every hint in the bottom bar is clickable. The list refreshes every two seconds. Off a terminal, or with `COWBELL_PLAIN=1`, it falls back to a typed-number prompt; `NO_COLOR` turns colour off. (verified: cowbell.py:4677-4725, 5995, 4486-4487, 183, 4783-4796)
 
-In [herdr](https://github.com/herdrdev/herdr), the plugin [`herdr-cowbell`](https://github.com/charlesberret/herdr-cowbell) puts this same picker on `prefix+c` as a popup, and adds `adopt`, `stop` and `import-seats`. The plugin and this command read the same catalog and roster, so a session started in one resumes in the other. (verified: cowbell.py:37, 57, 236-267; curl -sIL → HTTP 200 for both github.com/herdrdev/herdr and github.com/charlesberret/herdr-cowbell)
+Cowbell is the standalone engine: running `cowbell` directly in any terminal provides the full interactive picker, session resumption, launch sheets, and harness catalog without requiring Herdr. The companion plugin `herdr-cowbell` embeds this engine inside Herdr workspaces, binding the picker to `prefix+c` as a popup and adding workspace-aware actions like `adopt`, `stop`, and `import-seats`. Both standalone CLI invocations and the Herdr plugin share the exact same configuration catalog and session roster (`~/.config/cowbell` and `~/.local/state/cowbell`), so agents started in a bare terminal seamlessly surface and resume inside Herdr workspaces. (verified: cowbell.py:30-37, 236-270)
 
 ## Install
 
 cowbell is one Python file with no required dependencies (the icon font below is optional). It needs **Python 3.11 or newer**. macOS ships `/usr/bin/python3` at 3.9, which is too old; `brew install python` or `uv python install 3.12` is enough. It runs on macOS and Linux. (verified: pyproject.toml:10,14; bin/cowbell:2-18)
 
-From a clone:
+### From a release archive (pip, pipx, or uv)
+
+Install the sdist or wheel into your environment or tool cache: (verified: pyproject.toml:10,24-25,37)
 
 ```bash
-git clone https://github.com/charlesberret/cowbell-core.git  (verified: curl -sIL → HTTP 200)
-cd cowbell-core  (verified: clone of cowbell-core.git yields cowbell-core/)
-./bin/cowbell --version  (verified: ./bin/cowbell --version → "cowbell 0.3.2")
+pip install cowbell-0.3.3.tar.gz
+# or
+pipx install cowbell-0.3.3.tar.gz
+# or
+uv tool install cowbell-0.3.3.tar.gz
 ```
 
-Expected output: `cowbell X.Y.Z`. To run it from any directory, link the launcher onto your PATH. The launcher follows symlinks and picks a Python 3.11 or newer for you: (verified: ./bin/cowbell --version → "cowbell 0.3.2"; bin/cowbell:5-18)
+The installer puts the console script `cowbell` on your PATH. (verified: pyproject.toml:24-25)
+
+Check that it runs: (verified: cowbell.py:6464)
 
 ```bash
-mkdir -p "$HOME/.local/bin"  (verified: PATH convention; launcher needs no install)
-ln -s "$PWD/bin/cowbell" "$HOME/.local/bin/cowbell"  (verified: bin/cowbell:6-11 follows symlinks)
+cowbell --version
+```
+
+Expected output: `cowbell 0.3.3`. (verified: cowbell.py:63, 6464)
+
+On first run, cowbell seeds its catalog at `~/.config/cowbell/harnesses.toml` (or under `COWBELL_CONFIG_DIR` or `$XDG_CONFIG_HOME/cowbell`). For package installs, the seed catalog is copied from the package's shared data at `<sys.prefix>/share/cowbell/harnesses.toml`. (verified: cowbell.py:240-245, 255-261, 314-322; pyproject.toml:33-34)
+
+### From a clone
+
+Clone and run the launcher directly: (verified: curl -sIL → HTTP 200; clone of cowbell-core.git yields cowbell-core/)
+
+```bash
+git clone https://github.com/charlesberret/cowbell-core.git
+cd cowbell-core
+./bin/cowbell --version
+```
+
+Expected output: `cowbell 0.3.3`. In a clone, the seed catalog is copied from `harnesses.toml` beside `cowbell.py`. To run it from any directory, link the launcher onto your PATH. The launcher follows symlinks and picks a Python 3.11 or newer for you: (verified: bin/cowbell:5-18; cowbell.py:240-244, 314-320)
+
+```bash
+mkdir -p "$HOME/.local/bin"
+ln -s "$PWD/bin/cowbell" "$HOME/.local/bin/cowbell"
 ```
 
 `$HOME/.local/bin` must be on your PATH. Then run `cowbell` in any project directory. (verified: bin/cowbell:6-17)
 
 ### Icons for each agent (optional)
 
-Each row shows a mark for its agent's kind. The marks come from the [Lobe Icons Font](https://github.com/hschne/lobe-icons-font) (MIT), which is not part of macOS or any Linux distribution. Without it, cowbell shows one letter for each kind instead: `C` claude, `G` grok, `X` codex, `M` gemini, `A` antigravity, `P` pi, `D` devin, `H` copilot, `O` openai, `L` ollama, and `·` for anything else. (verified: cowbell.py:3135-3151, 3265-3269) To get the marks:
+Each row shows a mark for its agent's kind. The marks come from the [Lobe Icons Font](https://github.com/hschne/lobe-icons-font) (MIT), which is not part of macOS or any Linux distribution. Without it, cowbell shows one letter for each kind instead: `C` claude, `G` grok, `X` codex, `M` gemini, `A` antigravity, `P` pi, `D` devin, `H` copilot, `O` openai, `L` ollama, and `·` for anything else. (verified: cowbell.py:3135-3151, 3265-3269) To get the marks: (verified: cowbell.py:24-26, 3224-3252)
 
 ```bash
-cowbell font install  (verified: cowbell.py:24-26, 3224-3252)
+cowbell font install
 ```
 
 Expected output: `installed: <font dir>/lobe-icons.ttf (v5.23.0, sha256 checked)`. It downloads one pinned release, refuses any file whose sha256 differs, and writes it to `~/Library/Fonts` on macOS or `~/.local/share/fonts` on Linux (then runs `fc-cache`). It needs no sudo. `cowbell font` reports whether the font was found and which kind of mark cowbell is using. (verified: cowbell.py:3153-3158, 3163-3168, 3224-3252, 3214-3217)
@@ -94,7 +120,7 @@ cowbell checks the machine it runs on. Over ssh the terminal that draws the scre
 
 ## Status
 
-Pre-1.0 (0.3.x). The command line, the picker and the catalog format (`schema = 1`) may still change between releases; changes are listed in [CHANGELOG.md](CHANGELOG.md). (verified: cowbell.py:56 `__version__ = "0.3.2"`; harnesses.toml:91 `schema = 1`; CHANGELOG.md exists) Bug reports and focused pull requests are welcome.
+Pre-1.0 (0.3.x). The command line, the picker and the catalog format (`schema = 1`) may still change between releases; changes are listed in [CHANGELOG.md](CHANGELOG.md). (verified: cowbell.py:63 `__version__ = "0.3.3"`; harnesses.toml:91 `schema = 1`; CHANGELOG.md exists) Bug reports and focused pull requests are welcome.
 
 ## Where agents open
 
@@ -188,7 +214,8 @@ A harness with `cwd` starts there, not in the directory you called it from. The 
 
 ```
 cowbell                      the picker (on a terminal); piped, the long registry  (verified: cowbell.py:4-5, 4486-4487, 6156-6200)
-cowbell --version            cowbell X.Y.Z  (verified: ./bin/cowbell --version → "cowbell 0.3.2"; cowbell.py:6)
+cowbell --version            cowbell 0.3.3  (verified: ./bin/cowbell --version → "cowbell 0.3.3"; cowbell.py:6, 6464)
+cowbell --debug              opt-in startup timing trace; see docs/debug-trace.md  (verified: cowbell.py:27, 6444-6454)
 cowbell status               long registry: live · cold · absent, session ids, trust  (verified: cowbell.py:7, 1593, 1765-1810)
 cowbell claude               focus a claude running here, else resume one, else start one  (verified: cowbell.py:9, 3969-3982)
 cowbell new --harness claude --model claude-opus-5 --lane green --allow Read,Grep  (verified: cowbell.py:10, 6333-6346; harnesses.toml:153-160)
@@ -206,15 +233,41 @@ cowbell font [install]       is the icon font here; install fetches the pinned f
 
 `bin/cowbell` picks a python ≥ 3.11, for tomllib, and follows symlinks. macOS `/usr/bin/python3` is 3.9 and must not run this. Stdlib only. (verified: bin/cowbell:1-19; pyproject.toml:14)
 
+### Internal commands
+
+`cowbell identity stamp` and `cowbell identity sync` are internal plumbing commands for Herdr integration, marked as advanced and rarely needed in day-to-day use:
+
+- `cowbell identity stamp` scans live Herdr agent panes and publishes each pane's `$glyph` badge and sitting name from detector state. (verified: cowbell.py:22, 3412-3428, 6546-6549)
+- `cowbell identity sync` restamps or clears a single pane's badge from a Herdr occupancy event payload (`HERDR_PLUGIN_EVENT_JSON`). (verified: cowbell.py:23, 3450-3470, 6550-6552)
+
+Day-to-day users do not need these commands; they run from plugin hooks or during seed and catalog maintenance to re-synchronize pane identities. (verified: cowbell.py:3383-3470, 6553-6556)
+
+## Debug trace
+
+`COWBELL_DEBUG=1 cowbell …` writes a trace of what cowbell did — `COWBELL_DEBUG_LOG=<path>` chooses the file (default `debug.log` in the state dir) — one line per event, `key=value` fields. The log is created mode 0600 and an older loose log is tightened on open. (verified: `cowbell.py` `Trace._open` opens `os.open(…, 0o600)` then `os.fchmod`)
+
+Trace lines redact before they write. `redact_argv` keeps the program's basename and every flag name. It masks:
+
+- the value of any flag whose name names a secret — a dash/underscore/dot-separated part ending in `key`, `token`, `secret`, `prompt` or `instruction`, each matched with an optional plural `s` (`--api-keys`, `--tokens`), or exactly `pass`, `password`, `passwd`, `passphrase`, `passcode`, `auth`, `oauth`, `authentication`, `authorization`, `bearer` or `credential(s)`, again with plurals;
+- every argument after a bare `--`, and the passthrough words of `cowbell new X -- …`;
+- the value in `NAME=value` arguments;
+- the userinfo in URLs (`https://user:pw@host/` becomes `https://***@host/`).
+
+`redact_text` masks the same shapes plus credential-looking words inside free text — `sk-…` keys, `ghp_…` tokens and `Bearer …` headers in check output and herdr errors.
+
+**Limit.** Redaction matches flag names and credential shapes. A free-form secret with no credential shape — a passphrase in an ordinary message, a value under an unremarkable flag name — is not guaranteed to be masked. Treat `debug.log` as sensitive: review it before attaching it to an issue. The full runbook is `docs/debug-trace.md`.
+
 ## Development
 
+Run the test suite: (verified: .github/workflows/test.yml runs the same suite)
+
 ```bash
-python3 -m unittest discover -s tests -v  (verified: .github/workflows/test.yml runs the same suite)
+python3 -m unittest discover -s tests -v
 ```
 
 The GitHub workflow at `.github/workflows/test.yml` runs `python3 -m unittest discover -s tests` on Python 3.11. (verified: .github/workflows/test.yml)
 
-`tests/test_pty.py` drives the menu, the prompt and the whole picker in a real pseudo-terminal. The code keeps two seams: `ctx.live`, what is running, and `ctx.launch`, where an agent opens. Every `herdr` CLI call lives in the `# --- herdr adapter` section of `cowbell.py`, and a test enforces it. (verified: tests/test_pty.py; cowbell.py:398, 2718; tests/test_cowbell.py:1139)
+`tests/test_pty.py` drives the menu, the prompt and the whole picker in a real pseudo-terminal. The code keeps two seams: `ctx.live`, what is running, and `ctx.launch`, where an agent opens. Every `herdr` CLI call lives in the `# --- herdr adapter` section of `cowbell.py`, and a test enforces it. (verified: tests/test_pty.py; cowbell.py:394, 2784; tests/test_cowbell.py:1137)
 
 ## License
 
