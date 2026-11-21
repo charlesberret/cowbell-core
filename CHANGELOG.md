@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Cowbell works inside the Herdr desktop app. In a herdr-core terminal (`HC_TERMINAL_ID` set, no herdr pane), Active comes from `hc ls`: this machine's agent terminals at or below the directory, with the app's status, shown as `herdr app`. A person's start or resume still runs in this terminal. An agent caller and `--spawn` open a new app tab in the caller's space (`hc run --bg --keep --no-parent` with `herdr.space`, a new `herdr.tab` and `cowbell.name` labels; the tab is renamed to the session). `--split` opens to the right of the caller's pane. `enter` shows a running session through `herdr-app`, and resumes into a terminal still at its shell prompt or else in a new tab. `adopt` and `rename` set the `cowbell.name` label. `COWBELL_BACKEND=hc|herdr` forces either path; the herdr TUI path is unchanged.
+- App popups: `COWBELL_HC_SPACE=<space id>` sends new tabs and splits to that space (a `machine/` prefix is dropped), and `COWBELL_HC_CWD=<dir>` sets the directory the census and launches are for. With either set, cowbell takes the app path even without `HC_TERMINAL_ID`, every pick opens a tab rather than running in the popup's terminal, and the picker exits 0 after a launch or on Esc.
+- A launch that needs an app tab from a terminal outside any app space refuses with a message naming `COWBELL_HC_SPACE`, rather than starting a terminal the app would not show.
+
 ## 0.3.3 — 2026-11-13
 
 - Agent marks no longer depend on a font installed by hand. With the Lobe Icons Font installed, kinds show its logos; without it, one ASCII letter per kind (`C` claude, `G` grok, `X` codex, …) instead of empty boxes. `COWBELL_GLYPHS=lobe|text` forces either. `cowbell font` reports what it found; `cowbell font install` downloads the pinned v5.23.0 font, refuses it unless the sha256 matches, and writes it to the user font directory.
