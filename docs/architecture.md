@@ -303,6 +303,11 @@ cannot be checked from this tree is marked `DRAFT — needs maintainer check:`.
   the `resume` spec (verified: `cowbell.py` `here_command()`;
   `harnesses.toml` comment "Resuming outside herdr"; seed rows: `claude` and
   `pi` set `session_id_flag`).
+- `launch_history(cat, root, warnings)`: given a list, a failed discovery (any `SystemExit` from
+  the as-user path) returns no rows and adds one redacted line (`history_warning`); `status`
+  and the picker pass a list, so the failure shows as `warnings` in `status --json` and a dim
+  line under the header (`warning_lines`); `cmd_enter` passes none and still exits (verified:
+  `cowbell.py` `launch_history()`, `history_warning()`, `warning_lines()`, `registry_json()`).
 - `cmd_enter` resolves a name against the roster then history, focuses it if
   live (via `ctx.live.focus`), resumes into a still-present pane when under
   herdr, else launches fresh with `resume_id` (verified: `cowbell.py`

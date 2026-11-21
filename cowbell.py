@@ -402,7 +402,14 @@ def header(reg: dict, git_top: str | None, wider: int | None, widen_hint: bool =
         hint = f"   ({wider} live under it)" if wider is not None else ""
         out.append(paint(f"  git root: {tilde(git_top)}{hint}", FAINT)
                    + (f"   {paint('[g]', MUTED)} {paint('widen', FAINT)}" if widen_hint else ""))
+    out += warning_lines(reg)
     return out
+
+
+def warning_lines(reg: dict, width: int | None = None) -> list[str]:
+    """One dim line per thing that could not be read, under the header; cut to `width` in the picker."""
+    lines = [f"  ! {w}" for w in reg.get("warnings") or []]
+    return [paint(x[:max(20, width - 2)] if width else x, FAINT) for x in lines]
 
 
 def section_title(title: str, fg: str = MUTED) -> str:
@@ -1832,8 +1839,32 @@ def session_fields(kind: str, root: str, session_id: str, home: Path | None = No
 HISTORY_PROVIDERS = {"claude": claude_sessions, "grok": grok_sessions}
 
 
-def launch_history(cat: dict, root: str) -> list[dict]:
-    """Discover history as the uid that will launch here, crossing its home boundary when needed."""
+def history_warning(text: str) -> str:
+    """A discovery failure as one display line: redacted like the trace, terminal controls dropped
+    (the detail may be another account's stderr)."""
+    line = (str(text or "").strip().splitlines() or ["session discovery failed"])[-1]
+    return CONTROL_WIDE.sub("", redact_text(line))[:240]
+
+
+def launch_history(cat: dict, root: str, warnings: list[str] | None = None) -> list[dict]:
+    """Discover history as the uid that will launch here, crossing its home boundary when needed.
+
+    With `warnings` (a list), a failed discovery costs only its Resume rows: the failure is added
+    there once and no history is returned. Without it the failure exits, as an explicit lookup
+    (`cowbell enter`) should."""
+    if warnings is None:
+        return _launch_history(cat, root)
+    try:
+        return _launch_history(cat, root)
+    except SystemExit as e:
+        msg = history_warning(str(e))
+        trace.event("history", store="as-user", warn=msg[:120])
+        if msg not in warnings:
+            warnings.append(msg)
+        return []
+
+
+def _launch_history(cat: dict, root: str) -> list[dict]:
     import pwd
     if not history_on(cat):
         return discover_sessions(root, cat)
@@ -2164,6 +2195,8 @@ def registry_json(reg: dict, place: dict | None = None) -> dict:
     return {
         "root": root,
         "place": place_name,
+        # what could not be read (a failed session discovery); the rest of the answer stands
+        "warnings": list(reg.get("warnings") or []),
         "running": [sitting_row(r) for r in reg.get("live") or []],
         # Resume only what can resume: a row without a session id would just start fresh.
         "resume": [sitting_row(r) for r in reg.get("cold") or [] if r.get("session_id")],
@@ -2481,6 +2514,7 @@ def render_picker(reg: dict, choices: list[dict], git_top: str | None = None, wi
         right = f"g widen to {os.path.basename(git_top.rstrip('/'))} · {wider} running"
     gap = width - 2 - len(path) - len(right)
     out = [f"  {paint(path, TEAL, bold=True)}" + (f"{' ' * max(3, gap)}{paint(right, FAINT)}" if right else "")]
+    out += warning_lines(reg, width)
     n = 0
     for section, title, fg in PICKER_SECTIONS:
         rows = [c for c in choices if c.get("section") == section]
@@ -4476,8 +4510,10 @@ def cmd_registry(ctx: Ctx, cat: dict, root: str | None = None, as_json: bool = F
     rows = load_roster()
     ctx.live.refresh_sessions(rows)
     agents, panes = ctx.live.agents(), ctx.live.panes()
+    warnings: list[str] = []
     reg = build_registry(cat, root, agents, panes, rows, subject=trust_subject(root),
-                         tab_label=tab_labels(ctx.live.snapshot()), history=launch_history(cat, root))
+                         tab_label=tab_labels(ctx.live.snapshot()), history=launch_history(cat, root, warnings))
+    reg["warnings"] = warnings
     reg["resolved_uid"] = uid  # the uid a `new` row would launch as ("" = no drop)
     for a in reg.get("absent") or []:
         a["uid"] = uid
@@ -7069,7 +7105,8 @@ def picker(ctx: Ctx, cat: dict) -> int:
             if top and os.path.realpath(top) != os.path.realpath(root):
                 wider = sum(1 for a in agents if a.get("cwd") and at_or_beneath(a["cwd"], top))
             t_hist = time.perf_counter()
-            history = launch_history(full_cat, root)
+            warnings: list[str] = []
+            history = launch_history(full_cat, root, warnings)
             hist_ms = _ms(t_hist)
             t_reg = time.perf_counter()
             reg = build_registry(cat, root, agents, panes, rows, matcher=matcher_for(root),
@@ -7078,6 +7115,7 @@ def picker(ctx: Ctx, cat: dict) -> int:
                         live=len(reg["live"]), cold=len(reg["cold"]), startable=len(reg["startable"]))
             if place:
                 reg["place_note"] = place["name"] + (" · from ~" if remapped and root == place["cwd"] else "")
+            reg["warnings"] = warnings
             remember_live(reg, rows)
             if persist_canonical(reg, rows):
                 save_roster(rows)

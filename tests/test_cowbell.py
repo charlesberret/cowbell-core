@@ -301,7 +301,8 @@ class Registry(unittest.TestCase):
         json.dumps(payload)  # must be serializable
         self.assertEqual(payload["root"], ROOT)
         self.assertEqual(payload["place"], "nomogenesis")
-        self.assertEqual({k for k in payload}, {"root", "place", "running", "resume", "new"})
+        self.assertEqual({k for k in payload}, {"root", "place", "warnings", "running", "resume", "new"})
+        self.assertEqual(payload["warnings"], [])
         keys = {"name", "harness", "place", "cwd", "host", "state"}
         for row in payload["running"]:
             self.assertTrue(keys <= set(row))
@@ -6125,6 +6126,81 @@ class HcBackend(unittest.TestCase):
             row = hm.cmd_adopt(ctx, {"harness": [], "lanes": {}, "defaults": {}})
         self.assertEqual((row["pane_id"], row["kind"]), ("hc:t3", "codex"))
         self.assertIn(["label", "--json", "t3", f"cowbell.name={row['name']}"], self.calls("hc"))
+
+
+
+class HistoryWarnings(unittest.TestCase):
+    """A failed session discovery costs its Resume rows, never the picker or `status`."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.inner = os.path.realpath(os.path.join(self.tmp.name, "proj"))
+        os.makedirs(self.inner)
+        self.saved = os.environ.get("COWBELL_STATE_DIR")
+        os.environ["COWBELL_STATE_DIR"] = os.path.join(self.tmp.name, "state")
+        # a place whose account is not on this host: the as-user discovery fails for real, before any
+        # helper runs, the same way a refused agent-run does
+        self.cat = {"harness": [dict(CAT["harness"][1]), dict(CAT["harness"][2])], "defaults": {"session_history": "on"},
+                    "places": {"lab": {"cwd": self.inner, "unix_user": "cowbell-no-such-user"}}}
+
+    def tearDown(self):
+        if self.saved is None:
+            os.environ.pop("COWBELL_STATE_DIR", None)
+        else:
+            os.environ["COWBELL_STATE_DIR"] = self.saved
+        self.tmp.cleanup()
+
+    def test_explicit_lookup_still_refuses(self):
+        with self.assertRaises(SystemExit) as e:
+            hm.launch_history(self.cat, self.inner)
+        self.assertIn("is not on this host", str(e.exception))
+
+    def test_failure_is_one_warning_and_no_rows(self):
+        warnings = []
+        self.assertEqual(hm.launch_history(self.cat, self.inner, warnings), [])
+        self.assertEqual(hm.launch_history(self.cat, self.inner, warnings), [])
+        self.assertEqual(warnings, ["cowbell: unix_user 'cowbell-no-such-user' is not on this host"])
+
+    def test_warning_text_is_redacted_and_has_no_terminal_controls(self):
+        secret = "sk-" + "a1b2c3d4e5f6"
+        err = SystemExit(f"cowbell: session discovery as 'guest' failed: \x1b[31mAPI_KEY={secret} refusing")
+        warnings = []
+        with mock.patch.object(hm, "_launch_history", side_effect=err):
+            self.assertEqual(hm.launch_history(self.cat, self.inner, warnings), [])
+        self.assertEqual(len(warnings), 1)
+        self.assertNotIn(secret, warnings[0])
+        self.assertNotIn("\x1b", warnings[0])
+        self.assertIn("session discovery as 'guest' failed", warnings[0])
+
+    def test_status_json_exits_cleanly_with_the_warning_and_keeps_the_rest(self):
+        hm.save_roster([{"name": "kept", "cwd": self.inner, "harness": "grok", "kind": "grok",
+                         "session_id": "s-kept", "pane_id": None}])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            hm.cmd_registry(hm.Ctx(cwd=self.inner, live=hm.LiveSource()), self.cat, as_json=True)
+        out = json.loads(buf.getvalue())
+        self.assertEqual(out["warnings"], ["cowbell: unix_user 'cowbell-no-such-user' is not on this host"])
+        self.assertEqual([r["name"] for r in out["resume"]], ["kept"])  # the roster's Resume row stays
+        self.assertEqual([r["harness"] for r in out["new"]], ["codex"])
+
+    def test_status_json_has_an_empty_warnings_list_when_all_is_read(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            hm.cmd_registry(hm.Ctx(cwd=self.inner, live=hm.LiveSource()), {"harness": [dict(CAT["harness"][1])]},
+                            as_json=True)
+        self.assertEqual(json.loads(buf.getvalue())["warnings"], [])
+
+    def test_picker_shows_one_dim_line_and_rows_stay_aligned(self):
+        reg = hm.build_registry({"harness": [dict(CAT["harness"][1])]}, self.inner, [], [], [],
+                                matcher=lambda _t: {"verdict": "unknown"}, history=[])
+        reg["warnings"] = ["cowbell: session discovery as 'guest' failed: refusing"]
+        choices = hm.picker_choices(reg, [], None, {}, set(), lines=40, width=84)
+        text = hm.render_picker(reg, choices, width=84)
+        lines = text.split("\n")
+        self.assertIn("! cowbell: session discovery as 'guest' failed", re.sub(r"\x1b\[[0-9;]*m", "", lines[1]))
+        for c in choices:
+            if c.get("row") is not None and c.get("harness"):
+                self.assertIn(c["harness"], re.sub(r"\x1b\[[0-9;]*m", "", lines[c["row"]]))
 
 
 if __name__ == "__main__":
