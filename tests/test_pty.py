@@ -17,6 +17,14 @@ sys.path.insert(0, str(ROOT))
 import cowbell as hm  # noqa: E402
 
 ESC = "\x1b"
+# The suite may run inside a Herdr desktop app terminal: drop that context so a picker child takes the
+# herdr/here path these tests describe, and never reaches a live herdr-core.
+for _k in ("HC_TERMINAL_ID", "HC_TERMINAL_SOCKET", "HC_SCOPE", "COWBELL_BACKEND", "COWBELL_HC_SPACE",
+           "COWBELL_HC_CWD"):
+    os.environ.pop(_k, None)
+os.environ["HC_BIN_PATH"] = "/nonexistent/hc"
+os.environ["HERDR_APP_BIN_PATH"] = "/nonexistent/herdr-app"
+
 UP, DOWN = "\x1b[A", "\x1b[B"
 BODY = ["", "  header", "", "  LIVE"] + [f"  {i + 1}  row{i + 1}" for i in range(3)] \
        + ["", "  RAISE"] + [f"  {i + 4}  raise{i + 4}" for i in range(2)]

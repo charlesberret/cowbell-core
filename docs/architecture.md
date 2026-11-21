@@ -52,7 +52,13 @@ cannot be checked from this tree is marked `DRAFT — needs maintainer check:`.
   with `CombinedLive(HerdrLive() if herdr_up else None, ProcessScan())`
   (verified: `cowbell.py` `choose_host()`, `caller_is_agent()`,
   `in_herdr_pane()`).
-- `LiveSource` subclasses: `HerdrLive` (agents from the herdr server),
+- Inside a Herdr desktop app terminal (`in_hc_app()`: `HC_TERMINAL_ID` without a herdr pane, or
+  `COWBELL_HC_SPACE`/`COWBELL_HC_CWD` from an app popup, or `COWBELL_BACKEND=hc`) `choose_host`
+  returns `CombinedLive(HcLive(), ProcessScan(skip_hc=True))` and `HcLaunch`, with
+  `mode="app"` for an agent caller or a popup and `mode="here"` for a person; the caller is
+  `pane_id="hc:<address>"` (verified: `cowbell.py` `in_hc_app()`, `choose_host()`).
+- `LiveSource` subclasses: `HerdrLive` (agents from the herdr server), `HcLive` (agent
+  terminals from `hc ls`/`hc get`, pane ids `hc:<address>`, local addresses only),
   `ProcessScan` (agent CLIs found by process working directory),
   `CombinedLive` (union of both; a live row keeps an `on tty…` location when it
   came from the process scan) (verified: `cowbell.py` `class HerdrLive`,
@@ -297,6 +303,11 @@ cannot be checked from this tree is marked `DRAFT — needs maintainer check:`.
   the `resume` spec (verified: `cowbell.py` `here_command()`;
   `harnesses.toml` comment "Resuming outside herdr"; seed rows: `claude` and
   `pi` set `session_id_flag`).
+- `launch_history(cat, root, warnings)`: given a list, a failed discovery (any `SystemExit` from
+  the as-user path) returns no rows and adds one redacted line (`history_warning`); `status`
+  and the picker pass a list, so the failure shows as `warnings` in `status --json` and a dim
+  line under the header (`warning_lines`); `cmd_enter` passes none and still exits (verified:
+  `cowbell.py` `launch_history()`, `history_warning()`, `warning_lines()`, `registry_json()`).
 - `cmd_enter` resolves a name against the roster then history, focuses it if
   live (via `ctx.live.focus`), resumes into a still-present pane when under
   herdr, else launches fresh with `resume_id` (verified: `cowbell.py`
@@ -397,6 +408,17 @@ cannot be checked from this tree is marked `DRAFT — needs maintainer check:`.
   `cowbell.py`; `Hosts.test_every_herdr_call_is_inside_the_adapter` scans the
   source and fails on any call outside it (verified: `cowbell.py` adapter
   banner; `tests/test_cowbell.py` `class Hosts`, `test_every_herdr_call_is_inside_the_adapter`).
+- The same section runs herdr-core and the desktop app: `hc()` (`HC_BIN_PATH`, `--json` placed
+  before any `--`), `herdr_app()` (`HERDR_APP_BIN_PATH`, `herdr-app do <command> --field value`)
+  and `_run_json()` under them; the boundary test greps for `herdr(`, `hc(`, `herdr_app(` and
+  `_run_json(` (verified: `cowbell.py` `hc()`, `herdr_app()`; `tests/test_cowbell.py`
+  `class HcBackend`).
+- `hc_raise` starts the command `here_command` builds (so a minted session id can be resumed)
+  behind a `cd -P` guard: a new tab is `hc run --bg --keep --no-parent` with labels
+  `herdr.space`, a fresh `herdr.tab` and `cowbell.name`, then a best-effort `tab.rename` and
+  `agent.focus`; a split is `herdr-app do pane.split` right of the caller's pane; a resume into
+  a terminal at its shell is `hc send` (verified: `cowbell.py` `hc_raise()`, `hc_open_tab()`,
+  `hc_split_right()`, `class HcLaunch`).
 - `herdr()` runs the binary (`HERDR_BIN_PATH` or `which herdr` or
   `~/.local/bin/herdr`) with `HERDR_TIMEOUT = 5.0`s; `server_up()` probes the
   socket rather than the CLI (verified: `cowbell.py` `herdr_bin()`, `HERDR_TIMEOUT`, `herdr()`, `server_up()`).

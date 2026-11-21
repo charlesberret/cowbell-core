@@ -23,8 +23,8 @@ python3 -m build --sdist
 ```
 
 In offline environments or when hatchling is already installed locally, pass `--no-build-isolation`. Artifacts are generated under `dist/`:
-- `dist/cowbell-0.3.3.tar.gz`
-- `dist/cowbell-0.3.3-py3-none-any.whl`
+- `dist/cowbell-0.3.4.tar.gz`
+- `dist/cowbell-0.3.4-py3-none-any.whl`
 
 ## 3. Verify Before Publishing
 
@@ -40,7 +40,7 @@ Perform an isolated clean-venv smoke check against the sdist artifact:
 
 ```bash
 python3 -m venv /tmp/cowbell-check
-/tmp/cowbell-check/bin/pip install dist/cowbell-0.3.3.tar.gz
+/tmp/cowbell-check/bin/pip install dist/cowbell-0.3.4.tar.gz
 /tmp/cowbell-check/bin/cowbell catalog
 rm -rf /tmp/cowbell-check
 ```
@@ -50,7 +50,7 @@ rm -rf /tmp/cowbell-check
 Pushing and tagging are maintainer actions. Tag the release commit and push to remote:
 
 ```bash
-git tag v0.3.3
+git tag v0.3.4
 git push origin main --tags
 ```
 

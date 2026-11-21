@@ -59,11 +59,11 @@ cowbell is one Python file with no required dependencies (the icon font below is
 Install the sdist or wheel into your environment or tool cache: (verified: pyproject.toml:10,24-25,37)
 
 ```bash
-pip install cowbell-0.3.3.tar.gz
+pip install cowbell-0.3.4.tar.gz
 # or
-pipx install cowbell-0.3.3.tar.gz
+pipx install cowbell-0.3.4.tar.gz
 # or
-uv tool install cowbell-0.3.3.tar.gz
+uv tool install cowbell-0.3.4.tar.gz
 ```
 
 The installer puts the console script `cowbell` on your PATH. (verified: pyproject.toml:24-25)
@@ -74,7 +74,7 @@ Check that it runs: (verified: cowbell.py:6464)
 cowbell --version
 ```
 
-Expected output: `cowbell 0.3.3`. (verified: cowbell.py:63, 6464)
+Expected output: `cowbell 0.3.4`. (verified: cowbell.py:63, 6464)
 
 On first run, cowbell seeds its catalog at `~/.config/cowbell/harnesses.toml` (or under `COWBELL_CONFIG_DIR` or `$XDG_CONFIG_HOME/cowbell`). For package installs, the seed catalog is copied from the package's shared data at `<sys.prefix>/share/cowbell/harnesses.toml`. (verified: cowbell.py:240-245, 255-261, 314-322; pyproject.toml:33-34)
 
@@ -88,7 +88,7 @@ cd cowbell-core
 ./bin/cowbell --version
 ```
 
-Expected output: `cowbell 0.3.3`. In a clone, the seed catalog is copied from `harnesses.toml` beside `cowbell.py`. To run it from any directory, link the launcher onto your PATH. The launcher follows symlinks and picks a Python 3.11 or newer for you: (verified: bin/cowbell:5-18; cowbell.py:240-244, 314-320)
+Expected output: `cowbell 0.3.4`. In a clone, the seed catalog is copied from `harnesses.toml` beside `cowbell.py`. To run it from any directory, link the launcher onto your PATH. The launcher follows symlinks and picks a Python 3.11 or newer for you: (verified: bin/cowbell:5-18; cowbell.py:240-244, 314-320)
 
 ```bash
 mkdir -p "$HOME/.local/bin"
@@ -120,11 +120,12 @@ cowbell checks the machine it runs on. Over ssh the terminal that draws the scre
 
 ## Status
 
-Pre-1.0 (0.3.x). The command line, the picker and the catalog format (`schema = 1`) may still change between releases; changes are listed in [CHANGELOG.md](CHANGELOG.md). (verified: cowbell.py:63 `__version__ = "0.3.3"`; harnesses.toml:91 `schema = 1`; CHANGELOG.md exists) Bug reports and focused pull requests are welcome.
+Pre-1.0 (0.3.x). The command line, the picker and the catalog format (`schema = 1`) may still change between releases; changes are listed in [CHANGELOG.md](CHANGELOG.md). (verified: cowbell.py:63 `__version__ = "0.3.4"`; harnesses.toml:91 `schema = 1`; CHANGELOG.md exists) Bug reports and focused pull requests are welcome.
 
 ## Where agents open
 
 - **Inside a herdr pane**, starting or resuming opens a new herdr tab named for the session, and Active lists herdr's agents. (verified: cowbell.py:2939-2950, 6321-6323)
+- **Inside the Herdr desktop app** (a herdr-core terminal: `HC_TERMINAL_ID` set and no herdr pane), Active lists the app's agent terminals from `hc ls`, on this machine, with the app's status; those rows say `herdr app`. A person's start or resume still runs in this terminal. An agent caller, `--spawn`, and a pick from an app popup open a new tab in the caller's space (`hc run` with the app's `herdr.space` and a new `herdr.tab` label); `--split` opens to the right of the caller. The name of a session is the terminal label `cowbell.name`; `enter` shows a running one through `herdr-app`, and a resume can go back into a terminal that is still at its shell prompt. `COWBELL_BACKEND=hc` or `=herdr` forces either path. An app mod running the picker in a hidden terminal sets `COWBELL_HC_SPACE` (the space new tabs open in) and `COWBELL_HC_CWD` (the directory Active and New Session are for); with either set, every pick opens a tab and the picker exits 0 once it has started one, or on Esc.
 - **Anywhere else**, or with `COWBELL_MODE=here`, cowbell hands this terminal to the agent, `exec`, in the chosen directory. Quit the agent and you are back at your shell. Active lists herdr's agents when a herdr server is listening, plus agent CLIs found running in plain terminals by working directory. Those rows say where they run, `on ttys012`. Cowbell can't switch to another terminal window. (verified: cowbell.py:6321-6323, 2650-2657, 2209-2277, 1920-1921, 2734-2735)
 - **Resume** lists only sessions that can resume. Claude started outside herdr gets its session id up front, `session_id_flag`, so it can. Agents without such a flag are not listed. Resume shows the harness's current session title; a herdr tab that differs is the location. When several sessions share a title, the harness title keeps the bare name and the others gain a short id tail. `cowbell rename` pins a name. (verified: cowbell.py:1776-1787, 620-638, 673-700, 1910-1921; harnesses.toml:31-38, 162)
 - **Enter on New Session** opens the agent at once with an automatic name, `claude` or `claude-2`, and the default permissions. `[defaults] ask_name = true` asks for the name first. **`e` on a New Session row** opens a menu of that harness. The first line is its name. Then description, models, default model, permissions, tools, provider, model cycle, and system prompt. A field with a known set of values offers those, plus none, and a line to type another. A launcher script also lists its command. Empty fields stay on the menu. Pick a row to change that field. Esc inside a field cancels it. Esc on the menu returns to the list. `+` adds a harness, a herdr kind or a launcher script. (verified: cowbell.py:526-535, 5963-5985, 5043-5063, 5409-5440; harnesses.toml:110)
@@ -214,7 +215,7 @@ A harness with `cwd` starts there, not in the directory you called it from. The 
 
 ```
 cowbell                      the picker (on a terminal); piped, the long registry  (verified: cowbell.py:4-5, 4486-4487, 6156-6200)
-cowbell --version            cowbell 0.3.3  (verified: ./bin/cowbell --version → "cowbell 0.3.3"; cowbell.py:6, 6464)
+cowbell --version            cowbell 0.3.4  (verified: ./bin/cowbell --version → "cowbell 0.3.4"; cowbell.py:6, 6464)
 cowbell --debug              opt-in startup timing trace; see docs/debug-trace.md  (verified: cowbell.py:27, 6444-6454)
 cowbell status               long registry: live · cold · absent, session ids, trust  (verified: cowbell.py:7, 1593, 1765-1810)
 cowbell claude               focus a claude running here, else resume one, else start one  (verified: cowbell.py:9, 3969-3982)

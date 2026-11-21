@@ -81,6 +81,8 @@ def agent(pane, kind, cwd, status="idle", title="", sid="s1"):
 
 
 _SENTINEL_DIR = None
+HC_ENV = ("HC_TERMINAL_ID", "HC_TERMINAL_SOCKET", "HC_SCOPE", "COWBELL_BACKEND", "COWBELL_HC_SPACE",
+          "COWBELL_HC_CWD")
 _SENTINEL_LOG = None
 _SAVED_DEBUG = None
 
@@ -99,6 +101,16 @@ def setUpModule():
     stub.chmod(0o755)
     os.environ["HERDR_BIN_PATH"] = str(stub)
     os.environ["HERDR_SOCKET_PATH"] = str(base / "no.sock")
+    # herdr-core (`hc`) and the Herdr app the same way: the suite may run inside an app terminal, so
+    # drop its context and route both CLIs to logging stubs that ZSuiteSeam checks.
+    for k in HC_ENV:
+        os.environ.pop(k, None)
+    for name in ("hc", "herdr-app"):
+        s = base / name
+        s.write_text(f'#!/bin/sh\necho "{name} $@" >> "{_SENTINEL_LOG}"\nexit 1\n')
+        s.chmod(0o755)
+    os.environ["HC_BIN_PATH"] = str(base / "hc")
+    os.environ["HERDR_APP_BIN_PATH"] = str(base / "herdr-app")
 
 
 def tearDownModule():
@@ -289,7 +301,8 @@ class Registry(unittest.TestCase):
         json.dumps(payload)  # must be serializable
         self.assertEqual(payload["root"], ROOT)
         self.assertEqual(payload["place"], "nomogenesis")
-        self.assertEqual({k for k in payload}, {"root", "place", "running", "resume", "new"})
+        self.assertEqual({k for k in payload}, {"root", "place", "warnings", "running", "resume", "new"})
+        self.assertEqual(payload["warnings"], [])
         keys = {"name", "harness", "place", "cwd", "host", "state"}
         for row in payload["running"]:
             self.assertTrue(keys <= set(row))
@@ -1176,7 +1189,7 @@ class Hosts(unittest.TestCase):
         start = next(i for i, ln in enumerate(lines) if ln.startswith("# --- herdr adapter"))
         end = next(i for i, ln in enumerate(lines) if i > start and ln.startswith("# --- "))
         outside = [f"{i + 1}: {ln.strip()}" for i, ln in enumerate(lines)
-                   if re.search(r"\bherdr\(", ln) and not start < i < end]
+                   if re.search(r"\b(herdr|hc|herdr_app|_run_json)\(", ln) and not start < i < end]
         self.assertEqual(outside, [])
 
     def test_server_up_probes_the_socket_not_the_cli(self):
@@ -5406,6 +5419,8 @@ class ZSuiteSeam(unittest.TestCase):
 
     def test_no_test_called_the_sentinel_herdr(self):
         self.assertEqual(os.environ.get("HERDR_SOCKET_PATH"), str(Path(_SENTINEL_DIR.name) / "no.sock"))
+        self.assertEqual(os.environ.get("HC_BIN_PATH"), str(Path(_SENTINEL_DIR.name) / "hc"))
+        self.assertEqual(os.environ.get("HERDR_APP_BIN_PATH"), str(Path(_SENTINEL_DIR.name) / "herdr-app"))
         if _SENTINEL_LOG.exists():
             self.fail("tests invoked the sentinel herdr: " + _SENTINEL_LOG.read_text())
 
@@ -5780,6 +5795,412 @@ class BoundedSubprocess(unittest.TestCase):
                 hm.run_requires(row)
         self.assertLess(time.monotonic() - t0, 10)
         self.assertIn("timed out", str(e.exception))
+
+
+
+# A stand-in for herdr-core (`hc`) and the Herdr app (`herdr-app`): each call is logged as JSON and
+# answered from a fixture, so these tests never reach a live core or window.
+FAKE_HC = r"""
+import json, os, sys
+name = os.path.basename(sys.argv[0])
+argv = sys.argv[1:]
+with open(os.environ["FAKE_HC_LOG"], "a") as fh:
+    fh.write(json.dumps([name, argv]) + "\n")
+data = json.load(open(os.environ["FAKE_HC_DATA"]))
+if name == "hc":
+    cmd = argv[0]
+    if cmd == "ls":
+        print(json.dumps(data.get("ls", {"terminals": []})))
+    elif cmd == "get":
+        t = data.get("get", {}).get(argv[-1])
+        if t is None:
+            print(json.dumps({"error": "no terminal"})); sys.exit(1)
+        print(json.dumps(t))
+    elif cmd == "run":
+        print(json.dumps({"address": data.get("run_address", "t9")}))
+    else:
+        print(json.dumps({"ok": True}))
+else:
+    if argv[:1] == ["ls"]:
+        print(json.dumps(data.get("app_ls", {"spaces": []})))
+    else:
+        print(json.dumps(data.get("do", {}).get(argv[1], {"ok": True})))
+"""
+
+SP = "sp" + "a" * 32
+TB = "tb" + "b" * 32
+
+
+def hc_fixture(cwd):
+    """Two local agents (one named by cowbell), a shell, and another machine's agent."""
+    return {
+        "ls": {"terminals": [
+            {"address": "t1", "agent": "claude-code", "cwd": cwd, "state": "live", "status": "working",
+             "where": "acme / planner"},
+            {"address": "t2", "agent": "zsh", "cwd": cwd, "state": "live", "where": "acme / 2"},
+            {"address": "t3", "agent": "codex", "cwd": cwd, "state": "live", "status": "idle", "where": "acme / 3"},
+            {"address": "box/t1", "agent": "claude-code", "cwd": cwd, "state": "live", "status": "idle"},
+        ]},
+        "get": {
+            "t1": {"address": "t1", "foreground": {"name": "claude", "argv": ["claude"], "cwd": cwd},
+                   "labels": {"herdr.space": SP, "herdr.tab": TB, "cowbell.name": "planner"},
+                   "status": {"app": "claude-code", "state": "working"}, "records": {}},
+            "t3": {"address": "t3", "foreground": {"name": "codex", "argv": ["codex"], "cwd": cwd},
+                   "labels": {"herdr.space": SP, "herdr.tab": "tbc"}, "status": {"state": "idle"}},
+            "t5": {"address": "t5", "foreground": {"name": "zsh", "argv": ["-zsh"], "cwd": cwd},
+                   "labels": {"herdr.space": SP, "herdr.tab": "tbd"}},
+            "t7": {"address": "t7", "foreground": {"name": "claude"}, "labels": {"herdr.space": SP}},
+        },
+        "app_ls": {"spaces": [{"id": SP, "tabs": [{"id": TB, "terminals": [
+            {"terminal": "t7", "pane": "p77"}]}]}]},
+    }
+
+
+class HcBackend(unittest.TestCase):
+    """The Herdr desktop app backend: herdr-core terminals for the census and for launches."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.root = os.path.realpath(self.tmp.name)
+        self.log = base / "calls.jsonl"
+        self.data = base / "data.json"
+        self.data.write_text(json.dumps(hc_fixture(self.root)))
+        for name in ("hc", "herdr-app"):
+            f = base / name
+            f.write_text(f"#!{sys.executable}\n{FAKE_HC}")
+            f.chmod(0o755)
+        self.saved = {k: os.environ.get(k) for k in
+                      ("HC_BIN_PATH", "HERDR_APP_BIN_PATH", "FAKE_HC_LOG", "FAKE_HC_DATA", "COWBELL_STATE_DIR")}
+        os.environ.update({"HC_BIN_PATH": str(base / "hc"), "HERDR_APP_BIN_PATH": str(base / "herdr-app"),
+                           "FAKE_HC_LOG": str(self.log), "FAKE_HC_DATA": str(self.data),
+                           "COWBELL_STATE_DIR": str(base / "state")})
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        self.tmp.cleanup()
+
+    def calls(self, who=None):
+        if not self.log.exists():
+            return []
+        rows = [json.loads(x) for x in self.log.read_text().splitlines()]
+        return [argv for name, argv in rows if who is None or name == who]
+
+    def harness(self):
+        return {"id": "sh", "kind": "sh", "family": "sh", "egress": "local", "trust_tool": "sh", "models": []}
+
+    APP = {"HC_TERMINAL_ID": "t7"}
+
+    # detection
+
+    def test_app_terminal_is_detected_and_herdr_context_wins(self):
+        self.assertTrue(hm.in_hc_app({"HC_TERMINAL_ID": "t3"}))
+        self.assertFalse(hm.in_hc_app({}))
+        self.assertFalse(hm.in_hc_app({"HC_TERMINAL_ID": "t3", "HERDR_PANE_ID": "w1:p1"}))
+        self.assertFalse(hm.in_hc_app({"HC_TERMINAL_ID": "t3", "COWBELL_BACKEND": "herdr"}))
+        self.assertTrue(hm.in_hc_app({"COWBELL_BACKEND": "hc"}))
+        self.assertTrue(hm.in_hc_app({"HERDR_PANE_ID": "w1:p1", "COWBELL_BACKEND": "hc"}))
+
+    def test_a_person_in_the_app_execs_here_an_agent_opens_a_tab(self):
+        person = hm.choose_host(False, {**self.APP, "COWBELL_CALLER": "person"})
+        self.assertEqual(person.mode, "here")
+        self.assertIsInstance(person.launch, hm.HcLaunch)
+        self.assertTrue(person.live.hc)
+        self.assertFalse(person.live.herdr)
+        self.assertEqual(person.pane_id, "hc:t7")
+        agent = hm.choose_host(False, {**self.APP, "CLAUDECODE": "1"})
+        self.assertEqual(agent.mode, "app")
+        forced = hm.choose_host(False, {**self.APP, "CLAUDECODE": "1", "COWBELL_MODE": "here"})
+        self.assertEqual(forced.mode, "here")
+        self.assertEqual(self.calls(), [])  # choosing a host runs nothing
+
+    def test_herdr_tui_path_is_untouched_by_the_app_variables(self):
+        ctx = hm.choose_host(True, {"HERDR_PANE_ID": "w1:p1", "HERDR_WORKSPACE_ID": "w1", "HC_TERMINAL_ID": "t3",
+                                    "CLAUDECODE": "1"})
+        self.assertIsInstance(ctx.launch, hm.HerdrLaunch)
+        self.assertIsInstance(ctx.live, hm.HerdrLive)
+        tui = hm.choose_host(True, {"HC_TERMINAL_ID": "t3", "COWBELL_BACKEND": "herdr"})
+        self.assertIsInstance(tui.launch, hm.HereLaunch)
+        self.assertTrue(tui.live.herdr)
+        self.assertFalse(tui.live.hc)
+
+    def test_popup_picker_space_and_folder(self):
+        cwd = os.path.join(self.root, "sub")
+        os.mkdir(cwd)
+        ctx = hm.choose_host(False, {**self.APP, "COWBELL_CALLER": "person",
+                                     "COWBELL_HC_SPACE": "box/" + SP, "COWBELL_HC_CWD": cwd})
+        self.assertEqual(ctx.mode, "app")  # the popup's terminal closes; a pick never execs in it
+        self.assertEqual(ctx.workspace_id, SP)  # the machine prefix is dropped
+        self.assertEqual(ctx.cwd, os.path.realpath(cwd))
+
+    def test_popup_variables_select_the_app_on_their_own(self):
+        self.assertTrue(hm.in_hc_app({"COWBELL_HC_SPACE": SP}))
+        self.assertTrue(hm.in_hc_app({"COWBELL_HC_CWD": "/x", "HERDR_PANE_ID": "w1:p1"}))
+        self.assertFalse(hm.in_hc_app({"COWBELL_HC_SPACE": SP, "COWBELL_BACKEND": "herdr"}))
+
+    def test_popup_picker_census_is_hc_and_cancel_exits_zero(self):
+        env = {"COWBELL_HC_SPACE": SP, "COWBELL_HC_CWD": self.root, "COWBELL_CALLER": "person",
+               "HC_TERMINAL_ID": "t40"}
+        seen = {}
+        real = hm.build_registry
+
+        def spy(cat, root, agents, *a, **k):
+            seen["root"], seen["panes"] = root, [x["pane_id"] for x in agents]
+            return real(cat, root, agents, *a, **k)
+
+        with mock.patch.dict(os.environ, env), mock.patch.object(hm, "tui_ok", return_value=False), \
+                mock.patch.object(hm, "ask", return_value="q"), mock.patch.object(hm, "build_registry", spy), \
+                mock.patch.object(hm, "agent_processes", return_value=[]), \
+                mock.patch.object(hm, "launch_history", return_value=[]), \
+                mock.patch.object(hm, "herdr", side_effect=AssertionError("the TUI API was called")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(hm.main(["picker"]), 0)
+        self.assertEqual(seen["root"], self.root)
+        self.assertEqual(seen["panes"], ["hc:t1", "hc:t3"])
+        self.assertTrue(any(a[0] == "ls" for a in self.calls("hc")))
+
+    # census
+
+    def test_census_lists_local_agent_terminals_only(self):
+        rows = hm.HcLive().agents()
+        self.assertEqual([r["pane_id"] for r in rows], ["hc:t1", "hc:t3"])
+        t1 = rows[0]
+        self.assertEqual((t1["agent"], t1["agent_status"], t1["hc_name"], t1["workspace_id"], t1["tab_id"]),
+                         ("claude", "working", "planner", SP, TB))
+        self.assertEqual(rows[1]["agent"], "codex")
+        self.assertNotIn(["get", "--json", "t2"], self.calls("hc"))  # a shell is not asked about
+        self.assertFalse(any("box/t1" in a for a in self.calls("hc")))
+
+    def test_status_json_rows_are_app_terminals(self):
+        ctx = hm.choose_host(False, {**self.APP, "COWBELL_CALLER": "person"})
+        ctx.cwd = self.root
+        ctx.live = hm.CombinedLive(hm.HcLive())  # no process scan of this machine in a unit test
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), mock.patch.object(hm, "launch_history", return_value=[]):
+            hm.cmd_registry(ctx, {"harness": [], "lanes": {}, "defaults": {}}, self.root, as_json=True)
+        running = json.loads(out.getvalue())["running"]
+        self.assertEqual([(r["pane_id"], r["host"], r["state"]) for r in running],
+                         [("hc:t1", "herdr app", "working"), ("hc:t3", "herdr app", "idle")])
+        self.assertEqual(running[0]["name"], "planner")
+        self.assertEqual(hm.row_host({"pane_id": "w1:p1"}), "herdr pane")  # the TUI row is unchanged
+
+    def test_process_scan_leaves_out_agents_under_herdr_core(self):
+        table = {
+            10: {"ppid": 1, "tty": "??", "argv": ["/opt/x/herdr-core/active/Herdr", "Core.app/Contents/MacOS/herdr-core",
+                                                  "hold"]},
+            11: {"ppid": 10, "tty": "ttys1", "argv": ["/bin/zsh"]},
+            12: {"ppid": 11, "tty": "ttys1", "argv": ["claude"]},
+            21: {"ppid": 1, "tty": "ttys2", "argv": ["/bin/zsh"]},
+            22: {"ppid": 21, "tty": "ttys2", "argv": ["codex"]},
+        }
+        cwds = lambda pids: {p: "/x" for p in pids}
+        self.assertEqual({r["pid"] for r in hm.agent_processes(table, cwds)}, {12, 22})
+        self.assertEqual({r["pid"] for r in hm.agent_processes(table, cwds, skip_hc=True)}, {22})
+
+    # launch
+
+    def test_json_flag_never_reaches_the_program(self):
+        hm.hc("run", "--bg", "--", "/bin/sh", "-c", "true")
+        self.assertEqual(self.calls("hc")[-1], ["run", "--json", "--bg", "--", "/bin/sh", "-c", "true"])
+
+    def test_agent_caller_opens_a_tab_in_its_own_space(self):
+        ctx = hm.choose_host(False, {**self.APP, "CLAUDECODE": "1"})
+        pane = ctx.launch.start({"lanes": {}, "defaults": {}}, self.harness(), "probe", self.root, ctx)
+        self.assertEqual(pane["pane_id"], "hc:t9")
+        self.assertEqual(pane["workspace_id"], SP)
+        run = next(a for a in self.calls("hc") if a[0] == "run")
+        cut = run.index("--")
+        own, prog = run[:cut], run[cut + 1:]
+        for flag in ("--bg", "--keep", "--no-parent"):
+            self.assertIn(flag, own)
+        self.assertEqual(own[own.index("--cwd") + 1], self.root)
+        labels = [own[i + 1] for i, w in enumerate(own) if w == "--label"]
+        self.assertIn(f"herdr.space={SP}", labels)
+        self.assertIn("cowbell.name=probe", labels)
+        tab = next(x for x in labels if x.startswith("herdr.tab=")).split("=", 1)[1]
+        self.assertRegex(tab, r"^tb[0-9a-f]{32}$")
+        self.assertEqual(pane["tab_id"], tab)
+        self.assertEqual(prog[:2], ["/bin/sh", "-c"])  # the folder guard, then the agent itself
+        self.assertEqual(prog[4], self.root)
+        self.assertEqual(os.path.basename(prog[5]), "sh")
+        self.assertNotIn("--json", prog)
+        app = self.calls("herdr-app")
+        self.assertIn(["do", "tab.rename", "--id", tab, "--name", "probe"], app)
+        self.assertIn(["do", "agent.focus", "--terminal", "t9"], app)
+        row = next(r for r in hm.load_roster() if r["name"] == "probe")
+        self.assertEqual(row["pane_id"], "hc:t9")
+
+    def test_popup_space_wins_over_the_caller_space(self):
+        ctx = hm.choose_host(False, {**self.APP, "COWBELL_HC_SPACE": "spzzz", "COWBELL_CALLER": "person"})
+        ctx.launch.start({"lanes": {}, "defaults": {}}, self.harness(), "probe", self.root, ctx, focus=False)
+        run = next(a for a in self.calls("hc") if a[0] == "run")
+        self.assertIn("herdr.space=spzzz", run)
+        self.assertNotIn(["get", "--json", "t7"], self.calls("hc"))
+        self.assertFalse(any(a[:2] == ["do", "agent.focus"] for a in self.calls("herdr-app")))
+
+    def test_no_space_refuses_rather_than_hiding_the_tab(self):
+        ctx = hm.choose_host(False, {"HC_TERMINAL_ID": "t5", "CLAUDECODE": "1"})
+        d = json.loads(self.data.read_text())
+        d["get"]["t5"]["labels"] = {}
+        self.data.write_text(json.dumps(d))
+        with self.assertRaises(SystemExit) as e:
+            ctx.launch.start({"lanes": {}, "defaults": {}}, self.harness(), "probe", self.root, ctx)
+        self.assertIn("COWBELL_HC_SPACE", str(e.exception))
+        self.assertFalse(any(a[0] == "run" for a in self.calls("hc")))
+
+    def test_split_goes_right_of_the_caller_pane(self):
+        d = json.loads(self.data.read_text())
+        d["do"] = {"pane.split": {"terminal": "t10"}}
+        self.data.write_text(json.dumps(d))
+        ctx = hm.choose_host(False, {**self.APP, "CLAUDECODE": "1"})
+        pane = ctx.launch.start({"lanes": {}, "defaults": {}}, self.harness(), "probe", self.root, ctx,
+                                split=True, focus=False)
+        self.assertEqual(pane["pane_id"], "hc:t10")
+        split = next(a for a in self.calls("herdr-app") if a[:2] == ["do", "pane.split"])
+        self.assertEqual(split[split.index("--pane") + 1], "p77")
+        self.assertEqual(split[split.index("--direction") + 1], "right")
+        self.assertEqual(json.loads(split[split.index("--argv") + 1])[:2], ["/bin/sh", "-c"])
+        self.assertIn(["label", "--json", "t10", "cowbell.name=probe"], self.calls("hc"))
+
+    def test_a_person_execs_in_place_and_spawn_opens_a_tab(self):
+        ctx = hm.choose_host(False, {**self.APP, "COWBELL_CALLER": "person"})
+        with mock.patch.object(hm, "exec_here", return_value={"pane_id": "x"}) as ex:
+            ctx.launch.start({"lanes": {}, "defaults": {}}, self.harness(), "probe", self.root, ctx)
+        self.assertEqual(ex.call_args.kwargs["pane_id"], "hc:t7")
+        self.assertEqual(self.calls(), [])
+        pane = ctx.launch.start({"lanes": {}, "defaults": {}}, self.harness(), "probe2", self.root, ctx,
+                                spawn=True, focus=False)
+        self.assertEqual(pane["pane_id"], "hc:t9")
+
+    def test_resume_types_into_a_terminal_left_at_its_shell(self):
+        ctx = hm.choose_host(False, {**self.APP, "CLAUDECODE": "1"})
+        pane = ctx.launch.start({"lanes": {}, "defaults": {}}, self.harness(), "probe", self.root, ctx,
+                                reuse_pane={"pane_id": "hc:t5"}, focus=False)
+        self.assertEqual(pane["pane_id"], "hc:t5")
+        send = next(a for a in self.calls("hc") if a[0] == "send")
+        self.assertEqual(send[:3], ["send", "--json", "t5"])
+        self.assertTrue(send[3].startswith("cd -P -- "))
+        self.assertFalse(any(a[0] == "run" for a in self.calls("hc")))
+
+    def test_resume_into_a_busy_terminal_opens_a_tab(self):
+        ctx = hm.choose_host(False, {**self.APP, "CLAUDECODE": "1"})
+        pane = ctx.launch.start({"lanes": {}, "defaults": {}}, self.harness(), "probe", self.root, ctx,
+                                reuse_pane={"pane_id": "hc:t1"}, focus=False)
+        self.assertEqual(pane["pane_id"], "hc:t9")
+        self.assertFalse(any(a[0] == "send" for a in self.calls("hc")))
+
+    # names and focus
+
+    def test_identity_is_a_label_and_no_border_is_drawn(self):
+        self.assertTrue(hm.report_identity("hc:t1", "planner", "claude"))
+        self.assertTrue(hm.clear_identity("hc:t1"))
+        hm.mark_harness("hc:t1", "planner", "claude")
+        self.assertEqual(self.calls("hc"), [["label", "--json", "t1", "cowbell.name=planner"],
+                                            ["label", "--json", "t1", "cowbell.name="]])
+
+    def test_enter_focuses_a_live_sitting_by_its_label(self):
+        ctx = hm.choose_host(False, {**self.APP, "COWBELL_CALLER": "person"})
+        ctx.live = hm.CombinedLive(hm.HcLive())
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            hm.cmd_enter(ctx, {"harness": [], "lanes": {}, "defaults": {}}, "planner", self.root,
+                         target={"name": "planner", "cwd": self.root})
+        self.assertIn("focused planner in hc:t1", out.getvalue())
+        self.assertIn(["do", "agent.focus", "--terminal", "t1"], self.calls("herdr-app"))
+
+    def test_rename_pins_and_labels_the_terminal(self):
+        hm.save_roster([{"name": "probe", "cwd": self.root, "harness": "sh", "kind": "sh", "pane_id": "hc:t3",
+                         "session_id": "s1"}])
+        self.assertEqual(hm.pin_session_name("probe", "renamed"), "renamed")
+        self.assertIn(["label", "--json", "t3", "cowbell.name=renamed"], self.calls("hc"))
+
+    def test_adopt_takes_the_caller_terminal(self):
+        ctx = hm.choose_host(False, {"HC_TERMINAL_ID": "t3", "COWBELL_CALLER": "person"})
+        ctx.cwd = self.root
+        ctx.live = hm.CombinedLive(hm.HcLive())
+        with contextlib.redirect_stdout(io.StringIO()):
+            row = hm.cmd_adopt(ctx, {"harness": [], "lanes": {}, "defaults": {}})
+        self.assertEqual((row["pane_id"], row["kind"]), ("hc:t3", "codex"))
+        self.assertIn(["label", "--json", "t3", f"cowbell.name={row['name']}"], self.calls("hc"))
+
+
+
+class HistoryWarnings(unittest.TestCase):
+    """A failed session discovery costs its Resume rows, never the picker or `status`."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.inner = os.path.realpath(os.path.join(self.tmp.name, "proj"))
+        os.makedirs(self.inner)
+        self.saved = os.environ.get("COWBELL_STATE_DIR")
+        os.environ["COWBELL_STATE_DIR"] = os.path.join(self.tmp.name, "state")
+        # a place whose account is not on this host: the as-user discovery fails for real, before any
+        # helper runs, the same way a refused agent-run does
+        self.cat = {"harness": [dict(CAT["harness"][1]), dict(CAT["harness"][2])], "defaults": {"session_history": "on"},
+                    "places": {"lab": {"cwd": self.inner, "unix_user": "cowbell-no-such-user"}}}
+
+    def tearDown(self):
+        if self.saved is None:
+            os.environ.pop("COWBELL_STATE_DIR", None)
+        else:
+            os.environ["COWBELL_STATE_DIR"] = self.saved
+        self.tmp.cleanup()
+
+    def test_explicit_lookup_still_refuses(self):
+        with self.assertRaises(SystemExit) as e:
+            hm.launch_history(self.cat, self.inner)
+        self.assertIn("is not on this host", str(e.exception))
+
+    def test_failure_is_one_warning_and_no_rows(self):
+        warnings = []
+        self.assertEqual(hm.launch_history(self.cat, self.inner, warnings), [])
+        self.assertEqual(hm.launch_history(self.cat, self.inner, warnings), [])
+        self.assertEqual(warnings, ["cowbell: unix_user 'cowbell-no-such-user' is not on this host"])
+
+    def test_warning_text_is_redacted_and_has_no_terminal_controls(self):
+        secret = "sk-" + "a1b2c3d4e5f6"
+        err = SystemExit(f"cowbell: session discovery as 'guest' failed: \x1b[31mAPI_KEY={secret} refusing")
+        warnings = []
+        with mock.patch.object(hm, "_launch_history", side_effect=err):
+            self.assertEqual(hm.launch_history(self.cat, self.inner, warnings), [])
+        self.assertEqual(len(warnings), 1)
+        self.assertNotIn(secret, warnings[0])
+        self.assertNotIn("\x1b", warnings[0])
+        self.assertIn("session discovery as 'guest' failed", warnings[0])
+
+    def test_status_json_exits_cleanly_with_the_warning_and_keeps_the_rest(self):
+        hm.save_roster([{"name": "kept", "cwd": self.inner, "harness": "grok", "kind": "grok",
+                         "session_id": "s-kept", "pane_id": None}])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            hm.cmd_registry(hm.Ctx(cwd=self.inner, live=hm.LiveSource()), self.cat, as_json=True)
+        out = json.loads(buf.getvalue())
+        self.assertEqual(out["warnings"], ["cowbell: unix_user 'cowbell-no-such-user' is not on this host"])
+        self.assertEqual([r["name"] for r in out["resume"]], ["kept"])  # the roster's Resume row stays
+        self.assertEqual([r["harness"] for r in out["new"]], ["codex"])
+
+    def test_status_json_has_an_empty_warnings_list_when_all_is_read(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            hm.cmd_registry(hm.Ctx(cwd=self.inner, live=hm.LiveSource()), {"harness": [dict(CAT["harness"][1])]},
+                            as_json=True)
+        self.assertEqual(json.loads(buf.getvalue())["warnings"], [])
+
+    def test_picker_shows_one_dim_line_and_rows_stay_aligned(self):
+        reg = hm.build_registry({"harness": [dict(CAT["harness"][1])]}, self.inner, [], [], [],
+                                matcher=lambda _t: {"verdict": "unknown"}, history=[])
+        reg["warnings"] = ["cowbell: session discovery as 'guest' failed: refusing"]
+        choices = hm.picker_choices(reg, [], None, {}, set(), lines=40, width=84)
+        text = hm.render_picker(reg, choices, width=84)
+        lines = text.split("\n")
+        self.assertIn("! cowbell: session discovery as 'guest' failed", re.sub(r"\x1b\[[0-9;]*m", "", lines[1]))
+        for c in choices:
+            if c.get("row") is not None and c.get("harness"):
+                self.assertIn(c["harness"], re.sub(r"\x1b\[[0-9;]*m", "", lines[c["row"]]))
 
 
 if __name__ == "__main__":

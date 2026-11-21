@@ -229,6 +229,15 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Fix | Check connectivity and retry `cowbell font install`; the URL and sha256 are pinned in source. |
 | Source | `cowbell.py` |
 
+### could not show {} in the Herdr app: {}
+
+| | |
+|--|--|
+| Message | `cowbell: could not show {} in the Herdr app: {}` |
+| Cause | `cowbell enter` found the sitting running in a Herdr desktop app terminal, but `herdr-app do agent.focus` failed (the window is closed, or the app is older than that command). |
+| Fix | Open the Herdr app and retry, or switch to the terminal named in the message by hand. |
+| Source | `cowbell.py` |
+
 ### could not tighten {} to 0700: {}
 
 | | |
@@ -1055,4 +1064,13 @@ CI enforces that every template extracted from source appears below (see `tests/
 | Message | `{} runs on {} (pid {}); cowbell can't switch to another terminal` |
 | Cause | Cowbell rejected the command with the message shown. |
 | Fix | Read the message, fix arguments or environment, and consult `cowbell catalog` / `cowbell sessions`. |
+| Source | `cowbell.py` |
+
+### this terminal is not in a Herdr app space (no herdr.space label); set COWBELL_HC_SPACE to the space a new tab should open in
+
+| | |
+|--|--|
+| Message | `cowbell: this terminal is not in a Herdr app space (no herdr.space label); set COWBELL_HC_SPACE to the space a new tab should open in` |
+| Cause | A launch that opens a Herdr app tab ran in a herdr-core terminal the app does not show (started with `hc run` and no `herdr.space` label), so cowbell has no space to put the tab in. Nothing was started. |
+| Fix | Set `COWBELL_HC_SPACE` to a local space id (`herdr-app ls` lists them), or run cowbell from a terminal inside the app. |
 | Source | `cowbell.py` |

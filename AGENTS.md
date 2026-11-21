@@ -61,9 +61,11 @@ test reached the real binary (verified: `tests/test_cowbell.py:87-97`
   requires Python ≥ 3.11 (verified: `cowbell.py:41-60` import block, all
   stdlib, `tomllib` guarded at :57-60; `pyproject.toml` `dependencies = []`
   (:14), `requires-python = ">=3.11"` (:10); `bin/cowbell` probes for 3.11).
-- **herdr adapter.** Every `herdr(` call lives inside the `# --- herdr adapter`
-  section of `cowbell.py` (`test_every_herdr_call_is_inside_the_adapter`
-  greps for violations). New herdr interaction goes in that section
+- **herdr adapter.** Every `herdr(`, `hc(` and `herdr_app(` call lives inside
+  the `# --- herdr adapter` section of `cowbell.py`
+  (`test_every_herdr_call_is_inside_the_adapter` greps for violations). The
+  suite stubs `hc` and `herdr-app` through `HC_BIN_PATH` and
+  `HERDR_APP_BIN_PATH` the way it stubs herdr. New herdr interaction goes in that section
   (verified: `cowbell.py:2784` adapter banner;
   `tests/test_cowbell.py:1137` the test).
 - **Catalog writes.** Edit `harnesses.toml` through the splice writer

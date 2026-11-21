@@ -62,7 +62,7 @@ try:
 except ImportError:  # pragma: no cover
     tomllib = None
 
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 PLUGIN_ID = "herdr-cowbell"  # only to find config and state that 0.1–0.3 kept in herdr's plugin dirs
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 LANES = ("green", "yellow", "red")
@@ -402,7 +402,14 @@ def header(reg: dict, git_top: str | None, wider: int | None, widen_hint: bool =
         hint = f"   ({wider} live under it)" if wider is not None else ""
         out.append(paint(f"  git root: {tilde(git_top)}{hint}", FAINT)
                    + (f"   {paint('[g]', MUTED)} {paint('widen', FAINT)}" if widen_hint else ""))
+    out += warning_lines(reg)
     return out
+
+
+def warning_lines(reg: dict, width: int | None = None) -> list[str]:
+    """One dim line per thing that could not be read, under the header; cut to `width` in the picker."""
+    lines = [f"  ! {w}" for w in reg.get("warnings") or []]
+    return [paint(x[:max(20, width - 2)] if width else x, FAINT) for x in lines]
 
 
 def section_title(title: str, fg: str = MUTED) -> str:
@@ -1832,8 +1839,32 @@ def session_fields(kind: str, root: str, session_id: str, home: Path | None = No
 HISTORY_PROVIDERS = {"claude": claude_sessions, "grok": grok_sessions}
 
 
-def launch_history(cat: dict, root: str) -> list[dict]:
-    """Discover history as the uid that will launch here, crossing its home boundary when needed."""
+def history_warning(text: str) -> str:
+    """A discovery failure as one display line: redacted like the trace, terminal controls dropped
+    (the detail may be another account's stderr)."""
+    line = (str(text or "").strip().splitlines() or ["session discovery failed"])[-1]
+    return CONTROL_WIDE.sub("", redact_text(line))[:240]
+
+
+def launch_history(cat: dict, root: str, warnings: list[str] | None = None) -> list[dict]:
+    """Discover history as the uid that will launch here, crossing its home boundary when needed.
+
+    With `warnings` (a list), a failed discovery costs only its Resume rows: the failure is added
+    there once and no history is returned. Without it the failure exits, as an explicit lookup
+    (`cowbell enter`) should."""
+    if warnings is None:
+        return _launch_history(cat, root)
+    try:
+        return _launch_history(cat, root)
+    except SystemExit as e:
+        msg = history_warning(str(e))
+        trace.event("history", store="as-user", warn=msg[:120])
+        if msg not in warnings:
+            warnings.append(msg)
+        return []
+
+
+def _launch_history(cat: dict, root: str) -> list[dict]:
     import pwd
     if not history_on(cat):
         return discover_sessions(root, cat)
@@ -2124,6 +2155,8 @@ def row_host(r: dict) -> str:
     pane = str(r.get("pane_id") or "")
     if pane.startswith("pid:") or r.get("tty"):
         return "tty"
+    if pane.startswith("hc:"):
+        return "herdr app"
     if pane and pane != "gone":
         return "herdr pane"
     return "none"
@@ -2162,6 +2195,8 @@ def registry_json(reg: dict, place: dict | None = None) -> dict:
     return {
         "root": root,
         "place": place_name,
+        # what could not be read (a failed session discovery); the rest of the answer stands
+        "warnings": list(reg.get("warnings") or []),
         "running": [sitting_row(r) for r in reg.get("live") or []],
         # Resume only what can resume: a row without a session id would just start fresh.
         "resume": [sitting_row(r) for r in reg.get("cold") or [] if r.get("session_id")],
@@ -2479,6 +2514,7 @@ def render_picker(reg: dict, choices: list[dict], git_top: str | None = None, wi
         right = f"g widen to {os.path.basename(git_top.rstrip('/'))} · {wider} running"
     gap = width - 2 - len(path) - len(right)
     out = [f"  {paint(path, TEAL, bold=True)}" + (f"{' ' * max(3, gap)}{paint(right, FAINT)}" if right else "")]
+    out += warning_lines(reg, width)
     n = 0
     for section, title, fg in PICKER_SECTIONS:
         rows = [c for c in choices if c.get("section") == section]
@@ -2667,6 +2703,31 @@ def in_herdr_pane(env=None) -> bool:
     return bool(env.get("HERDR_PANE_ID") or env.get("HERDR_PLUGIN_CONTEXT_JSON") or env.get("COWBELL_CTX"))
 
 
+def in_hc_app(env=None) -> bool:
+    """A terminal of the Herdr desktop app (herdr-core, `hc`), not a herdr TUI pane.
+
+    COWBELL_BACKEND=hc forces it; COWBELL_BACKEND=herdr forces the herdr TUI path. An app mod's popup
+    picker (COWBELL_HC_SPACE or COWBELL_HC_CWD set) is the app whatever else the core's environment
+    carries. Otherwise an hc terminal id with no herdr pane context: a herdr TUI run inside an app
+    terminal is still herdr.
+    """
+    env = os.environ if env is None else env
+    forced = (env.get("COWBELL_BACKEND") or "").strip().lower()
+    if forced in ("hc", "app"):
+        return True
+    if forced in ("herdr", "tui"):
+        return False
+    if (env.get("COWBELL_HC_SPACE") or "").strip() or (env.get("COWBELL_HC_CWD") or "").strip():
+        return True
+    return bool(env.get("HC_TERMINAL_ID")) and not in_herdr_pane(env)
+
+
+def under_hc_core(argv: list[str]) -> bool:
+    """The process is a herdr-core terminal holder. Its path may hold a space (`Herdr Core.app`),
+    so ps splits it: look at the first few words for a herdr-core path component."""
+    return bool(re.search(r"(^|/)herdr-core(/|\s|$)", " ".join(argv[:3])))
+
+
 # Harnesses set these. COWBELL_CALLER=person|agent wins when a sitting must override.
 _AGENT_ENV = ("GROK_AGENT", "CLAUDECODE", "CLAUDE_CODE")
 
@@ -2733,8 +2794,9 @@ def process_cwds(pids: list[int]) -> dict[int, str]:
     return out
 
 
-def agent_processes(table: dict[int, dict] | None = None, cwds=process_cwds) -> list[dict]:
-    """Agent CLIs on a terminal, not under herdr (herdr lists its own) and not nested in another agent."""
+def agent_processes(table: dict[int, dict] | None = None, cwds=process_cwds, skip_hc: bool = False) -> list[dict]:
+    """Agent CLIs on a terminal, not under herdr (herdr lists its own) and not nested in another agent.
+    `skip_hc` also leaves out agents under herdr-core, when the census reads those from `hc`."""
     t0 = time.perf_counter()
     scanned_ps = table is None
     table = ps_table() if table is None else table
@@ -2745,6 +2807,8 @@ def agent_processes(table: dict[int, dict] | None = None, cwds=process_cwds) -> 
         while cur in table and cur not in seen:
             seen.add(cur)
             if kinds.get(cur) or os.path.basename(table[cur]["argv"][0]) == "herdr":
+                return False
+            if skip_hc and under_hc_core(table[cur]["argv"]):
                 return False
             cur = table[cur]["ppid"]
         return True
@@ -3051,14 +3115,16 @@ def _expected_cwd(h: dict, root: str) -> str:
 
 def exec_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", lane="", allow="", deny="",
               seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True,
-              name_source: str = "", effort: str = "", dirs: list[str] | None = None):
-    """Hand this terminal to the agent. Does not return."""
+              name_source: str = "", effort: str = "", dirs: list[str] | None = None, pane_id: str | None = None):
+    """Hand this terminal to the agent. Does not return. `pane_id` is this terminal, when a host
+    can find it again (an hc terminal); None elsewhere."""
     root = launch_root(cat, root, h)
     cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra, effort=effort,
                                 dirs=dirs)
     cmd = unix_confine(cat, root, cmd, h=h)
     exe = _here_exe(h, cmd)
-    _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, None, name_source, extra, effort, dirs)
+    _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, pane_id, name_source, extra, effort,
+                 dirs)
     trace.event("exec", harness=h.get("id", ""), cmd=shell_join(redact_launch(cmd, extra)))
     sys.stdout.write("\x1b[H\x1b[2J" if sys.stdout.isatty() else "")
     print(f"  {paint(name, INK, bold=True)}  {paint(shell_join(cmd), MUTED)}  {paint(tilde(root), FAINT)}")
@@ -3117,6 +3183,7 @@ def launch(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", *args, **kw):
 class LiveSource:
     """Running agents as herdr-shaped rows (pane_id, agent, cwd, agent_status, ...). The empty source."""
     herdr = False  # True when rows are herdr panes that can be focused, adopted, stopped
+    hc = False  # True when rows are herdr-core (`hc`) terminals of the Herdr desktop app
 
     def agents(self) -> list[dict]:
         return []
@@ -3141,8 +3208,11 @@ class LiveSource:
 class ProcessScan(LiveSource):
     """Agent CLIs found by process working directory (outside herdr)."""
 
+    def __init__(self, skip_hc: bool = False):
+        self.skip_hc = skip_hc  # the hc census lists herdr-core terminals itself
+
     def agents(self) -> list[dict]:
-        return agent_processes()
+        return agent_processes(skip_hc=True) if self.skip_hc else agent_processes()
 
     def focus(self, row: dict) -> str:
         raise SystemExit(f"{row.get('name')} runs on {row.get('tty')} (pid {row.get('pid')}); "
@@ -3153,6 +3223,7 @@ class CombinedLive(LiveSource):
     def __init__(self, *sources: LiveSource | None):
         self.sources = [x for x in sources if x is not None]
         self.herdr = any(x.herdr for x in self.sources)
+        self.hc = any(x.hc for x in self.sources)
 
     def agents(self) -> list[dict]:
         return [a for x in self.sources for a in x.agents()]
@@ -3171,7 +3242,8 @@ class CombinedLive(LiveSource):
             x.refresh_sessions(rows)
 
     def focus(self, row: dict) -> str:
-        owner = ProcessScan if str(row.get("pane_id") or "").startswith("pid:") else HerdrLive
+        pane = str(row.get("pane_id") or "")
+        owner = ProcessScan if pane.startswith("pid:") else HcLive if pane.startswith("hc:") else HerdrLive
         src = next((x for x in self.sources if isinstance(x, owner)), None)
         return (src or LiveSource()).focus(row)
 
@@ -3818,6 +3890,8 @@ def report_identity(pane_id: str, name: str, kind: str, model: str = "") -> bool
     """One event, one publish: $glyph (badge), $name (the sitting), $line1, display_agent."""
     if not pane_id or str(pane_id).startswith("pid:"):
         return False  # a process on another terminal has no herdr pane to badge
+    if str(pane_id).startswith("hc:"):  # the app draws its own agent icon; the name is a label
+        return hc_label(hc_addr(pane_id), name)
     g = glyph_for(kind, model)
     try:
         herdr("pane", "report-metadata", pane_id, "--source", COWBELL_SOURCE,
@@ -3834,6 +3908,8 @@ def clear_identity(pane_id: str) -> bool:
     """Drop cowbell's badge on a pane that no longer holds that sitting."""
     if not pane_id or str(pane_id).startswith("pid:"):
         return False
+    if str(pane_id).startswith("hc:"):
+        return hc_label(hc_addr(pane_id), "")
     try:
         herdr("pane", "report-metadata", pane_id, "--source", COWBELL_SOURCE,
               "--clear-display-agent",
@@ -3992,9 +4068,368 @@ class HerdrLaunch(HostLaunch):
         return raise_harness(cat, h, name, root, ctx, *args, **kw)
 
 
+# herdr-core (`hc`) and the Herdr desktop app (`herdr-app`). Same rule: only this section runs them.
+# An app terminal is a core terminal labelled herdr.space=<id> and herdr.tab=<id>; a tab id the app does
+# not know becomes a new tab. cowbell names a sitting with the label cowbell.name. Row pane ids are
+# `hc:<address>` (local addresses only; `machine/tN` rows are other machines' and are left out).
+
+HC_NAME_LABEL = "cowbell.name"
+# The app's names for agents it detects, where they differ from the CLI cowbell starts.
+HC_APP_KIND = {"claude-code": "claude"}
+
+
+class HcError(HerdrError):
+    pass
+
+
+def hc_bin() -> str:
+    return os.environ.get("HC_BIN_PATH") or shutil.which("hc") or os.path.expanduser("~/.local/bin/hc")
+
+
+def herdr_app_bin() -> str:
+    return (os.environ.get("HERDR_APP_BIN_PATH") or shutil.which("herdr-app")
+            or os.path.expanduser("~/.local/bin/herdr-app"))
+
+
+def _run_json(exe: str, args: list[str], who: str, timeout: float) -> dict:
+    t0 = time.perf_counter()
+    shown = " ".join(redact_argv(args))
+    try:
+        proc = subprocess.run([exe, *args], capture_output=True, text=True, check=False, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        trace.event(who, ms=_ms(t0), err="timeout", argv=shown)
+        raise HcError(f"{who} {' '.join(args[:2])} timed out after {timeout:g}s") from e
+    except OSError as e:
+        trace.event(who, ms=_ms(t0), err="os", argv=shown)
+        raise HcError(f"{who} unavailable: {e}") from e
+    out = (proc.stdout or "").strip()
+    payload = None
+    if out:
+        try:
+            payload = json.loads(out)
+        except json.JSONDecodeError:
+            payload = None
+    if isinstance(payload, dict) and payload.get("error"):
+        e = payload["error"]
+        trace.event(who, ms=_ms(t0), err="payload", argv=shown)
+        raise HcError(e.get("message", str(e)) if isinstance(e, dict) else str(e))
+    if proc.returncode != 0:
+        err = (proc.stderr or out or "").strip()
+        trace.event(who, ms=_ms(t0), rc=proc.returncode, argv=shown, err=redact_text(err or "exit")[:120])
+        raise HcError(err or f"{who} {' '.join(args)} exited {proc.returncode}")
+    trace.event(who, ms=_ms(t0), rc=0, argv=shown, bytes=len(out))
+    if isinstance(payload, dict):
+        return payload
+    return {"value": payload} if payload is not None else ({"raw": out} if out else {})
+
+
+def hc(*args: str, timeout: float = HERDR_TIMEOUT) -> dict:
+    """Run the herdr-core CLI with --json, given right after the subcommand: anything after `--`
+    belongs to the program `hc run` starts."""
+    argv = list(args)
+    own = argv[:argv.index("--")] if "--" in argv else argv
+    if own and "--json" not in own:
+        argv.insert(1, "--json")
+    return _run_json(hc_bin(), argv, "hc", timeout)
+
+
+def herdr_app(command: str, timeout: float = HERDR_TIMEOUT, **fields) -> dict:
+    """`herdr-app do <command> --field value`: a structural command on the open window.
+    A list value goes as JSON (argv); a bool as true/false."""
+    args = ["do", command]
+    for k, v in fields.items():
+        if v is None:
+            continue
+        val = json.dumps(v) if isinstance(v, (list, dict)) else ("true" if v is True else "false" if v is False
+                                                                  else str(v))
+        args += [f"--{k}", val]
+    return _run_json(herdr_app_bin(), args, "herdr-app", timeout)
+
+
+def hc_space_override(env=None) -> str:
+    """COWBELL_HC_SPACE: the space a popup picker's launches go to (the one the person was looking at).
+    Ids are local to this machine; a `machine/` prefix is dropped."""
+    env = os.environ if env is None else env
+    raw = (env.get("COWBELL_HC_SPACE") or "").strip()
+    return raw.rsplit("/", 1)[-1] if raw else ""
+
+
+def hc_addr(pane_id) -> str:
+    p = str(pane_id or "")
+    return p[3:] if p.startswith("hc:") else ""
+
+
+def hc_terminals() -> list[dict]:
+    """Live terminals on this machine, as `hc ls` lists them."""
+    try:
+        ts = hc("ls").get("terminals") or []
+    except HcError:
+        return []
+    return [t for t in ts if isinstance(t, dict) and t.get("address") and "/" not in str(t["address"])
+            and (t.get("state") or "live") == "live"]
+
+
+def hc_get(addr: str) -> dict:
+    return hc("get", addr)
+
+
+def hc_kind(t: dict, info: dict) -> str:
+    """Which agent CLI holds the terminal: its foreground program, else what the app detected."""
+    fg = info.get("foreground") or {}
+    for word in (fg.get("name"), os.path.basename(str((fg.get("argv") or [""])[0]))):
+        k = exe_kind([word]) if word else ""
+        if k:
+            return k
+    for app in ((info.get("status") or {}).get("app"), t.get("agent")):
+        app = str(app or "")
+        k = HC_APP_KIND.get(app) or (app if app in AGENT_EXES else "")
+        if k:
+            return k
+    return ""
+
+
+def hc_tab_name(t: dict) -> str:
+    """The app tab's name from `where` (`<space> / <tab>`). A number is a place, not a name."""
+    where = str(t.get("where") or "")
+    tab = where.split(" / ", 1)[1].strip() if " / " in where else ""
+    return "" if tab.isdigit() else tab
+
+
+def hc_agent_rows() -> list[dict]:
+    """herdr-shaped rows for terminals that hold an agent. Shells and plain programs are left out."""
+    rows = []
+    for t in hc_terminals():
+        if not t.get("status") and (str(t.get("agent") or "") in SHELLS or not t.get("agent")):
+            continue
+        try:
+            info = hc_get(t["address"])
+        except HcError:
+            continue
+        kind = hc_kind(t, info)
+        if not kind:
+            continue
+        labels = info.get("labels") or {}
+        status = info.get("status") or {}
+        fg = info.get("foreground") or {}
+        records = info.get("records") or {}
+        title = next((r.get("title") for r in records.values() if isinstance(r, dict) and r.get("title")), "")
+        rows.append({
+            "pane_id": f"hc:{t['address']}", "agent": kind,
+            "cwd": fg.get("cwd") or info.get("cwd") or t.get("cwd") or "",
+            "agent_status": status.get("state") or t.get("status") or "live",
+            "tab_id": labels.get("herdr.tab"), "workspace_id": labels.get("herdr.space"),
+            "terminal_title_stripped": title or info.get("title") or "", "agent_session": {},
+            "hc_name": labels.get(HC_NAME_LABEL) or "", "tab_name": hc_tab_name(t),
+        })
+    return rows
+
+
+class HcLive(LiveSource):
+    """Agents in herdr-core terminals (the Herdr desktop app)."""
+    hc = True
+
+    def __init__(self):
+        self._rows: list[dict] | None = None
+
+    def agents(self) -> list[dict]:
+        self._rows = hc_agent_rows()
+        return self._rows
+
+    def panes(self) -> list[dict]:
+        return [{"pane_id": f"hc:{t['address']}", "cwd": t.get("cwd") or "", "agent": t.get("agent") or ""}
+                for t in hc_terminals()]
+
+    def snapshot(self) -> dict:
+        rows = self._rows if self._rows is not None else self.agents()
+        tabs, seen = [], set()
+        for r in rows:
+            if r.get("tab_id") and r["tab_id"] not in seen:
+                seen.add(r["tab_id"])
+                tabs.append({"tab_id": r["tab_id"], "label": r.get("tab_name") or ""})
+        return {"agents": rows, "tabs": tabs}
+
+    def agent(self, name: str) -> dict | None:
+        return next((r for r in self.agents() if name and r.get("hc_name") == name), None)
+
+    def focus(self, row: dict) -> str:
+        addr = hc_addr(row.get("pane_id"))
+        try:
+            herdr_app("agent.focus", terminal=addr)
+        except HcError as e:
+            raise SystemExit(f"cowbell: could not show {row.get('name') or addr} in the Herdr app: {e}")
+        return f"focused {row.get('name') or addr} in {row['pane_id']}"
+
+
+def hc_caller_space(ctx: "Ctx") -> str:
+    """Where a new tab goes: COWBELL_HC_SPACE (ctx.workspace_id), else the caller terminal's space."""
+    if ctx.workspace_id:
+        return ctx.workspace_id
+    addr = hc_addr(ctx.pane_id)
+    if addr:
+        try:
+            space = (hc_get(addr).get("labels") or {}).get("herdr.space") or ""
+        except HcError:
+            space = ""
+        if space:
+            return space
+    raise SystemExit("cowbell: this terminal is not in a Herdr app space (no herdr.space label); "
+                     "set COWBELL_HC_SPACE to the space a new tab should open in")
+
+
+def _hc_guarded(argv: list[str], expected: str) -> list[str]:
+    """Start argv only once the physical directory is the one the launch was checked for."""
+    return ["/bin/sh", "-c", 'cd -P -- "$1" && [ "$(pwd -P)" = "$1" ] && shift && exec "$@"', "sh",
+            expected, *argv]
+
+
+def hc_open_tab(space: str, root: str, argv: list[str], name: str) -> tuple[str, str]:
+    """A new app tab in `space` running argv. Returns (address, tab id).
+
+    `hc run --bg --keep` with the app's labels, not `herdr-app do terminal.open`: the core takes a target
+    space, works with the window closed, and returns the address; terminal.open only places beside the
+    focused pane. --no-parent: the tab must outlive the cowbell process that opened it."""
+    import uuid
+    tab = "tb" + uuid.uuid4().hex
+    args = ["run", "--bg", "--keep", "--no-parent", "--cwd", root,
+            "--label", f"herdr.space={space}", "--label", f"herdr.tab={tab}"]
+    if name:
+        args += ["--label", f"{HC_NAME_LABEL}={name}"]
+    res = hc(*args, "--", *argv)
+    addr = res.get("address") or res.get("terminal") or (res.get("raw") or "").strip()
+    if not addr:
+        raise HcError(f"hc run returned no address: {res}")
+    return str(addr), tab
+
+
+def hc_pane_of(addr: str) -> str | None:
+    """The app pane that shows terminal `addr` (from `herdr-app ls`), or None."""
+    if not addr:
+        return None
+    try:
+        layout = _run_json(herdr_app_bin(), ["ls"], "herdr-app", HERDR_TIMEOUT)
+    except HcError:
+        return None
+    for sp in layout.get("spaces") or []:
+        for tab in sp.get("tabs") or []:
+            for t in tab.get("terminals") or []:
+                if t.get("terminal") == addr and t.get("pane"):
+                    return t["pane"]
+    return None
+
+
+def hc_split_right(ctx: "Ctx", argv: list[str], name: str) -> str:
+    """A new terminal to the right of the caller's pane, or of the focused pane for a popup picker
+    (COWBELL_HC_SPACE), whose own terminal has no pane. The core has no split label, so this goes
+    through the app (`pane.split`); the new address is the terminal that appears."""
+    pane = None if ctx.workspace_id else hc_pane_of(hc_addr(ctx.pane_id))
+    before = {t["address"] for t in hc_terminals()}
+    res = herdr_app("pane.split", direction="right", pane=pane, argv=argv)
+    new = str(res.get("terminal") or "")
+    deadline = time.time() + 3
+    while not new and time.time() < deadline:
+        fresh = [t["address"] for t in hc_terminals() if t["address"] not in before]
+        if fresh:
+            new = fresh[0]
+            break
+        time.sleep(0.15)
+    if not new:
+        raise HcError("the split opened, but its terminal did not appear in hc ls")
+    if name:
+        hc_label(new, name)
+    return new
+
+
+def hc_label(addr: str, name: str) -> bool:
+    """Name the sitting on its terminal (`cowbell.name`); an empty name removes the label."""
+    try:
+        hc("label", addr, f"{HC_NAME_LABEL}={name}")
+    except HcError:
+        return False
+    return True
+
+
+def hc_shell_ready(addr: str) -> bool:
+    """The terminal's foreground is a shell prompt, so a typed line starts there."""
+    try:
+        fg = hc_get(addr).get("foreground") or {}
+    except HcError:
+        return False
+    return str(fg.get("name") or "").lstrip("-") in SHELLS
+
+
+def hc_raise(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", lane="", allow="", deny="",
+             seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True,
+             split: bool = False, reuse_pane: dict | None = None, name_source: str = "", effort: str = "",
+             dirs: list[str] | None = None) -> dict:
+    """Start the agent in an app terminal: a new tab in the caller's space (or COWBELL_HC_SPACE), a split
+    to the right, or a still-open terminal whose shell takes the line. The command is the one this
+    terminal would exec (a minted session id where the harness takes one), so a resume can replay it."""
+    t0 = time.perf_counter()
+    root = launch_root(cat, root, h)
+    cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra, effort=effort,
+                                dirs=dirs)
+    cmd = unix_confine(cat, root, cmd, h=h)
+    argv = [_here_exe(h, cmd), *cmd[1:]]  # absolute: the core's PATH is not this shell's
+    expected = _expected_cwd(h, root)
+    if any(CONTROL.search(str(w)) for w in [*argv, root, expected]):
+        raise SystemExit("cowbell: refused — a control character in the launch line or its folder")
+    shown = shell_join(redact_launch(cmd, extra))
+    space, tab, how = ctx.workspace_id, None, "tab"
+    addr = hc_addr((reuse_pane or {}).get("pane_id"))
+    if addr and hc_shell_ready(addr):
+        q = shell_join([expected])
+        hc("send", addr, f'cd -P -- {q} && [ "$(pwd -P)" = {q} ] && {shell_join(argv)}')
+        how = "reuse"
+        hc_label(addr, name)
+    elif split:
+        addr, how = hc_split_right(ctx, _hc_guarded(argv, expected), name), "split"
+    else:
+        space = hc_caller_space(ctx)
+        addr, tab = hc_open_tab(space, root, _hc_guarded(argv, expected), name)
+    pane_id = f"hc:{addr}"
+    _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, pane_id, name_source, extra, effort,
+                 dirs)
+    if tab:
+        # The app adopts the labelled terminal a moment later; name its tab after the sitting, best-effort.
+        deadline = time.time() + 2
+        while True:
+            try:
+                herdr_app("tab.rename", id=tab, name=name)
+                break
+            except HcError:
+                if time.time() > deadline:
+                    break
+                time.sleep(0.2)
+    if focus:
+        try:
+            herdr_app("agent.focus", terminal=addr)
+        except HcError:
+            pass
+    trace.event("raise", phase="done", how=how, mode="hc", pane=pane_id, ms=_ms(t0), cmd=shown)
+    return {"pane_id": pane_id, "tab_id": tab, "workspace_id": space}
+
+
+class HcLaunch(HostLaunch):
+    """The Herdr desktop app. A person execs here (this terminal is recorded, so enter can find it
+    again). An agent caller, --spawn, --split and a popup picker open an app terminal."""
+    tabs = True
+
+    def start(self, cat, h, name, root, ctx, *args, **kw):
+        spawn = kw.pop("spawn", False)
+        split = kw.pop("split", False)
+        reuse = kw.pop("reuse_pane", None)
+        kw.pop("pen", None)  # a pen is a herdr TUI workspace
+        own = hc_addr(ctx.pane_id)
+        if reuse and own and hc_addr(reuse.get("pane_id")) == own and ctx.mode == "here":
+            reuse = None  # resuming into this very terminal: exec, do not type into it
+        if reuse or spawn or split or ctx.mode == "app":
+            return hc_raise(cat, h, name, root, ctx, *args, split=split, reuse_pane=reuse, **kw)
+        return exec_here(cat, h, name, root, ctx, *args, pane_id=ctx.pane_id, **kw)
+
+
 def mark_harness(pane_id: str, sitting: str, harness: str) -> None:
     """Cache `sitting · harness` on the pane border. A failed rename does not fail the raise."""
-    if not pane_id or str(pane_id).startswith("pid:"):
+    if not pane_id or str(pane_id).startswith(("pid:", "hc:")):
         return
     harness = (harness or "").strip()
     if not HARNESS_TOKEN.match(harness):
@@ -4075,8 +4510,10 @@ def cmd_registry(ctx: Ctx, cat: dict, root: str | None = None, as_json: bool = F
     rows = load_roster()
     ctx.live.refresh_sessions(rows)
     agents, panes = ctx.live.agents(), ctx.live.panes()
+    warnings: list[str] = []
     reg = build_registry(cat, root, agents, panes, rows, subject=trust_subject(root),
-                         tab_label=tab_labels(ctx.live.snapshot()), history=launch_history(cat, root))
+                         tab_label=tab_labels(ctx.live.snapshot()), history=launch_history(cat, root, warnings))
+    reg["warnings"] = warnings
     reg["resolved_uid"] = uid  # the uid a `new` row would launch as ("" = no drop)
     for a in reg.get("absent") or []:
         a["uid"] = uid
@@ -4167,6 +4604,14 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None, target: d
                              seat, resume_id=r.get("session_id", ""), reuse_pane=pane_row, focus=False,
                              effort=r.get("effort", ""), dirs=_row_dirs(r))
         print(f"resumed {r['name']} ({h['id']}) in {pane_row['pane_id']}")
+        return True
+    if pane_row and getattr(ctx.live, "hc", False) and str(pane_row.get("pane_id") or "").startswith("hc:"):
+        # an app terminal still open at its shell takes the resume; HcLaunch opens a tab when it cannot
+        pane = launch(cat, h, r["name"], r.get("cwd") or root or ctx.cwd, ctx, r.get("model", ""),
+                      r.get("lane", ""), r.get("allow", ""), r.get("deny", ""), seat,
+                      resume_id=r.get("session_id", ""), reuse_pane=pane_row, focus=False,
+                      effort=r.get("effort", ""), dirs=_row_dirs(r))
+        print(f"resumed {r['name']} ({h['id']}) in {(pane or {}).get('pane_id') or pane_row['pane_id']}")
         return True
     pane = launch(cat, h, r["name"], r.get("cwd") or root or ctx.cwd, ctx, r.get("model", ""), r.get("lane", ""),
                   r.get("allow", ""), r.get("deny", ""), seat, resume_id=r.get("session_id", ""),
@@ -6104,7 +6549,7 @@ def spec_argv(cat: dict, h: dict, spec: LaunchSpec) -> list[str]:
 def spec_command(cat: dict, h: dict, spec: LaunchSpec, root: str, mode: str = "tab") -> list[str]:
     """The command line this spec runs, uid drop included. In this terminal a new
     session id is shown as `<new id>`; cowbell picks the real one at launch."""
-    if mode == "here":
+    if mode in ("here", "app"):  # the app path starts the same command line as this terminal would
         cmd, session = here_command(cat, h, spec.name, *spec.launch_args(), resume_id=spec.resume_id,
                                     extra=spec.extra or None, effort=spec.effort, dirs=spec.dirs or None)
         if session and session != spec.resume_id:
@@ -6660,7 +7105,8 @@ def picker(ctx: Ctx, cat: dict) -> int:
             if top and os.path.realpath(top) != os.path.realpath(root):
                 wider = sum(1 for a in agents if a.get("cwd") and at_or_beneath(a["cwd"], top))
             t_hist = time.perf_counter()
-            history = launch_history(full_cat, root)
+            warnings: list[str] = []
+            history = launch_history(full_cat, root, warnings)
             hist_ms = _ms(t_hist)
             t_reg = time.perf_counter()
             reg = build_registry(cat, root, agents, panes, rows, matcher=matcher_for(root),
@@ -6669,6 +7115,7 @@ def picker(ctx: Ctx, cat: dict) -> int:
                         live=len(reg["live"]), cold=len(reg["cold"]), startable=len(reg["startable"]))
             if place:
                 reg["place_note"] = place["name"] + (" · from ~" if remapped and root == place["cwd"] else "")
+            reg["warnings"] = warnings
             remember_live(reg, rows)
             if persist_canonical(reg, rows):
                 save_roster(rows)
@@ -6847,6 +7294,18 @@ def choose_host(herdr_up: bool, env=None) -> Ctx:
     COWBELL_MODE=here: this terminal. Herdr's agents are listed only when a server is actually listening."""
     env = os.environ if env is None else env
     wants_tab = env.get("COWBELL_MODE") == "tab" or (caller_is_agent(env) and env.get("COWBELL_MODE") != "here")
+    if in_hc_app(env):
+        # The Herdr desktop app. Census from `hc`; an agent caller, --spawn and --split open app tabs, a
+        # person execs here. A popup picker (COWBELL_HC_SPACE) always opens a tab: its terminal closes.
+        target = hc_space_override(env)
+        term = (env.get("HC_TERMINAL_ID") or "").strip()
+        cwd = (env.get("COWBELL_HC_CWD") or "").strip() or os.getcwd()
+        app_tab = bool(target) or (wants_tab and env.get("COWBELL_MODE") != "here")
+        ctx = Ctx(cwd=cwd, pane_id=f"hc:{term}" if term else None, workspace_id=target or None,
+                  mode="app" if app_tab else "here",
+                  live=CombinedLive(HcLive(), ProcessScan(skip_hc=True)), launch=HcLaunch())
+        trace.event("host", mode=ctx.mode, herdr=0, hc=1)
+        return ctx
     if wants_tab and herdr_up and in_herdr_pane(env):
         ctx = Ctx.from_env(env)
     else:
